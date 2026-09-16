@@ -1,0 +1,19 @@
+# 统一换行符：仓库与工作区一律 LF（本项目在 Linux 容器里构建/运行，
+# CRLF 会让 Dockerfile、nginx.conf、shell 脚本在容器内执行失败）
+* text=auto eol=lf
+
+# 二进制文件不做换行转换
+*.xlsx binary
+*.xls  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.zip  binary
+*.gz   binary
+
+# Windows 专用脚本保持 CRLF
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf

@@ -1,0 +1,27 @@
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=root
+CRON_TZ=Asia/Shanghai
+
+# For details see man 4 crontabs
+
+# Example of job definition:
+# .---------------- minute (0 - 59)
+# |  .------------- hour (0 - 23)
+# |  |  .---------- day of month (1 - 31)
+# |  |  |  .------- month (1 - 12) OR jan,feb,mar,apr ...
+# |  |  |  |  .---- day of week (0 - 6) (Sunday=0 or 7) OR sun,mon,tue,wed,thu,fri,sat
+# |  |  |  |  |
+# *  *  *  *  * command to be executed
+
+# 手工维护：每晚清理
+0 2 * * * /bin/echo nightly-backup
+*/5 * * * * /bin/echo every-5min
+
+#0 3 * * * /bin/echo disabled-task
+
+# 下面这条是「带空格注释掉的示例」，不该被当成任务
+# 0 4 * * * /bin/echo commented-example
+
+# 旧口径（/etc/crontab）的任务行带「运行用户」段，这条注释就是当年的诱饵：
+# 0 4 * * * root /bin/echo old-format-decoy
