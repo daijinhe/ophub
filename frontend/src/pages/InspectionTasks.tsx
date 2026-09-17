@@ -5,6 +5,7 @@ import {
   Modal,
   Form,
   Input,
+  InputNumber,
   Select,
   TreeSelect,
   Switch,
@@ -41,6 +42,9 @@ import {
   getMetricCatalog,
   FreqOptions,
   ScopeOptions,
+  WeekdayOptions,
+  MonthDayOptions,
+  scheduleText,
   InspectionTask,
   InspectionCatalog,
 } from '../api/inspection'
@@ -64,6 +68,8 @@ export default function InspectionTasks() {
   const [form] = Form.useForm()
 
   const canManage = hasPerm('inspection:manage')
+  // 当前选择的调度频率：联动显示对应的参数输入项（间隔 / 时刻 / 星期 / 日期）
+  const freqVal = Form.useWatch('freq', form)
 
   const load = async () => {
     setLoading(true)
@@ -89,6 +95,17 @@ export default function InspectionTasks() {
     [catalog]
   )
 
+  // 调度参数缺省值：新建时给一套「拿就能用」的配置；
+  // 后端 NormalizeSchedule 会再夹一次合法区间，这里只负责界面初始状态。
+  const defaultSchedule = {
+    intervalMin: 5,
+    intervalHour: 1,
+    weekday: 1,
+    monthDay: 1,
+    runHour: 2,
+    runMinute: 0,
+  }
+
   const openCreate = () => {
     setEditing(null)
     const dc = defaultCats
@@ -100,6 +117,7 @@ export default function InspectionTasks() {
       freq: 'manual',
       scheduleEnabled: false,
       metrics: dc,
+      ...defaultSchedule,
     })
     setOpen(true)
   }
@@ -119,6 +137,12 @@ export default function InspectionTasks() {
       categoryId: t.categoryId,
       assetIds: t.assetIds,
       freq: t.freq,
+      intervalMin: t.intervalMin ?? defaultSchedule.intervalMin,
+      intervalHour: t.intervalHour ?? defaultSchedule.intervalHour,
+      weekday: t.weekday ?? defaultSchedule.weekday,
+      monthDay: t.monthDay ?? defaultSchedule.monthDay,
+      runHour: t.runHour ?? defaultSchedule.runHour,
+      runMinute: t.runMinute ?? defaultSchedule.runMinute,
       scheduleEnabled: t.scheduleEnabled,
       remoteNodeId: t.remoteNodeId,
       metrics: base,
@@ -138,6 +162,12 @@ export default function InspectionTasks() {
       categoryId: v.categoryId || null,
       assetIds: v.assetIds || [],
       freq: v.freq,
+      intervalMin: v.intervalMin,
+      intervalHour: v.intervalHour,
+      weekday: v.weekday,
+      monthDay: v.monthDay,
+      runHour: v.runHour,
+      runMinute: v.runMinute,
       scheduleEnabled: v.scheduleEnabled,
       remoteNodeId: v.remoteNodeId || null,
       metrics: cats,
@@ -228,10 +258,11 @@ export default function InspectionTasks() {
     {
       title: '调度频率',
       dataIndex: 'freq',
-      render: (f: string) => {
-        const o = FreqOptions.find((x) => x.value === f)
-        return f === 'manual' ? <Tag>手动</Tag> : <Tag color="purple">{o?.label}</Tag>
-      },
+      // 直接渲染 scheduleText（与巡检大屏同一口径），而不是只显示频率枚举名，
+      // 否则「每隔 5 分钟」和「每天 02:00」在列表里长得一样，看不出具体配置。
+      render: (_: string, row: InspectionTask) => (
+        <Tag color={row.freq === 'manual' ? undefined : 'purple'}>{scheduleText(row)}</Tag>
+      ),
     },
     {
       title: '定时',
@@ -498,6 +529,69 @@ export default function InspectionTasks() {
             <Form.Item name="scheduleEnabled" label="启用定时" valuePropName="checked">
               <Switch />
             </Form.Item>
+
+            {freqVal === 'minute' && (
+              <Form.Item
+                name="intervalMin"
+                label="间隔（分钟）"
+                tooltip="每 N 分钟执行一次，范围 1-1440"
+                rules={[{ required: true, message: '请输入间隔分钟数' }]}
+                style={{ width: 180 }}
+              >
+                <InputNumber min={1} max={1440} precision={0} style={{ width: '100%' }} addonAfter="分钟" />
+              </Form.Item>
+            )}
+
+            {freqVal === 'hour' && (
+              <>
+                <Form.Item
+                  name="intervalHour"
+                  label="间隔（小时）"
+                  tooltip="每 N 小时执行一次，范围 1-72"
+                  rules={[{ required: true, message: '请输入间隔小时数' }]}
+                  style={{ width: 180 }}
+                >
+                  <InputNumber min={1} max={72} precision={0} style={{ width: '100%' }} addonAfter="小时" />
+                </Form.Item>
+                <Form.Item name="runMinute" label="第几分钟" rules={[{ required: true }]} style={{ width: 150 }}>
+                  <InputNumber min={0} max={59} precision={0} style={{ width: '100%' }} addonAfter="分" />
+                </Form.Item>
+              </>
+            )}
+
+            {(freqVal === 'day' || freqVal === 'week' || freqVal === 'month') && (
+              <>
+                <Form.Item name="runHour" label="执行时刻（时）" rules={[{ required: true }]} style={{ width: 160 }}>
+                  <InputNumber min={0} max={23} precision={0} style={{ width: '100%' }} addonAfter="点" />
+                </Form.Item>
+                <Form.Item name="runMinute" label="执行时刻（分）" rules={[{ required: true }]} style={{ width: 160 }}>
+                  <InputNumber min={0} max={59} precision={0} style={{ width: '100%' }} addonAfter="分" />
+                </Form.Item>
+              </>
+            )}
+
+            {freqVal === 'week' && (
+              <Form.Item
+                name="weekday"
+                label="星期"
+                rules={[{ required: true, message: '请选择星期' }]}
+                style={{ width: 140 }}
+              >
+                <Select options={WeekdayOptions} />
+              </Form.Item>
+            )}
+
+            {freqVal === 'month' && (
+              <Form.Item
+                name="monthDay"
+                label="日期"
+                tooltip="当月天数不足时自动取月末（如 31 号在 2 月落到 28/29 号）"
+                rules={[{ required: true, message: '请选择日期' }]}
+                style={{ width: 140 }}
+              >
+                <Select options={MonthDayOptions} />
+              </Form.Item>
+            )}
           </div>
 
           <Alert
@@ -505,7 +599,7 @@ export default function InspectionTasks() {
             showIcon
             style={{ marginBottom: 12 }}
             message="调度说明"
-            description="手动执行由你点击「执行」触发；选择日/周/月/季度/年后启用定时，系统将按周期自动巡检并生成记录。"
+            description="手动执行由你点击「执行」触发。启用定时后支持的频率：每隔 N 分钟 / 每隔 N 小时（指定第几分钟）/ 每天（指定时刻）/ 每周（指定星期 + 时刻）/ 每月（指定日期 + 时刻）/ 每季度 / 每年。调度器每 30 秒检查一次到期任务。"
           />
 
           <Divider style={{ margin: '8px 0 16px' }} />

@@ -16,11 +16,13 @@ import (
 // 调度频率
 const (
 	FreqManual  = "manual"  // 仅手动
-	FreqDay     = "day"     // 每日
-	FreqWeek    = "week"    // 每周
-	FreqMonth   = "month"   // 每月
-	FreqQuarter = "quarter" // 每季度
-	FreqYear    = "year"    // 每年
+	FreqMinute  = "minute"  // 每隔 N 分钟（IntervalMin）
+	FreqHour    = "hour"    // 每隔 N 小时的第 M 分钟（IntervalHour + RunMinute）
+	FreqDay     = "day"     // 每天 RunHour:RunMinute
+	FreqWeek    = "week"    // 每周 Weekday 的 RunHour:RunMinute
+	FreqMonth   = "month"   // 每月 MonthDay 的 RunHour:RunMinute（超长月取月末）
+	FreqQuarter = "quarter" // 每季度（沿用上次执行的时刻）
+	FreqYear    = "year"    // 每年（沿用上次执行的时刻）
 )
 
 // 采集来源
@@ -29,6 +31,50 @@ const (
 	SrcSSH       = "ssh"       // 直接 SSH 采集
 	SrcSimulated = "simulated" // 采集不可用时模拟（演示 / 离线兜底）
 )
+
+// clampScheduleInt 把调度参数夹到合法区间，避免前端越界值把「下次执行时间」算飞。
+func clampScheduleInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+// lastDayOfMonth 返回 y 年 m 月的天数（28/29/30/31）。
+// 取巧用「下个月的第 0 天」：time.Date 会把 day=0 归一化为上个月最后一天。
+func lastDayOfMonth(y int, m time.Month) int {
+	return time.Date(y, m+1, 0, 0, 0, 0, 0, time.UTC).Day()
+}
+
+// NormalizeSchedule 依据 Freq 规整调度参数：越界值夹到合法区间，
+// 并把与当前频率**无关**的参数清零 —— 否则「先配每周一 03:00、再改成每天」会残留
+// Weekday=1，下次执行时间仍按旧参数推算，而界面上完全看不出来。
+func NormalizeSchedule(t *InspectionTask) {
+	t.RunHour = clampScheduleInt(t.RunHour, 0, 23)
+	t.RunMinute = clampScheduleInt(t.RunMinute, 0, 59)
+	switch t.Freq {
+	case FreqMinute:
+		t.IntervalMin = clampScheduleInt(t.IntervalMin, 1, 1440)
+		t.IntervalHour, t.Weekday, t.MonthDay = 0, 0, 0
+	case FreqHour:
+		t.IntervalHour = clampScheduleInt(t.IntervalHour, 1, 72)
+		t.IntervalMin, t.Weekday, t.MonthDay, t.RunHour = 0, 0, 0, 0
+	case FreqDay:
+		t.IntervalMin, t.IntervalHour, t.Weekday, t.MonthDay = 0, 0, 0, 0
+	case FreqWeek:
+		t.Weekday = clampScheduleInt(t.Weekday, 1, 7)
+		t.IntervalMin, t.IntervalHour, t.MonthDay = 0, 0, 0
+	case FreqMonth:
+		t.MonthDay = clampScheduleInt(t.MonthDay, 1, 31)
+		t.IntervalMin, t.IntervalHour, t.Weekday = 0, 0, 0
+	default: // manual / quarter / year：不依赖具体时刻参数
+		t.IntervalMin, t.IntervalHour, t.Weekday, t.MonthDay = 0, 0, 0, 0
+		t.RunHour, t.RunMinute = 0, 0
+	}
+}
 
 // InspectionTask 巡检任务
 type InspectionTask struct {
@@ -39,6 +85,12 @@ type InspectionTask struct {
 	AssetIDs        datatypes.JSON `json:"assetIds"`                             // 选中资产 id 列表（scopeType=selected）
 	Metrics         datatypes.JSON `json:"metrics"`                              // 采集指标 key 列表（可自定义）
 	Freq            string         `gorm:"size:16;default:manual" json:"freq"`   // 调度频率
+	IntervalMin     int            `json:"intervalMin"`                          // Freq=minute：每隔 N 分钟（1-1440）
+	IntervalHour    int            `json:"intervalHour"`                         // Freq=hour：每隔 N 小时（1-72）
+	Weekday         int            `json:"weekday"`                              // Freq=week：1=周一 … 7=周日
+	MonthDay        int            `json:"monthDay"`                             // Freq=month：每月几号（1-31）
+	RunHour         int            `json:"runHour"`                              // Freq=day/week/month：执行时刻 时（0-23）
+	RunMinute       int            `json:"runMinute"`                            // Freq=hour/day/week/month：执行时刻 分（0-59）
 	RemoteNodeID    *uint          `json:"remoteNodeId"`                         // ansible 控制节点（可选）
 	SshUser         string         `gorm:"size:64" json:"sshUser"`               // 目标机 SSH 用户（默认取节点用户）
 	SshPass         string         `gorm:"size:255" json:"sshPass,omitempty"`    // 目标机 SSH 密码

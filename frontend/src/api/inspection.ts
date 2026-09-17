@@ -33,6 +33,18 @@ export interface InspectionTask {
   metrics?: string[] // 存储的是选中的采集分类键
   categories?: string[]
   freq: string
+  /** Freq=minute：每隔 N 分钟（1-1440） */
+  intervalMin?: number
+  /** Freq=hour：每隔 N 小时（1-72） */
+  intervalHour?: number
+  /** Freq=week：1=周一 … 7=周日 */
+  weekday?: number
+  /** Freq=month：每月几号（1-31） */
+  monthDay?: number
+  /** Freq=day/week/month：执行时刻「时」（0-23） */
+  runHour?: number
+  /** Freq=hour/day/week/month：执行时刻「分」（0-59） */
+  runMinute?: number
   remoteNodeId?: number | null
   remoteNodeName?: string
   sshUser?: string
@@ -46,12 +58,63 @@ export interface InspectionTask {
 
 export const FreqOptions = [
   { label: '手动执行', value: 'manual' },
-  { label: '每日', value: 'day' },
-  { label: '每周', value: 'week' },
-  { label: '每月', value: 'month' },
+  { label: '每隔 N 分钟', value: 'minute' },
+  { label: '每隔 N 小时', value: 'hour' },
+  { label: '每天（指定时刻）', value: 'day' },
+  { label: '每周（指定星期）', value: 'week' },
+  { label: '每月（指定日期）', value: 'month' },
   { label: '每季度', value: 'quarter' },
   { label: '每年', value: 'year' },
 ]
+
+/** 星期选项：与后端 Weekday 口径一致（1=周一 … 7=周日） */
+export const WeekdayOptions = [
+  { label: '周一', value: 1 },
+  { label: '周二', value: 2 },
+  { label: '周三', value: 3 },
+  { label: '周四', value: 4 },
+  { label: '周五', value: 5 },
+  { label: '周六', value: 6 },
+  { label: '周日', value: 7 },
+]
+
+/** 每月日期选项（1-31，当月天数不足时后端自动取月末） */
+export const MonthDayOptions = Array.from({ length: 31 }, (_, i) => ({
+  label: `${i + 1} 号`,
+  value: i + 1,
+}))
+
+const pad2 = (n?: number) => String(n ?? 0).padStart(2, '0')
+
+/**
+ * 把任务的调度配置渲染成人话 —— 任务列表、巡检大屏共用这一个口径。
+ * 后端 computeNextRun 按同一套字段推算下次执行时间，两边必须逐字对应。
+ */
+export function scheduleText(t: Partial<InspectionTask> | undefined | null): string {
+  if (!t) return '—'
+  switch (t.freq) {
+    case 'manual':
+      return '手动执行'
+    case 'minute':
+      return `每隔 ${t.intervalMin || 1} 分钟`
+    case 'hour':
+      return `每隔 ${t.intervalHour || 1} 小时（第 ${t.runMinute || 0} 分）`
+    case 'day':
+      return `每天 ${pad2(t.runHour)}:${pad2(t.runMinute)}`
+    case 'week':
+      return `每周${
+        WeekdayOptions.find((w) => w.value === t.weekday)?.label || '一'
+      } ${pad2(t.runHour)}:${pad2(t.runMinute)}`
+    case 'month':
+      return `每月 ${t.monthDay || 1} 号 ${pad2(t.runHour)}:${pad2(t.runMinute)}`
+    case 'quarter':
+      return '每季度'
+    case 'year':
+      return '每年'
+    default:
+      return '手动执行'
+  }
+}
 
 export const ScopeOptions = [
   { label: '全部资产', value: 'all' },

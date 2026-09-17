@@ -32,23 +32,86 @@ func taskCategories(task *InspectionTask) []string {
 	return cats
 }
 
-func computeNextRun(freq string, from time.Time) *time.Time {
-	var t time.Time
-	switch freq {
+// computeNextRun 依据任务的调度配置推算下一次执行时间。
+// 返回 nil 表示「没有定时」（手动执行 / 未知频率）。
+//
+// 各频率语义（前端 api/inspection.ts 的 scheduleText 必须与之一一对应）：
+//
+//	minute → 从 from 起每隔 IntervalMin 分钟
+//	hour   → 每隔 IntervalHour 小时，在该小时的第 RunMinute 分钟
+//	day    → 每天 RunHour:RunMinute
+//	week   → 每周 Weekday（1=周一 … 7=周日）的 RunHour:RunMinute
+//	month  → 每月 MonthDay 的 RunHour:RunMinute（当月无该日则取月末）
+//	quarter / year → 沿用旧行为（上次执行时刻 + 3 个月 / 1 年）
+func computeNextRun(t *InspectionTask, from time.Time) *time.Time {
+	loc := from.Location()
+	switch t.Freq {
+	case FreqMinute:
+		next := from.Add(time.Duration(clampScheduleInt(t.IntervalMin, 1, 1440)) * time.Minute)
+		return &next
+	case FreqHour:
+		n := clampScheduleInt(t.IntervalHour, 1, 72)
+		next := time.Date(from.Year(), from.Month(), from.Day(), from.Hour(),
+			clampScheduleInt(t.RunMinute, 0, 59), 0, 0, loc)
+		for !next.After(from) {
+			next = next.Add(time.Duration(n) * time.Hour)
+		}
+		return &next
 	case FreqDay:
-		t = from.AddDate(0, 0, 1)
+		next := time.Date(from.Year(), from.Month(), from.Day(),
+			clampScheduleInt(t.RunHour, 0, 23), clampScheduleInt(t.RunMinute, 0, 59), 0, 0, loc)
+		if !next.After(from) {
+			next = next.AddDate(0, 0, 1)
+		}
+		return &next
 	case FreqWeek:
-		t = from.AddDate(0, 0, 7)
+		// Go 的 Weekday()：0=周日 … 6=周六；界面用 1=周一 … 7=周日，这里做换算
+		today := int(from.Weekday())
+		if today == 0 {
+			today = 7
+		}
+		base := from.AddDate(0, 0, (clampScheduleInt(t.Weekday, 1, 7)-today+7)%7)
+		next := time.Date(base.Year(), base.Month(), base.Day(),
+			clampScheduleInt(t.RunHour, 0, 23), clampScheduleInt(t.RunMinute, 0, 59), 0, 0, loc)
+		if !next.After(from) {
+			next = next.AddDate(0, 0, 7)
+		}
+		return &next
 	case FreqMonth:
-		t = from.AddDate(0, 1, 0)
+		return nextMonthRun(from, clampScheduleInt(t.MonthDay, 1, 31),
+			clampScheduleInt(t.RunHour, 0, 23), clampScheduleInt(t.RunMinute, 0, 59))
 	case FreqQuarter:
-		t = from.AddDate(0, 3, 0)
+		next := from.AddDate(0, 3, 0)
+		return &next
 	case FreqYear:
-		t = from.AddDate(1, 0, 0)
+		next := from.AddDate(1, 0, 0)
+		return &next
 	default:
 		return nil
 	}
-	return &t
+}
+
+// nextMonthRun 返回 from 之后最近一次「monthDay 日 hh:mm」。
+// 当月天数不足时取月末（如 31 号在 2 月落到 28/29 号），与主流 cron 行为一致。
+func nextMonthRun(from time.Time, monthDay, hh, mm int) *time.Time {
+	loc := from.Location()
+	y, m, _ := from.Date()
+	for i := 0; i < 240; i++ { // 最多往前找 20 年，防御性上限
+		d := monthDay
+		if last := lastDayOfMonth(y, m); d > last {
+			d = last
+		}
+		cand := time.Date(y, m, d, hh, mm, 0, 0, loc)
+		if cand.After(from) {
+			return &cand
+		}
+		m++
+		if m > time.December {
+			m = time.January
+			y++
+		}
+	}
+	return nil
 }
 
 func resolveTaskAssets(task *InspectionTask) ([]Asset, error) {
@@ -319,8 +382,9 @@ func CreateInspectionTask(c *gin.Context) {
 	if body.SshPort == 0 {
 		body.SshPort = 65181
 	}
+	NormalizeSchedule(&body)
 	if body.ScheduleEnabled && body.Freq != FreqManual {
-		body.NextRunAt = computeNextRun(body.Freq, time.Now())
+		body.NextRunAt = computeNextRun(&body, time.Now())
 	}
 	uid := currentUserID(c)
 	body.CreatedBy = uid
@@ -354,7 +418,22 @@ func UpdateInspectionTask(c *gin.Context) {
 	if len(body.Metrics) > 0 {
 		task.Metrics = body.Metrics
 	}
+	// 先记录改动前的调度配置：只有它真的变了才重算下次执行时间，
+	// 否则改个任务名也会把「还有 5 分钟就该跑」的下次时间推到下一个周期。
+	oldFreq, oldEnabled := task.Freq, task.ScheduleEnabled
+	oldCfg := [6]int{task.IntervalMin, task.IntervalHour, task.Weekday, task.MonthDay, task.RunHour, task.RunMinute}
+
 	task.Freq = body.Freq
+	task.IntervalMin = body.IntervalMin
+	task.IntervalHour = body.IntervalHour
+	task.Weekday = body.Weekday
+	task.MonthDay = body.MonthDay
+	task.RunHour = body.RunHour
+	task.RunMinute = body.RunMinute
+	NormalizeSchedule(&task)
+	newCfg := [6]int{task.IntervalMin, task.IntervalHour, task.Weekday, task.MonthDay, task.RunHour, task.RunMinute}
+	scheduleChanged := oldFreq != task.Freq || oldEnabled != body.ScheduleEnabled || oldCfg != newCfg
+
 	task.RemoteNodeID = body.RemoteNodeID
 	task.SshUser = body.SshUser
 	if body.SshPass != "" {
@@ -365,8 +444,8 @@ func UpdateInspectionTask(c *gin.Context) {
 	}
 	task.ScheduleEnabled = body.ScheduleEnabled
 	if task.ScheduleEnabled && task.Freq != FreqManual {
-		if task.NextRunAt == nil {
-			task.NextRunAt = computeNextRun(task.Freq, time.Now())
+		if task.NextRunAt == nil || scheduleChanged {
+			task.NextRunAt = computeNextRun(&task, time.Now())
 		}
 	} else {
 		task.NextRunAt = nil
@@ -573,6 +652,33 @@ func InspectionDashboard(c *gin.Context) {
 	DB.Model(&InspectionTask{}).Count(&taskCount)
 	var recordCount int64
 	DB.Model(&InspectionRecord{}).Count(&recordCount)
+
+	// —— 调度概览（供大屏展示「下次巡检」）
+	// 只取启用定时的任务；前端用同一套参数渲染频率文案（见 api/inspection.ts 的 scheduleText）。
+	var scheduledTasks []InspectionTask
+	DB.Where("schedule_enabled = ? AND freq <> ?", true, FreqManual).
+		Order("next_run_at asc").Find(&scheduledTasks)
+	schedules := make([]gin.H, 0, len(scheduledTasks))
+	var nextRunAt *time.Time
+	for i := range scheduledTasks {
+		st := scheduledTasks[i]
+		if st.NextRunAt != nil && (nextRunAt == nil || st.NextRunAt.Before(*nextRunAt)) {
+			nr := *st.NextRunAt
+			nextRunAt = &nr
+		}
+		schedules = append(schedules, gin.H{
+			"id":           st.ID,
+			"name":         st.Name,
+			"freq":         st.Freq,
+			"intervalMin":  st.IntervalMin,
+			"intervalHour": st.IntervalHour,
+			"weekday":      st.Weekday,
+			"monthDay":     st.MonthDay,
+			"runHour":      st.RunHour,
+			"runMinute":    st.RunMinute,
+			"nextRunAt":    st.NextRunAt,
+		})
+	}
 
 	var latest InspectionRecord
 	DB.Order("run_at desc").First(&latest)
@@ -1332,6 +1438,9 @@ func InspectionDashboard(c *gin.Context) {
 			"successCount": latest.SuccessCount,
 			"failCount":    latest.FailCount,
 		},
+		// —— 调度（大屏「下次巡检」展示用）
+		"schedules": schedules,
+		"nextRunAt": nextRunAt,
 		// —— 兼容旧字段
 		"totalAssets":    totalAssets,
 		"taskCount":      taskCount,

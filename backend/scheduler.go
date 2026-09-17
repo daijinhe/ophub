@@ -32,7 +32,7 @@ func runDueTasks() {
 		DB.Save(&t)
 		go func(task InspectionTask) {
 			_, _ = executeInspection(&task)
-			next := computeNextRun(task.Freq, time.Now())
+			next := computeNextRun(&task, time.Now())
 			task.NextRunAt = next
 			DB.Save(&task)
 		}(t)

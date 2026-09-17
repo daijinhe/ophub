@@ -30,13 +30,12 @@ export const MW_TYPE_FIELDS: Record<string, { key: string; label: string }[]> = 
     { key: 'configPaths', label: '配置文件位置' },
   ],
   java: [{ key: 'version', label: 'JVM 版本' }],
+  // 2026-09-17 用户要求：去掉「配置文件位置 / 日志路径 / 存储位置」，改为登记 Redis 密码
   redis: [
     { key: 'version', label: '版本号' },
     { key: 'ports', label: '端口号' },
     { key: 'installPath', label: '安装位置' },
-    { key: 'configPaths', label: '配置文件位置' },
-    { key: 'logPaths', label: '日志路径' },
-    { key: 'storage', label: '存储位置' },
+    { key: 'password', label: '密码' },
   ],
   bws310: [
     { key: 'version', label: '版本号' },
@@ -468,6 +467,22 @@ export default function MwCaptureItemCard({ item, editable, onChange, onRemove }
                 : '未运行，未采集端口'}
             </Text>
           ),
+        })
+        break
+      case 'password':
+        // 密码是敏感值：只读态只显示掩码（不提供双击复制明文），仅进入编辑态才可见/可改。
+        rows.push({
+          label: f.label,
+          node: editable ? (
+            <Input.Password
+              size="small"
+              value={item.password || ''}
+              placeholder="Redis 访问密码"
+              onChange={(e) => emit({ password: e.target.value })}
+            />
+          ) : item.password ? (
+            <Text style={{ fontFamily: 'ui-monospace, monospace' }}>••••••</Text>
+          ) : null,
         })
         break
       case 'installPath':

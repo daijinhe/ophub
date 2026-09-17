@@ -51,6 +51,8 @@ export interface MwCaptureItem {
   certs?: string[]
   jars?: MwJavaApp[]
   storage?: MwKv[]
+  /** 访问密码（2026-09-17 新增，当前仅 redis 使用，可就地编辑） */
+  password?: string
   notes?: string[]
 }
 

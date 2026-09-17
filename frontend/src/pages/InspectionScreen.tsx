@@ -16,7 +16,7 @@ import {
   LogoutOutlined,
 } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
-import { getDashboard } from '../api/inspection'
+import { getDashboard, scheduleText } from '../api/inspection'
 import { openCenteredWindow } from '../utils/window'
 import { useAuth } from '../store/AuthContext'
 import { firstAccessiblePath } from '../utils/perms'
@@ -54,8 +54,24 @@ interface Host {
   alertWarn: number
   disks: { mount: string; device: string; fstype: string; role: string; usage: number; total_gb: number; used_gb: number }[]
 }
+// 调度概览（后端 /inspection/dashboard 的 schedules 字段，按 nextRunAt 升序）
+interface ScheduleBrief {
+  id: number
+  name: string
+  freq: string
+  intervalMin?: number
+  intervalHour?: number
+  weekday?: number
+  monthDay?: number
+  runHour?: number
+  runMinute?: number
+  nextRunAt?: string
+}
 interface Dash {
   generatedAt?: string
+  // 启用了定时的任务列表与其中最早的一次执行时间（无启用任务时为 undefined / 空数组）
+  schedules?: ScheduleBrief[]
+  nextRunAt?: string | null
   // assetTotal = 按当前筛选命中的 CMDB 资产数（分母）；covered = 其中最近一次巡检采到的台数；
   // notCollected = assetTotal - covered（未采集）。afterFilter 为旧字段，等价 covered，仅兼容。
   scope?: { zone: string; env: string; arch: string; totalAssets: number; assetTotal?: number; covered: number; afterFilter: number; notCollected?: number }
@@ -943,6 +959,18 @@ export default function InspectionScreen() {
             <>
               · 生成时间：
               <span style={{ color: '#94a3b8', margin: '0 4px' }}>{fmtTime(data.generatedAt)}</span>
+            </>
+          )}
+          {/* 调度概览：大屏要能看出「下一次巡检什么时候跑、按什么频率跑」，
+              否则配了每隔 N 分钟 / 每天几点的任务在投屏上完全无感 */}
+          {data.schedules && data.schedules.length > 0 && (
+            <>
+              · 下次巡检：
+              <span style={{ color: '#94a3b8', margin: '0 4px' }}>{fmtDateTime(data.nextRunAt || undefined)}</span>
+              <span style={{ color: '#64748b', margin: '0 4px' }}>
+                （{scheduleText(data.schedules[0])}
+                {data.schedules.length > 1 ? ` 等 ${data.schedules.length} 个定时任务` : ''}）
+              </span>
             </>
           )}
         </div>

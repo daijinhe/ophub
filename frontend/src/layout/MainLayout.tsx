@@ -142,10 +142,6 @@ export default function MainLayout() {
       icon: <ClusterOutlined />,
       label: '监控巡检',
       children: [
-        { key: '/inspection/tasks', icon: <ControlOutlined />, label: '智能巡检', perm: 'inspection:view' },
-        { key: '/inspection/records', icon: <FileTextOutlined />, label: '巡检报表', perm: 'inspection:view' },
-        // 告警规则属配置动作 → 用 inspection:manage（与任务增删改同权限）
-        { key: '/inspection/alert-rules', icon: <AlertOutlined />, label: '告警规则', perm: 'inspection:manage' },
         // 用原生 <a target="_blank"> 在浏览器新标签页打开：
         // 保留地址栏与工具栏，可 F11 全屏 / 拖到副屏投屏，也不会被弹窗拦截器拦截
         {
@@ -164,6 +160,10 @@ export default function MainLayout() {
           // 大屏是共用入口：老角色（inspection:view）与新角色（inspection:screen）都能看到
           perms: ['inspection:screen', 'inspection:view'],
         },
+        { key: '/inspection/tasks', icon: <ControlOutlined />, label: '智能巡检', perm: 'inspection:view' },
+        { key: '/inspection/records', icon: <FileTextOutlined />, label: '巡检报表', perm: 'inspection:view' },
+        // 告警规则属配置动作 → 用 inspection:manage（与任务增删改同权限）
+        { key: '/inspection/alert-rules', icon: <AlertOutlined />, label: '告警规则', perm: 'inspection:manage' },
       ],
     },
 

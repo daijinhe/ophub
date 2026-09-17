@@ -99,35 +99,112 @@ type PermissionDef struct {
 
 // PermissionCatalog 权限目录（前端角色编辑使用）
 var PermissionCatalog = []PermissionDef{
+	// ===== 概览 =====
 	{Code: "dashboard:view", Name: "查看概览", Group: "概览"},
+
+	// ===== 用户管理 =====
 	{Code: "user:view", Name: "查看用户", Group: "用户管理"},
 	{Code: "user:create", Name: "新建用户", Group: "用户管理"},
 	{Code: "user:update", Name: "编辑用户", Group: "用户管理"},
 	{Code: "user:delete", Name: "删除用户", Group: "用户管理"},
+
+	// ===== 角色权限 =====
 	{Code: "role:view", Name: "查看角色", Group: "角色权限"},
 	{Code: "role:create", Name: "新建角色", Group: "角色权限"},
 	{Code: "role:update", Name: "编辑角色", Group: "角色权限"},
 	{Code: "role:delete", Name: "删除角色", Group: "角色权限"},
+
+	// ===== CMDB 资产 =====
 	{Code: "cmdb:view", Name: "查看资产", Group: "CMDB资产"},
 	{Code: "cmdb:create", Name: "新建资产", Group: "CMDB资产"},
 	{Code: "cmdb:update", Name: "编辑资产", Group: "CMDB资产"},
 	{Code: "cmdb:delete", Name: "删除资产", Group: "CMDB资产"},
 	{Code: "cmdb:import", Name: "导入资产", Group: "CMDB资产"},
 	{Code: "cmdb:export", Name: "导出资产", Group: "CMDB资产"},
-	{Code: "category:manage", Name: "管理分类", Group: "分类管理"},
-	{Code: "ansible:manage", Name: "Ansible 主机管理", Group: "自动化运维"},
-	{Code: "deploy:manage", Name: "应用中间件安装", Group: "自动化运维"},
+
+	// ===== 分类管理 =====
+	{Code: "category:manage", Name: "管理分类（全部操作）", Group: "分类管理"},
+	{Code: "category:view", Name: "查看分类", Group: "分类管理"},
+	{Code: "category:create", Name: "新建分类", Group: "分类管理"},
+	{Code: "category:update", Name: "编辑分类", Group: "分类管理"},
+	{Code: "category:delete", Name: "删除分类", Group: "分类管理"},
+
+	// ===== Ansible 主机清单 =====
+	{Code: "ansible:manage", Name: "Ansible 管理（全部操作）", Group: "Ansible主机清单"},
+	{Code: "ansible:view", Name: "查看主机清单/远程节点", Group: "Ansible主机清单"},
+	{Code: "ansible:create", Name: "新增主机/远程节点", Group: "Ansible主机清单"},
+	{Code: "ansible:update", Name: "修改主机/远程节点", Group: "Ansible主机清单"},
+	{Code: "ansible:delete", Name: "删除远程节点", Group: "Ansible主机清单"},
+	{Code: "ansible:exec", Name: "连通性测试/执行远程命令", Group: "Ansible主机清单"},
+
+	// ===== 中间件部署 =====
+	{Code: "deploy:manage", Name: "部署管理（全部操作）", Group: "中间件部署"},
+	{Code: "deploy:view", Name: "查看部署目录与任务", Group: "中间件部署"},
+	{Code: "deploy:create", Name: "新增部署对象", Group: "中间件部署"},
+	{Code: "deploy:update", Name: "修改部署对象", Group: "中间件部署"},
+	{Code: "deploy:delete", Name: "删除部署对象", Group: "中间件部署"},
+	{Code: "deploy:exec", Name: "执行部署/重跑任务", Group: "中间件部署"},
+
+	// ===== 部署证书 =====
+	{Code: "cert:view", Name: "查看证书", Group: "部署证书"},
+	{Code: "cert:create", Name: "新增/上传证书", Group: "部署证书"},
+	{Code: "cert:update", Name: "编辑证书", Group: "部署证书"},
+	{Code: "cert:delete", Name: "删除证书", Group: "部署证书"},
+
+	// ===== 系统初始化 =====
+	{Code: "sysinit:view", Name: "查看初始化任务", Group: "系统初始化"},
+	{Code: "sysinit:exec", Name: "执行系统初始化", Group: "系统初始化"},
+
+	// ===== 系统初始化目录 =====
+	{Code: "sysinit:catalog:view", Name: "查看初始化目录", Group: "系统初始化目录"},
+	{Code: "sysinit:catalog:create", Name: "新增目录项", Group: "系统初始化目录"},
+	{Code: "sysinit:catalog:update", Name: "编辑目录项", Group: "系统初始化目录"},
+	{Code: "sysinit:catalog:delete", Name: "删除目录项", Group: "系统初始化目录"},
+
+	// ===== 中间件类型模板 =====
+	{Code: "mwtemplate:view", Name: "查看中间件模板", Group: "中间件模板"},
+	{Code: "mwtemplate:manage", Name: "管理中间件模板", Group: "中间件模板"},
+
+	// ===== 中间件运维 =====
 	{Code: "mwops:view", Name: "查看中间件运维", Group: "中间件运维"},
-	{Code: "mwops:manage", Name: "管理中间件（启停/配置）", Group: "中间件运维"},
-	{Code: "mwcapture:view", Name: "查看中间件捕捉", Group: "中间件运维"},
-	{Code: "mwcapture:manage", Name: "执行中间件捕捉", Group: "中间件运维"},
-	{Code: "crontab:view", Name: "查看定时任务", Group: "自动化运维"},
-	{Code: "crontab:manage", Name: "管理定时任务", Group: "自动化运维"},
-	{Code: "config:view", Name: "查看配置管理", Group: "配置管理"},
+	{Code: "mwops:manage", Name: "管理中间件实例/配置", Group: "中间件运维"},
+	{Code: "mwops:exec", Name: "启停/重启/重载/杀进程", Group: "中间件运维"},
+
+	// ===== 中间件捕捉 =====
+	{Code: "mwcapture:view", Name: "查看中间件捕捉", Group: "中间件捕捉"},
+	{Code: "mwcapture:manage", Name: "执行/修改/删除捕捉结果", Group: "中间件捕捉"},
+
+	// ===== 配置管理（Nginx）=====
+	{Code: "config:view", Name: "查看配置文件", Group: "配置管理"},
 	{Code: "config:manage", Name: "管理配置文件", Group: "配置管理"},
-	{Code: "inspection:view", Name: "查看巡检", Group: "智能巡检"},
-	{Code: "inspection:screen", Name: "查看巡检大屏（只看大屏）", Group: "智能巡检"},
-	{Code: "inspection:manage", Name: "管理巡检任务与告警规则", Group: "智能巡检"},
+	{Code: "config:sync", Name: "扫描/拉取/同步配置", Group: "配置管理"},
+
+	// ===== 定时任务 =====
+	{Code: "crontab:view", Name: "查看定时任务", Group: "定时任务"},
+	{Code: "crontab:manage", Name: "管理定时任务", Group: "定时任务"},
+
+	// ===== 智能巡检 · 任务 =====
+	{Code: "inspection:view", Name: "查看巡检（全部）", Group: "智能巡检"},
+	{Code: "inspection:manage", Name: "管理巡检（全部操作）", Group: "智能巡检"},
+	{Code: "inspection:task:view", Name: "查看巡检任务", Group: "智能巡检"},
+	{Code: "inspection:task:create", Name: "新建巡检任务", Group: "智能巡检"},
+	{Code: "inspection:task:update", Name: "编辑巡检任务", Group: "智能巡检"},
+	{Code: "inspection:task:delete", Name: "删除巡检任务", Group: "智能巡检"},
+	{Code: "inspection:task:run", Name: "执行巡检任务", Group: "智能巡检"},
+
+	// ===== 巡检报表 =====
+	{Code: "inspection:record:view", Name: "查看巡检报表", Group: "巡检报表"},
+	{Code: "inspection:record:delete", Name: "删除巡检记录", Group: "巡检报表"},
+	{Code: "inspection:record:export", Name: "导出巡检报表", Group: "巡检报表"},
+
+	// ===== 告警规则 =====
+	{Code: "inspection:alert:view", Name: "查看告警规则", Group: "告警规则"},
+	{Code: "inspection:alert:create", Name: "新建告警规则", Group: "告警规则"},
+	{Code: "inspection:alert:update", Name: "编辑告警规则", Group: "告警规则"},
+	{Code: "inspection:alert:delete", Name: "删除告警规则", Group: "告警规则"},
+
+	// ===== 巡检大屏 =====
+	{Code: "inspection:screen", Name: "查看巡检大屏（只看大屏）", Group: "巡检大屏"},
 }
 
 // AllPermissionCodes 全部权限码

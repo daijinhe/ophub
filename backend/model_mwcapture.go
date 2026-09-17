@@ -90,8 +90,9 @@ func (c MwCapture) TypeList() []string {
 // MwCaptureItem 一类中间件的捕捉结果。
 //
 // 字段按需求逐项落位：nginx / 宝兰德bws310 用 Version/Ports/InstallPath/ConfigPaths/
-// LogPaths/CodePaths/Certs；php 只用 InstallPath/ConfigPaths；redis 用 Version/Ports/
-// InstallPath/ConfigPaths/LogPaths/Storage；java 用 Version/Jars。
+// LogPaths/CodePaths/Certs；php 只用 InstallPath/ConfigPaths；java 用 Version/Jars。
+// redis 用 Version/Ports/InstallPath/Password —— 2026-09-17 用户要求去掉「配置文件位置 /
+// 日志路径 / 存储位置」，改为登记 Redis 访问密码。
 // 没有的字段留空，前端不渲染空行。
 type MwCaptureItem struct {
 	Type        string       `json:"type"`
@@ -106,6 +107,7 @@ type MwCaptureItem struct {
 	Certs       []string     `json:"certs,omitempty"`
 	Jars        []MwJavaApp  `json:"jars,omitempty"`
 	Storage     []MwKv       `json:"storage,omitempty"`
+	Password    string       `json:"password,omitempty"` // 访问密码（2026-09-17 新增，当前仅 redis 使用）
 	Notes       []string     `json:"notes,omitempty"`
 }
 
