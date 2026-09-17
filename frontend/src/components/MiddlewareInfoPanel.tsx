@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { App, Alert, Button, Select, Space, Tag, Typography } from 'antd'
+import { App, Alert, Button, Select, Space, Tag, Tooltip, Typography } from 'antd'
 import { DeleteOutlined, PlusOutlined, SaveOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import {
   getMwCapture,
@@ -25,6 +25,19 @@ import MwCaptureItemCard, { EditableKv, mwStatusColor } from './MwCaptureItemCar
 // ---------------------------------------------------------------------------
 
 const { Text } = Typography
+
+/**
+ * 从后端 rec.Error 里抽出「详细原因」段。
+ *
+ * 后端约定：探测失败原因用 "【详细原因】…" 作前缀。
+ * 没有就原样返回空串。
+ */
+function extractPrivHint(err?: string): string {
+  if (!err) return ''
+  const idx = err.indexOf('【详细原因】')
+  if (idx < 0) return ''
+  return err.slice(idx + '【详细原因】'.length).trim()
+}
 
 function blankItem(type: string): MwCaptureItem {
   const t = MW_CAPTURE_TYPES.find((x) => x.type === type)
@@ -234,7 +247,16 @@ export default function MiddlewareInfoPanel({
                   已提权
                 </Tag>
               ) : (
-                <Tag style={{ marginInlineEnd: 0 }}>未提权（部分信息可能读不到）</Tag>
+                <Tooltip
+                  title={
+                    extractPrivHint(detail.error) ||
+                    '未取得 root 权限，nginx/redis 等系统级中间件的路径与配置无法读取'
+                  }
+                >
+                  <Tag color="orange" style={{ marginInlineEnd: 0, cursor: 'help' }}>
+                    未提权
+                  </Tag>
+                </Tooltip>
               )}
             </>
           ) : (

@@ -135,7 +135,7 @@ func mwOpsEnsurePriv(t *crontabTarget) bool {
 		return true
 	}
 	// sudo（实测密码源；resolveSudoPass 内部有二级缓存）
-	res, err := resolveSudoPass(t.Runner, t.Client.Host, t.Client.Port, t.SSHUser, t.Client.Password, run, t.Client.BecomePass)
+	res, hint, err := resolveSudoPass(t.Runner, t.Client.Host, t.Client.Port, t.SSHUser, t.Client.Password, run, t.Client.BecomePass)
 	if err == nil {
 		t.Client.BecomePass = res.Pass
 		t.resolvedPrefix = "" // 让 privPrefix 按实测结果重新拼（可能变成免密 = 空）
@@ -153,6 +153,9 @@ func mwOpsEnsurePriv(t *crontabTarget) bool {
 		crontabPrivRemember(t, t.plan)
 		return true
 	}
+	// 失败：把具体分类原因写进 t.PrivHint，下游 mwCaptureAsset / privError
+	// 会拼到错误消息里（不在 sudoers / 要 tty / 密码错…），下次排查免登录。
+	t.PrivHint = hint
 	return false
 }
 

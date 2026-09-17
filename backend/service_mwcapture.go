@@ -1633,11 +1633,19 @@ func mwCaptureAsset(a *Asset, by string) *MwCapture {
 		rec.Status = MwCaptureStatusNone
 		if !privileged {
 			rec.Error = "未发现目标中间件；且未取得 root 权限，结果可能不完整"
+			if hint := strings.TrimSpace(t.PrivHint); hint != "" {
+				rec.Error += "【详细原因】" + hint
+			}
 		}
 	case privileged:
 		rec.Status = MwCaptureStatusOK
 	default:
 		rec.Status = MwCaptureStatusPartial
+		if hint := strings.TrimSpace(t.PrivHint); hint != "" {
+			rec.Error = "未取得 root 权限，部分信息可能不完整【详细原因】" + hint
+		} else {
+			rec.Error = "未取得 root 权限，部分信息可能不完整"
+		}
 	}
 	return rec
 }

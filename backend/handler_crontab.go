@@ -135,12 +135,20 @@ type crontabTarget struct {
 
 	// plan 当前生效的通道（由 privPlans 逐条尝试后写入，写回也复用它）
 	plan crontabPrivPlan
+
+	// PrivHint 提权失败的诊断原因（不在 sudoers / 要 tty / 密码错 等）。
+	// 由 resolveSudoPass 失败时填入，mwCaptureAsset / privError 会读出来拼到错误里。
+	// 与 PrivError 同生命周期——重试探测时清空。
+	PrivHint string
 }
 
 // applyPlan 把一条通道设为当前生效通道（影响本目标后续所有 exec / runScript）
 func (t *crontabTarget) applyPlan(p crontabPrivPlan) {
 	t.plan = p
 	t.resolvedPrefix = p.Prefix
+	// 通道生效即代表本目标的提权可用——清掉上一次探测失败时残留的诊断原因，
+	// 避免下一次操作还显示旧的「不在 sudoers」之类的提示
+	t.PrivHint = ""
 }
 
 // resetPlan 清掉当前通道（回到「未解析」状态，exec/runScript 按 SSH 用户直连）
@@ -582,6 +590,11 @@ func privError(t *crontabTarget, denied bool) *crontabPrivError {
 		t.RunUser, crontabCmdName, tried, t.SSHUser, t.SSHUser, t.SSHUser, t.SSHUser)
 	if denied {
 		msg += "。目标机已明确拒绝该用户的 sudo 请求（不在 sudoers / 无 tty）"
+	}
+	// 探测脚本若抓到具体 stderr（不在 sudoers / 要 tty / 密码错…），拼到尾巴
+	// 比默认文案有用。
+	if hint := strings.TrimSpace(t.PrivHint); hint != "" {
+		msg += fmt.Sprintf("【详细原因】%s", hint)
 	}
 	return &crontabPrivError{message: msg, denied: denied}
 }
