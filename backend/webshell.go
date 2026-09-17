@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -31,38 +32,80 @@ var wsUpgrader = websocket.Upgrader{
 
 // wsCheckOrigin 校验 WebSocket upgrade 的 Origin 头。
 //
-// 内网（默认）：仅允许与 ALLOW_WS_ORIGINS（逗号分隔）匹配的源；
-// ALLOW_WS_ORIGINS 为空 + ALLOW_WS_ANY_ORIGIN=true → 全放行（仅推荐调试）。
-// 同源请求浏览器不带 Origin（返回 ""），我们应当允许；
-// 跨域攻击会带 e.g. https://evil.com/，需要主动拒绝。
+// 判定顺序（任一命中即放行）：
+//  1. 无 Origin：非浏览器客户端（CLI / curl / 探活脚本）不带 Origin → 放行；
+//  2. ALLOW_WS_ANY_ORIGIN=true：显式全放行（仅调试用）；
+//  3. **同源**：Origin 的 host[:port] 与请求 Host 一致 → 放行。
+//     平台会被内网不同 IP / 域名访问（10.x/192.168.x/主机名），逐条写死白名单不现实，
+//     「同源」才是贴合实际且安全的默认策略。
+//  4. ALLOW_WS_ORIGINS 显式白名单（逗号分隔）匹配 → 放行；列表里写 `*` 表示全放行。
+//
+// ⚠️ 历史坑（v1.7.0 引入 403）：当时 getWsOrigins() 在 ALLOW_WS_ORIGINS 为空时会
+// 回落到 CORS 的 ALLOW_ORIGINS（`.env` 默认 `*`），而这里的比较是**字面量**比较，
+// `*` 与 `http://localhost:8088` 永不相等 → 浏览器（升级 WS 必带 Origin）100% 被拒。
+// 现在：白名单里的 `*` 按下标通配处理，且不再从 CORS 配置回落（见 getWsOrigins）。
 func wsCheckOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		// 非浏览器客户端（CLI、curl、监测）一般不带 Origin；允许。
 		return true
 	}
-	if v := strings.ToLower(strings.TrimSpace(os.Getenv("ALLOW_WS_ANY_ORIGIN"))); v == "true" {
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("ALLOW_WS_ANY_ORIGIN"))); v == "true" || v == "1" || v == "yes" {
 		return true
 	}
-	allowed := strings.Split(strings.TrimSpace(getWsOrigins()), ",")
-	for _, a := range allowed {
+	// 同源放行（协议不敏感：兼容 https 反代与 http 直连的混用）。
+	if sameOrigin(origin, r.Host) {
+		return true
+	}
+	allowList := strings.TrimSpace(getWsOrigins())
+	for _, a := range strings.Split(allowList, ",") {
+		a = strings.TrimSpace(a)
 		if a == "" {
 			continue
+		}
+		if a == "*" {
+			// 显式通配：仅当运维明确在 ALLOW_WS_ORIGINS 里写 `*` 才生效。
+			log.Println("[ws] ALLOW_WS_ORIGINS 含 `*`：WebSocket 已全放行（仅建议调试期使用）")
+			return true
 		}
 		if strings.EqualFold(strings.TrimRight(a, "/"), strings.TrimRight(origin, "/")) {
 			return true
 		}
 	}
+	log.Printf("[ws] 拒绝跨域 WebSocket：Origin=%q Host=%q ALLOW_WS_ORIGINS=%q（同源或加入白名单后重试）", origin, r.Host, allowList)
 	return false
 }
 
-func getWsOrigins() string {
-	// 优先用 ALLOW_WS_ORIGINS；没有时退回到 CORS 配置的 origins，避免出现两套不一致。
-	v := strings.TrimSpace(os.Getenv("ALLOW_WS_ORIGINS"))
-	if v != "" {
-		return v
+// sameOrigin 判断 Origin 头的 host[:port] 是否与请求的 Host 一致。
+//
+// 两种形态都接受：
+//   - Host 带端口（nginx 配 `proxy_set_header Host $http_host`）→ 精确比 host:port；
+//   - Host 不带端口（nginx 用 `$host`，端口被吃掉）→ 只比 hostname（容错，否则必然误判跨域）。
+//
+// 说明：容错分支只放宽了「端口」，域名仍必须一致，且本端点还要求一次性 ticket，
+// 因此不会让 evil.com 之类的跨站页面拿到终端。
+func sameOrigin(origin, host string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" || host == "" {
+		return false
 	}
-	return Cfg.AllowOrigins
+	if strings.EqualFold(u.Host, host) {
+		return true
+	}
+	// Host 无端口 → 退化为 hostname 比较。
+	if !strings.Contains(host, ":") {
+		return strings.EqualFold(u.Hostname(), host)
+	}
+	return false
+}
+
+// getWsOrigins 返回 WebSocket 白名单。
+//
+// ⚠️ 刻意**不**回落 CORS 的 ALLOW_ORIGINS：CORS 里的 `*` 是为普通 AJAX 放行，
+// 而 WebSocket 一旦通配就等于放弃跨站劫持防护（v1.7.0 引入白名单的初衷）。
+// 空字符串 = 只允许同源访问，跨域需求请显式配置 ALLOW_WS_ORIGINS。
+func getWsOrigins() string {
+	return strings.TrimSpace(os.Getenv("ALLOW_WS_ORIGINS"))
 }
 
 // publicRegistrationAllowed 公开注册开关。

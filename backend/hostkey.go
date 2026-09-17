@@ -182,17 +182,25 @@ func knownHostsFileForLog() string {
 }
 
 // canonicalHost 把 client 传进来的 hostname + remote addr 归一化成 host:port 形式。
-// SSH 协议只会传「用户的目标地址」（域名/IP），port 始终走 dial 时的 port。
-// 我们记录与比对都用「hostname:port」键（IP 形式优先于反向解析）。
+//
+// ⚠️ 历史坑：原实现先用 remote.String() 拆出纯 IP 再覆盖 hostname，而
+// remote 是 *net.TCPAddr 会带上端口 —— 但覆盖时只取了 host 部分，接着对**裸 IP**
+// 做 SplitHostPort 必然失败，最终一律落到 `"+":0"`，于是同一 IP 的**所有端口共用一条记录**。
+// 后果：内网常见的「跳板机端口映射」（10.x:65181 / 10.x:65182 指向不同虚拟机）会被判成
+// 「同一 host 的公钥变了」→ 直接拒绝连接，表现为终端连不上、且日志说疑似 MITM。
+//
+// 正确做法：ssh.Dial 传入的 hostname 本身就是「host:port」原样地址，端口最可靠，优先用它。
 func canonicalHost(hostname string, remote net.Addr) string {
-	host := hostname
-	if h, _, err := net.SplitHostPort(remote.String()); err == nil && h != "" {
-		host = h
-	}
-	// 再尝试从 hostname 里拆 port（防止 hostname 已含 ":port"）
-	if h, p, err := net.SplitHostPort(host); err == nil {
+	if h, p, err := net.SplitHostPort(hostname); err == nil && h != "" {
 		return h + ":" + p
 	}
-	// 没 port 时给一个 0 站位，避免不同端口串了
-	return host + ":0"
+	if remote != nil {
+		if h, p, err := net.SplitHostPort(remote.String()); err == nil && h != "" {
+			return h + ":" + p
+		}
+	}
+	if hostname != "" {
+		return hostname + ":0"
+	}
+	return "unknown:0"
 }

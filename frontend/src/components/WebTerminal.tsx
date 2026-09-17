@@ -201,14 +201,19 @@ class VimTerminalQueryAddon implements ITerminalAddon {
 
 // fetchWsTicket 调 /api/ws/ssh/ticket 拿一次性 ticket（带在 Authorization / cookie 上）。
 // 服务端 401 / 403 时返回 null → 上层切回 legacy ?token= 形式。
+//
+// ⚠️ 响应体是平台统一包装 {code,msg,data:{ticket,expiresIn}}，
+// ticket 在 **data 里**。v1.7.1 曾误读顶层 j.ticket → 恒为 null →
+// 静默降级回 ?token=（把 JWT 塞进 URL，安全修复失效，且日志里能看到）。
+// 这里同时兼容顶层与 data 两种形态。
 async function fetchWsTicket(authToken: string): Promise<string | null> {
   const headers: Record<string, string> = {}
   if (authToken) headers.Authorization = `Bearer ${authToken}`
   try {
     const r = await fetch('/api/ws/ssh/ticket', { method: 'POST', credentials: 'include', headers })
     if (!r.ok) return null
-    const j = (await r.json()) as { ticket?: string }
-    return j.ticket || null
+    const j = (await r.json()) as { ticket?: string; data?: { ticket?: string } }
+    return j?.data?.ticket || j?.ticket || null
   } catch {
     return null
   }
@@ -314,9 +319,19 @@ export default function WebTerminal({ open, asset, onClose, standalone = false }
       ;(async () => {
         try {
           const useTicket = await fetchWsTicket(wsToken)
-          const wsUrl = useTicket
-            ? `${proto}${location.host}/api/ws/ssh?assetId=${asset.id}&ticket=${encodeURIComponent(useTicket)}`
-            : `${proto}${location.host}/api/ws/ssh?assetId=${asset.id}&token=${encodeURIComponent(wsToken)}`
+          let wsUrl: string
+          if (useTicket) {
+            wsUrl = `${proto}${location.host}/api/ws/ssh?assetId=${asset.id}&ticket=${encodeURIComponent(useTicket)}`
+          } else if (wsToken) {
+            // 兼容老后端（ALLOW_WS_TOKEN_URL=true）：ticket 拿不到时退回 URL token。
+            // 注意这条路径会把 JWT 写进 nginx access log，仅作降级兜底。
+            console.warn('[WebTerminal] 一次性 ticket 获取失败，降级使用 ?token=')
+            wsUrl = `${proto}${location.host}/api/ws/ssh?assetId=${asset.id}&token=${encodeURIComponent(wsToken)}`
+          } else {
+            term.writeln('')
+            term.writeln('\x1b[31m[鉴权失败] 无法获取 WebSocket ticket，且本地无登录令牌，请重新登录后再试\x1b[0m')
+            return
+          }
           ws = new WebSocket(wsUrl)
           wsRef.current = ws
           queryAddon.setWebSocket(ws)
