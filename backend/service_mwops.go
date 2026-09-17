@@ -139,8 +139,8 @@ func mwOpsEnsurePriv(t *crontabTarget) bool {
 	if err == nil {
 		t.Client.BecomePass = res.Pass
 		t.resolvedPrefix = "" // 让 privPrefix 按实测结果重新拼（可能变成免密 = 空）
-		if pre := mwOpsPrivPrefix(t); pre != "" {
-			t.applyPlan(crontabPrivPlan{Kind: crontabChanSudo, Prefix: pre})
+		if pre1 := mwOpsPrivPrefix(t); pre1 != "" {
+			t.applyPlan(crontabPrivPlan{Kind: crontabChanSudo, Prefix: pre1})
 			crontabPrivRemember(t, t.plan)
 			return true
 		}

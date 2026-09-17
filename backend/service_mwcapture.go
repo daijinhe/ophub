@@ -1178,8 +1178,14 @@ func mwJavaItem(secs map[string]string, procs []mwProc, portsByPid map[int][]str
 		}
 		if jar != "" {
 			app.Jar = jar
-			app.Name = jar[strings.LastIndex(jar, "/")+1:]
-			app.CodePath = jar[:strings.LastIndex(jar, "/")]
+			// 路径里若没有 '/'（如裸文件名 "xxx.jar"），Name 取整个文件名、CodePath 留空，
+			// 避免 jar[:strings.LastIndex(jar, "/")] 在 LastIndex 返回 -1 时 slice 越界 panic
+			if idx := strings.LastIndex(jar, "/"); idx >= 0 {
+				app.Name = jar[idx+1:]
+				app.CodePath = jar[:idx]
+			} else {
+				app.Name = jar
+			}
 		} else if m := mwCatalinaBaseRe.FindStringSubmatch(p.Args); len(m) > 1 {
 			app.CodePath = m[1]
 			app.Name = "Tomcat（Bootstrap 启动）"

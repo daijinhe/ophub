@@ -68,6 +68,13 @@ func sudoPassKey(host string, port int, user, pass, runUser, adminPass string) s
 //
 // 多行输出由 platform 解析：第一个 __OPHUB_SUDO__= 行定结果；其后的
 // __OPHUB_SUDO_ERR__ 行提供每个失败分支的具体原因用于排错。
+//
+// 设计要点（v1.6.7 修订）：
+//   - 每个分支的退出码通过 `out=$(...); rc=$?` 取得；awk 用 `-v rc=$rc` 显式接收
+//     shell 的真实退出码，而不是依赖 awk 内部未定义变量当 0（曾因此让「实际失败」
+//     分支误传 rc=0 给平台侧分类逻辑，留下诊断隐患）。
+//   - 失败分支的 `__OPHUB_SUDO_ERR__=` 行**始终**输出（不受 if/elif 短路影响），
+//     保证 UI 的「详细原因」不会因为某个分支提前 exit 而缺失。
 func sudoProbeScript(runUser, adminPass, sshPass string) string {
 	q := shq(runUser)
 	// sanitize：去 ANSI 着色、控制字符，把多行压成一行再限长
@@ -77,20 +84,20 @@ func sudoProbeScript(runUser, adminPass, sshPass string) string {
 		// Phase 1: 免密 sudo
 		`out=$(sudo -n -u ` + q + ` true 2>&1); rc=$?`,
 		`if [ "$rc" = 0 ]; then echo __OPHUB_SUDO__=nopass; exit 0; fi`,
-		`printf "%s" "$out" | ` + sanitize + `; printf "\\n"`,
+		`printf "%s" "$out" | ` + sanitize + ` | awk -v rc=$rc '{printf "__OPHUB_SUDO_ERR__=nopass:%d:%s\\n", rc, $0}'`,
 	}
 	if strings.TrimSpace(adminPass) != "" {
 		parts = append(parts,
 			`out=$(echo `+shq(adminPass)+` | sudo -S -p '' -u `+q+` true 2>&1); rc=$?`,
 			`if [ "$rc" = 0 ]; then echo __OPHUB_SUDO__=admin; exit 0; fi`,
-			`printf "%s" "$out" | `+sanitize+` | awk '{printf "__OPHUB_SUDO_ERR__=admin:%d:%s\\n", rc, $0}'`,
+			`printf "%s" "$out" | `+sanitize+` | awk -v rc=$rc '{printf "__OPHUB_SUDO_ERR__=admin:%d:%s\\n", rc, $0}'`,
 		)
 	}
 	if strings.TrimSpace(sshPass) != "" && strings.TrimSpace(sshPass) != strings.TrimSpace(adminPass) {
 		parts = append(parts,
 			`out=$(echo `+shq(sshPass)+` | sudo -S -p '' -u `+q+` true 2>&1); rc=$?`,
 			`if [ "$rc" = 0 ]; then echo __OPHUB_SUDO__=ssh; exit 0; fi`,
-			`printf "%s" "$out" | `+sanitize+` | awk '{printf "__OPHUB_SUDO_ERR__=ssh:%d:%s\\n", rc, $0}'`,
+			`printf "%s" "$out" | `+sanitize+` | awk -v rc=$rc '{printf "__OPHUB_SUDO_ERR__=ssh:%d:%s\\n", rc, $0}'`,
 		)
 	}
 	parts = append(parts, `echo __OPHUB_SUDO__=fail`)
