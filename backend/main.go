@@ -10,9 +10,18 @@ import (
 )
 
 // main 服务入口
+//
+// 安全相关初始化顺序（v1.7.1+）：
+//   1) LoadConfig → 配置 panic 时需要的 env 都在 Cfg 里
+//   2) enforceProductionSecrets（Cfg.Env != "dev" 时强制 JWT_SECRET / PWD_ENC_KEY 非默认值）
+//   3) initPwdCipher（须在 InitDB 播种之前）
+//   4) loadKnownHosts（启动时一次性从磁盘恢复 SSH known_hosts）
+//   5) InitRedis / InitDB（Cfg）
 func main() {
 	Cfg = LoadConfig()
+	enforceProductionSecrets(Cfg)
 	initPwdCipher() // 初始化用户密码可逆加密（须在 InitDB 播种之前）
+	loadKnownHosts()
 	InitRedis(Cfg)
 	InitDB(Cfg)
 
@@ -38,10 +47,19 @@ func main() {
 	api := r.Group("/api")
 	{
 		// 公开接口
-		api.POST("/auth/register", Register)
 		api.POST("/auth/login", Login)
+		// 注册：默认关闭（防白嫖 / 防爆破新口子）。
+		// 真要开放时用 env ALLOW_PUBLIC_REGISTER=true；前端会渲染对应提示。
+		if !publicRegistrationAllowed() {
+			api.POST("/auth/register", publicRegistrationDisabledHandler)
+		} else {
+			api.POST("/auth/register", Register)
+		}
 		api.GET("/fields", GetFields)
-		// WebSocket SSH 终端（handler 内自行用 query token 鉴权）
+		// WebSocket SSH 终端：
+		//   - /api/ws/ssh/ticket 先拿一次性 ticket（v1.7.1+ 替代 ?token= URL 形式，避免 token 进 access log）
+		//   - /api/ws/ssh 升级 WebSocket
+		api.POST("/ws/ssh/ticket", AuthMiddleware(), WsTicketHandler)
 		api.GET("/ws/ssh", WebShellHandler)
 
 		auth := api.Group("")
@@ -113,7 +131,7 @@ func main() {
 			auth.GET("/ansible/remotes/:id/hosts/raw", RequireAnyPermission("ansible:manage", "ansible:view"), GetRemoteHostsRaw)
 			auth.POST("/ansible/remotes/:id/hosts/raw", RequireAnyPermission("ansible:manage", "ansible:update"), SaveRemoteHostsRaw)
 			auth.POST("/ansible/remotes/:id/import-cmdb", RequireAnyPermission("ansible:manage", "ansible:create"), ImportCMDBToRemote)
-			auth.POST("/ansible/remotes/:id/exec", RequireAnyPermission("ansible:manage", "ansible:exec"), ExecRemoteCommand)
+			auth.POST("/ansible/remotes/:id/exec", RequireAdminRole(), ExecRemoteCommand)
 
 			// 应用中间件安装（离线 ansible 部署）
 			auth.GET("/deploy/catalog", RequireAnyPermission("deploy:manage", "deploy:view"), ListDeployCatalog)

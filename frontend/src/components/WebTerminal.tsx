@@ -199,6 +199,21 @@ class VimTerminalQueryAddon implements ITerminalAddon {
   }
 }
 
+// fetchWsTicket 调 /api/ws/ssh/ticket 拿一次性 ticket（带在 Authorization / cookie 上）。
+// 服务端 401 / 403 时返回 null → 上层切回 legacy ?token= 形式。
+async function fetchWsTicket(authToken: string): Promise<string | null> {
+  const headers: Record<string, string> = {}
+  if (authToken) headers.Authorization = `Bearer ${authToken}`
+  try {
+    const r = await fetch('/api/ws/ssh/ticket', { method: 'POST', credentials: 'include', headers })
+    if (!r.ok) return null
+    const j = (await r.json()) as { ticket?: string }
+    return j.ticket || null
+  } catch {
+    return null
+  }
+}
+
 export default function WebTerminal({ open, asset, onClose, standalone = false }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -289,10 +304,18 @@ export default function WebTerminal({ open, asset, onClose, standalone = false }
       }
       tryFit()
 
-      // 建立 WebSocket（query token 鉴权）
-      const token = localStorage.getItem('token') || ''
+      // 建立 WebSocket（v1.7.1+ 鉴权方式：先拿一次性 ticket，再用 ticket 升级 WS）
+      // 兼容期：后端 ALLOW_WS_TOKEN_URL=true 时仍支持 ?token=，但默认走 ticket。
       const proto = location.protocol === 'https:' ? 'wss://' : 'ws://'
-      const ws = new WebSocket(`${proto}${location.host}/api/ws/ssh?assetId=${asset.id}&token=${encodeURIComponent(token)}`)
+      const wsToken = localStorage.getItem('token') || ''
+      const useTicket = await fetchWsTicket(wsToken)
+      let wsUrl: string
+      if (useTicket) {
+        wsUrl = `${proto}${location.host}/api/ws/ssh?assetId=${asset.id}&ticket=${encodeURIComponent(useTicket)}`
+      } else {
+        wsUrl = `${proto}${location.host}/api/ws/ssh?assetId=${asset.id}&token=${encodeURIComponent(wsToken)}`
+      }
+      const ws = new WebSocket(wsUrl)
       wsRef.current = ws
       queryAddon.setWebSocket(ws)
 

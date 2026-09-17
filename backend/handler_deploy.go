@@ -120,6 +120,7 @@ func DetectTargets(c *gin.Context) {
 		}
 		var fields map[string]interface{}
 		_ = json.Unmarshal(a.Fields, &fields)
+	_ = decryptAssetFields(fields)
 		if fields == nil {
 			fields = map[string]interface{}{}
 		}
@@ -1032,6 +1033,7 @@ func deployRunCore(c *gin.Context, req DeployRunReq) {
 		}
 		var fields map[string]interface{}
 		_ = json.Unmarshal(a.Fields, &fields)
+		_ = decryptAssetFields(fields)
 		if fields == nil {
 			fields = map[string]interface{}{}
 		}
@@ -1639,6 +1641,7 @@ func CreateSysInitJob(c *gin.Context) {
 		}
 		var fields map[string]interface{}
 		_ = json.Unmarshal(a.Fields, &fields)
+		_ = decryptAssetFields(fields)
 		if fields == nil {
 			fields = map[string]interface{}{}
 		}
@@ -2153,6 +2156,7 @@ func DetectSysInitEnv(c *gin.Context) {
 		}
 		var fields map[string]interface{}
 		_ = json.Unmarshal(a.Fields, &fields)
+		_ = decryptAssetFields(fields)
 		if fields == nil {
 			fields = map[string]interface{}{}
 		}

@@ -224,10 +224,23 @@ func importSheet(f *excelize.File, sheet string, categoryID uint, createdBy uint
 			found = true
 		}
 		if !found {
+			// P1-3：导入时加密秘密字段（Excel 模板里都是明文）
+			_ = encryptAssetFields(fields)
 			existing = Asset{CategoryID: categoryID, Name: name, IP: ip, Fields: toJSON(fields), CreatedBy: createdBy}
 			DB.Create(&existing)
 		} else {
-			existing.Fields = toJSON(fields)
+			// 已存在的资产：先解密已有 fields，再 merge 新行字段，最后重新加密
+			var prev map[string]interface{}
+			_ = json.Unmarshal(existing.Fields, &prev)
+			if prev == nil {
+				prev = map[string]interface{}{}
+			}
+			_ = decryptAssetFields(prev)
+			for k, v := range fields {
+				prev[k] = v
+			}
+			_ = encryptAssetFields(prev)
+			existing.Fields = toJSON(prev)
 			existing.IP = ip
 			existing.Name = name
 			DB.Save(&existing)

@@ -24,7 +24,6 @@ func mustJSON(v interface{}) []byte {
 func taskCategories(task *InspectionTask) []string {
 	var cats []string
 	if len(task.Metrics) > 0 {
-		_ = json.Unmarshal(task.Metrics, &cats)
 	}
 	if len(cats) == 0 {
 		cats = DefaultCategories()
@@ -125,7 +124,6 @@ func resolveTaskAssets(task *InspectionTask) ([]Asset, error) {
 	case "selected":
 		var ids []uint
 		if len(task.AssetIDs) > 0 {
-			_ = json.Unmarshal(task.AssetIDs, &ids)
 		}
 		if len(ids) > 0 {
 			q = q.Where("id IN ?", ids)
@@ -229,6 +227,7 @@ func executeInspection(task *InspectionTask) (*InspectionRecord, error) {
 	for _, a := range assets {
 		var fields map[string]interface{}
 		_ = json.Unmarshal(a.Fields, &fields)
+	_ = decryptAssetFields(fields)
 		ip := extractIP(fields)
 		mwTypes := extractMiddlewareTypes(fields)
 		res := InspectionResult{
@@ -337,7 +336,6 @@ func ListInspectionTasks(c *gin.Context) {
 			nodeName = nodes[*t.RemoteNodeID]
 		}
 		var cats []string
-		_ = json.Unmarshal(t.Metrics, &cats)
 		out = append(out, gin.H{
 			"id":              t.ID,
 			"name":            t.Name,
@@ -546,6 +544,7 @@ func assetDisplay(assetID uint) map[string]string {
 	}
 	f := map[string]interface{}{}
 	_ = json.Unmarshal(a.Fields, &f)
+	_ = decryptAssetFields(f)
 	get := func(k, def string) string {
 		if s, ok := f[k].(string); ok && s != "" {
 			return s
@@ -698,7 +697,6 @@ func InspectionDashboard(c *gin.Context) {
 			continue
 		}
 		var d map[string]interface{}
-		_ = json.Unmarshal(r.Data, &d)
 		if om, ok := d["os"].(map[string]interface{}); ok {
 			if a, _ := om["arch"].(string); a != "" {
 				inspectionArchByIP[r.IP] = a
@@ -749,6 +747,7 @@ func InspectionDashboard(c *gin.Context) {
 		buildFA := func(a Asset) map[string]string {
 			var m map[string]interface{}
 			_ = json.Unmarshal(a.Fields, &m)
+			_ = decryptAssetFields(m)
 			get := func(k string) string {
 				if s, ok := m[k].(string); ok {
 					return s
@@ -1004,7 +1003,6 @@ func InspectionDashboard(c *gin.Context) {
 
 	for _, r := range filtered {
 		var data map[string]interface{}
-		_ = json.Unmarshal(r.Data, &data)
 		flat := resolveFlat(data)
 		// 按 ID 查资产字段，查不到再用 IP 兜底（资产重新导入后主键会变）
 		fa := lookupAssetFields(r.AssetID, r.IP)
@@ -1282,7 +1280,6 @@ func InspectionDashboard(c *gin.Context) {
 	for i := len(recs) - 1; i >= 0; i-- {
 		r := recs[i]
 		var s map[string]interface{}
-		_ = json.Unmarshal(r.Summary, &s)
 		trend = append(trend, gin.H{
 			"runAt":      r.RunAt.Format("01-02 15:04"),
 			"avgCpu":     s["avgCpu"],
@@ -1517,10 +1514,8 @@ func InspectionExport(c *gin.Context) {
 	alertRows := make([]gin.H, 0, len(results)*2)
 	for _, r := range results {
 		var data map[string]interface{}
-		_ = json.Unmarshal(r.Data, &data)
 		flat := resolveFlat(data)
 		var alerts []map[string]interface{}
-		_ = json.Unmarshal(r.Alerts, &alerts)
 		rec := recMap[r.RecordID]
 		row := gin.H{
 			"巡检时间":    rec.RunAt.Format("2006-01-02 15:04"),
@@ -1563,7 +1558,6 @@ func InspectionExport(c *gin.Context) {
 			continue
 		}
 		var data map[string]interface{}
-		_ = json.Unmarshal(r.Data, &data)
 		flat := resolveFlat(data)
 		if v, ok := flat["cpu_usage"].(float64); ok {
 			sumCpu += v

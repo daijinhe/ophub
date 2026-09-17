@@ -3,8 +3,11 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,9 +20,94 @@ import (
 )
 
 var wsUpgrader = websocket.Upgrader{
-	CheckOrigin:     func(r *http.Request) bool { return true },
+	// Origin 白名单由 env ALLOW_WS_ORIGINS / ALLOW_WS_ANY_ORIGIN 控制（默认拒绝跨域）。
+	// 与 DB 无关是为了即使前端未配置也不能裸奔；如确实需要全开（仅推荐开发环境）
+	// 由 ALLOW_WS_ANY_ORIGIN=true 打开。
+	CheckOrigin:     wsCheckOrigin,
 	ReadBufferSize:  8192,
 	WriteBufferSize: 8192,
+}
+
+// wsCheckOrigin 校验 WebSocket upgrade 的 Origin 头。
+//
+// 内网（默认）：仅允许与 ALLOW_WS_ORIGINS（逗号分隔）匹配的源；
+// ALLOW_WS_ORIGINS 为空 + ALLOW_WS_ANY_ORIGIN=true → 全放行（仅推荐调试）。
+// 同源请求浏览器不带 Origin（返回 ""），我们应当允许；
+// 跨域攻击会带 e.g. https://evil.com/，需要主动拒绝。
+func wsCheckOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		// 非浏览器客户端（CLI、curl、监测）一般不带 Origin；允许。
+		return true
+	}
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("ALLOW_WS_ANY_ORIGIN"))); v == "true" {
+		return true
+	}
+	allowed := strings.Split(strings.TrimSpace(getWsOrigins()), ",")
+	for _, a := range allowed {
+		if a == "" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimRight(a, "/"), strings.TrimRight(origin, "/")) {
+			return true
+		}
+	}
+	return false
+}
+
+func getWsOrigins() string {
+	// 优先用 ALLOW_WS_ORIGINS；没有时退回到 CORS 配置的 origins，避免出现两套不一致。
+	v := strings.TrimSpace(os.Getenv("ALLOW_WS_ORIGINS"))
+	if v != "" {
+		return v
+	}
+	return Cfg.AllowOrigins
+}
+
+// publicRegistrationAllowed 公开注册开关。
+func publicRegistrationAllowed() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("ALLOW_PUBLIC_REGISTER")))
+	return v == "true" || v == "1" || v == "yes"
+}
+
+// publicRegistrationDisabledHandler 注册被关闭时的兜底响应（前端可识别并显示提示）。
+func publicRegistrationDisabledHandler(c *gin.Context) {
+	c.JSON(http.StatusForbidden, gin.H{
+		"code":    403,
+		"message": "公开注册已关闭（默认安全策略）。如需开启请设置环境变量 ALLOW_PUBLIC_REGISTER=true 并重启后端",
+	})
+}
+
+// enforceProductionSecrets 生产环境强制密钥非默认值（v1.7.1 引入）。
+//
+//   - JWT_SECRET 仍是默认值 + .dev 以外 → panic（拒绝启动）
+//   - PWD_ENC_KEY 仍是默认值 + 仍是 .dev 以外 → panic
+//   - dev 环境打 warning，但仍允许启动，方便本机开发
+//
+// 生成强随机密钥：`openssl rand -base64 48` 或 `head -c 48 /dev/urandom | base64`。
+func enforceProductionSecrets(c Config) {
+	if strings.EqualFold(c.Env, "dev") {
+		// 开发环境仍打印 warning，便于发现「忘改密钥就上生产」
+		if c.JWTSecret == "ophub-secret-change-me" {
+			log.Println("[警告] dev 环境仍使用默认 JWT_SECRET；上线前务必修改")
+		}
+		if c.PwdEncKey == "" {
+			log.Println("[警告] dev 环境未配置 PWD_ENC_KEY；将使用内置默认值")
+		}
+		return
+	}
+	mustChange := false
+	if c.JWTSecret == "ophub-secret-change-me" || c.JWTSecret == "" {
+		log.Println("[panic] 检测到 JWT_SECRET 仍是内置默认值或为空")
+		mustChange = true
+	}
+	if c.PwdEncKey == "" || c.PwdEncKey == "ophub-default-pwd-enc-key-please-change" {
+		log.Println("[panic] 检测到 PWD_ENC_KEY 仍是内置默认值或为空")
+		mustChange = true
+	}
+	if mustChange {
+		log.Fatalf("生产环境必须显式设置 JWT_SECRET 与 PWD_ENC_KEY。可用：openssl rand -base64 48")
+	}
 }
 
 // wsMsg 前端 → 后端控制消息（resize / upload）
@@ -36,19 +124,42 @@ type wsMsg struct {
 // WebShellHandler WebSocket SSH 终端：浏览器内直接连接目标机，自动以普通用户登录并 su - root
 // 前端连接: /api/ws/ssh?assetId=1&token=<jwt>
 func WebShellHandler(c *gin.Context) {
-	// 1) query token 鉴权（WebSocket 无法携带 Header）
-	token := c.Query("token")
-	if token == "" || IsBlacklisted(token) {
-		Fail(c, http.StatusUnauthorized, 401, "未登录")
-		return
+	// 1) 用一次性 ticket 鉴权（v1.7.1 改造，规避 token 走 URL 进 nginx access log）。
+	//    调用方先 POST /api/ws/ssh/ticket 拿一个 60s 一次性的 ticket，
+	//    再用 ws://.../api/ws/ssh?ticket=xxx&assetId=N 升级 WebSocket。
+	//    ticket 在 ws 升级成功后才消费（consume），升级失败时 ticket 仍可用。
+	ticket := c.Query("ticket")
+	var (
+		uidFromTicket uint
+		uidLegacy     uint
+		legacyMode    bool
+	)
+	if ticket == "" {
+		if !strings.EqualFold(os.Getenv("ALLOW_WS_TOKEN_URL"), "true") {
+			Fail(c, http.StatusUnauthorized, 401, "WebSocket 需要先调用 /api/ws/ssh/ticket 获取一次性 ticket")
+			return
+		}
+		legacyMode = true
+		uid, err := getUIDFromToken(c.Query("token"))
+		if err != nil || uid == 0 {
+			Fail(c, http.StatusUnauthorized, 401, "登录已失效")
+			return
+		}
+		uidLegacy = uid
+	} else {
+		prev, err := peekWSTicket(ticket)
+		if err != nil {
+			Fail(c, http.StatusUnauthorized, 401, "ticket 无效或已过期："+err.Error())
+			return
+		}
+		uidFromTicket = prev.UserID
 	}
-	claims, err := ParseToken(token)
-	if err != nil {
-		Fail(c, http.StatusUnauthorized, 401, "登录已失效")
-		return
+	uid := uidFromTicket
+	if uid == 0 {
+		uid = uidLegacy
 	}
 	var user User
-	if err := DB.Preload("Roles").First(&user, claims.UserID).Error; err != nil || user.Status != 1 {
+	if err := DB.Preload("Roles").First(&user, uid).Error; err != nil || user.Status != 1 {
 		Fail(c, http.StatusUnauthorized, 401, "用户不可用")
 		return
 	}
@@ -81,6 +192,8 @@ func WebShellHandler(c *gin.Context) {
 	}
 	f := map[string]interface{}{}
 	_ = json.Unmarshal(a.Fields, &f)
+	// P1-3：解密拿 SSH 凭据（数据库里是密文）
+	_ = decryptAssetFields(f)
 	get := func(k, def string) string {
 		if s, ok := f[k].(string); ok && s != "" {
 			return s
@@ -98,18 +211,23 @@ func WebShellHandler(c *gin.Context) {
 		return
 	}
 
-	// 3) 升级 WebSocket
+	// 3) 升级 WebSocket（Origin 由 wsUpgrader.CheckOrigin 校验）
 	ws, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		return
 	}
 	defer ws.Close()
 
+	// 升级成功 → 立即消费 ticket（一次性）。后续 SSH 任何失败都不再退还。
+	if !legacyMode && ticket != "" {
+		_ = consumeWSTicket(ticket)
+	}
+
 	// 4) SSH 连接
 	sshClient, err := ssh.Dial("tcp", host+":"+port, &ssh.ClientConfig{
 		User:            sshUser,
 		Auth:            []ssh.AuthMethod{ssh.Password(userPass)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: makeHostKeyCallback(),
 		Timeout:         15 * time.Second,
 	})
 	if err != nil {
@@ -284,9 +402,21 @@ func (b *sshBridge) ensureSFTP() error {
 }
 
 // handleUpload 处理文件上传块：seq=0 建文件，随后追加，done 关闭并提示
+//
+// 安全约束（v1.7.1+ · P1-8）：
+//   - 仅 allowlist 内的目标目录（默认 /tmp/ /data/ /home/<user>/uploads/）；
+//     禁止写到 /etc /root/.ssh /var/spool/cron 等敏感路径。
+//   - 文件扩展名限制在白名单（.sh .conf .txt .tar.gz 等）；禁止 .so .py .elf。
+//   - 最终路径：解析后的绝对路径必须在 allowlist 任一条目下（含前缀匹配 /home/<user>/uploads）。
+//   - 单文件大小上限 10 MiB（base64 算上 ~13.3 MiB），避免 admin 在目标机被一齐拖到 OOM。
 func (b *sshBridge) handleUpload(m wsMsg) {
 	if m.Path == "" {
 		b.writeMsg("\x1b[31m[上传失败] 缺少目标路径\x1b[0m")
+		return
+	}
+	// 1) 路径合法性
+	if err := wsUploadCheckPath(m.Path); err != nil {
+		b.writeMsg("\x1b[31m[上传失败] " + err.Error() + "\x1b[0m")
 		return
 	}
 	if b.uploadFile == nil {
@@ -300,6 +430,14 @@ func (b *sshBridge) handleUpload(m wsMsg) {
 				path = strings.Replace(path, "~", wd, 1)
 			}
 		}
+		// 2) 实时前缀再校验一次（sftp.Getwd 返回的可能是 /root/，而我们最终路径仍是 CLI 拿到的）
+		if abs, err := b.sftpClient.RealPath(path); err == nil {
+			if err2 := wsUploadCheckAbsPath(abs); err2 != nil {
+				b.writeMsg("\x1b[31m[上传失败] " + err2.Error() + "\x1b[0m")
+				return
+			}
+			path = abs
+		}
 		f, err := b.sftpClient.Create(path)
 		if err != nil {
 			b.writeMsg("\x1b[31m[上传失败] " + err.Error() + "\x1b[0m")
@@ -310,6 +448,13 @@ func (b *sshBridge) handleUpload(m wsMsg) {
 		b.uploadBytes = 0
 		b.writeMsg("\x1b[33m[上传中] " + path + "\x1b[0m")
 	}
+	// 3) 单块大小上限（base64 长度 <= 14 MiB 解码约 10 MiB；防止一次大文件写爆 sftpClient 内 buf）
+	if len(m.Data) > 14*1024*1024 {
+		b.writeMsg("\x1b[31m[上传失败] 单块过大（>14MiB base64），请用 smaller chunks\x1b[0m")
+		_ = b.uploadFile.Close()
+		b.uploadFile = nil
+		return
+	}
 	if m.Data != "" {
 		raw, err := base64.StdEncoding.DecodeString(m.Data)
 		if err == nil && len(raw) > 0 {
@@ -317,12 +462,123 @@ func (b *sshBridge) handleUpload(m wsMsg) {
 			b.uploadBytes += len(raw)
 		}
 	}
+	if b.uploadBytes > wsUploadMaxSize {
+		b.writeMsg("\x1b[31m[上传失败] 单文件超 %d MiB 上限\x1b[0m", wsUploadMaxSize)
+		_ = b.uploadFile.Close()
+		b.uploadFile = nil
+		return
+	}
 	if m.Done {
 		_ = b.uploadFile.Close()
 		b.uploadFile = nil
 		b.writeMsg("\x1b[32m[上传完成] " + b.uploadPath + "（" + fmtBytes(b.uploadBytes) + "）\x1b[0m")
 		b.uploadPath = ""
 	}
+}
+
+// wsUploadMaxSize 单文件硬上限（10 MiB）。
+const wsUploadMaxSize = 10 * 1024 * 1024
+
+// wsUploadAllowedExts 允许的扩展名（小写，含 "."）。其它一律拒绝。
+// 故意没列可执行类（.so .py .sh 不允许基线），避免直接往主机写脚本后被 cron 触发。
+var wsUploadAllowedExts = map[string]bool{
+	".txt":     true,
+	".log":     true,
+	".md":      true,
+	".json":    true,
+	".csv":     true,
+	".conf":    true,
+	".cfg":     true,
+	".ini":     true,
+	".yaml":    true,
+	".yml":     true,
+	".xml":     true,
+	".properties": true,
+	".tar":     true,
+	".gz":      true,
+	".tgz":     true,
+	".zip":     true,
+	".bak":     true,
+	".bak.":    true, // 任意 .bak.* 也允许
+}
+
+// wsUploadAllowedPrefixes 允许上传到的目标路径前缀（绝对路径）。
+//
+// 含义：写入文件的绝对路径必须以其中任一条为前缀。
+// 系统常用敏感路径（/etc、/var/spool/cron、/root/.ssh）故意**不**列在白名单；
+// 写出清单后由审计/SOC 复核。
+func wsUploadAllowedPrefixes() []string {
+	return []string{
+		"/tmp/",
+		"/var/tmp/",
+		"/data/",
+		"/srv/",
+		"/opt/ophub_uploads/",
+	}
+}
+
+// wsUploadCheckPath 客户端提交路径的合法性（前置校验）；通过后再用 RealPath 二次校验。
+func wsUploadCheckPath(path string) error {
+	if path == "" {
+		return fmt.Errorf("路径为空")
+	}
+	// 拒绝绝对 /etc 类、否定前缀
+	for _, deny := range []string{"/etc/", "/etc", "/var/spool/cron/", "/root/.ssh/", "/usr/lib/", "/usr/bin/", "/bin/", "/sbin/"} {
+		if strings.HasPrefix(path, deny) {
+			return fmt.Errorf("禁止的上传路径前缀：%s", deny)
+		}
+	}
+	// 拒绝 .. 路径片段
+	for _, seg := range strings.Split(path, "/") {
+		if seg == ".." {
+			return fmt.Errorf("路径中禁止 '..' 片段")
+		}
+	}
+	// 扩展名白名单
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext == "" {
+		return fmt.Errorf("文件无扩展名，不允许上传（请显式给出）")
+	}
+	// .bak.<ext> 也允许
+	if !wsUploadAllowedExts[ext] {
+		// 仅在 ".bak" 不是 ext（如 "x.bak.txt"）时再放过
+		base := filepath.Base(path)
+		idx := strings.LastIndex(base, ".")
+		if idx > 0 && strings.HasPrefix(base[idx:], ".bak") {
+			// 保留原检查；若 .bak 后还有合法扩展也 OK
+		} else {
+			return fmt.Errorf("不允许的扩展名：%s（白名单：.txt .log .conf .json .yaml ...）", ext)
+		}
+	}
+	return nil
+}
+
+// wsUploadCheckAbsPath 真实路径（已 sftp.RealPath 解析）必须落在 allowlist 前缀下。
+func wsUploadCheckAbsPath(abs string) error {
+	if abs == "" {
+		return fmt.Errorf("路径解析失败")
+	}
+	allowed := false
+	for _, pre := range wsUploadAllowedPrefixes() {
+		if strings.HasPrefix(abs, pre) {
+			allowed = true
+			break
+		}
+	}
+	// /home/<user>/uploads/ 也允许
+	if !allowed && strings.HasPrefix(abs, "/home/") {
+		// 必须含 /uploads/ 子目录
+		rest := strings.TrimPrefix(abs, "/home/")
+		if i := strings.Index(rest, "/"); i > 0 {
+			if strings.HasPrefix(rest[i:], "/uploads/") {
+				allowed = true
+			}
+		}
+	}
+	if !allowed {
+		return fmt.Errorf("目标路径不在白名单（需 /tmp/ /data/ /home/<user>/uploads/ 等）")
+	}
+	return nil
 }
 
 func fmtBytes(n int) string {
@@ -377,7 +633,6 @@ func (b *sshBridge) pumpStdin() {
 		if mt == websocket.TextMessage {
 			// 尝试解析控制消息
 			var ctl wsMsg
-			if json.Unmarshal(msg, &ctl) == nil && ctl.Type != "" {
 				switch ctl.Type {
 				case "resize":
 					if ctl.Cols > 0 && ctl.Rows > 0 {

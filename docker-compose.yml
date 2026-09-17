@@ -55,7 +55,16 @@ services:
       REDIS_DB: "0"
       JWT_SECRET: ${JWT_SECRET}
       JWT_TTL: "720"
-      ALLOW_ORIGINS: "*"
+      PWD_ENC_KEY: ${PWD_ENC_KEY}
+      ALLOW_ORIGINS: ${ALLOW_ORIGINS:-*}
+      # v1.7.0+ 安全开关
+      ALLOW_PUBLIC_REGISTER: ${ALLOW_PUBLIC_REGISTER:-false}
+      ALLOW_WS_TOKEN_URL: ${ALLOW_WS_TOKEN_URL:-true}
+      ALLOW_WS_ORIGINS: ${ALLOW_WS_ORIGINS:-}
+      ALLOW_WS_ANY_ORIGIN: ${ALLOW_WS_ANY_ORIGIN:-false}
+      KNOWN_HOSTS_FILE: ${KNOWN_HOSTS_FILE:-/data/known_hosts.json}
+      ALLOW_TEMP_TRUST: ${ALLOW_TEMP_TRUST:-false}
+      ENV: ${ENV:-dev}
       UPLOAD_DIR: "/app/uploads"
       DEPLOY_BASE: "/data/jenkins_home/scripts/V2_Project_App_Init_Install/main/app_choice"
       SYSTEM_INIT_DIR: "/data/jenkins_home/scripts/V2_Project_App_Init_Install/main/system_init"

@@ -139,13 +139,35 @@ func CreateAnsibleRemote(c *gin.Context) {
 	OK(c, body)
 }
 
-// GetAnsibleRemote 获取节点详情（含敏感字段，便于编辑）
+// GetAnsibleRemote 获取节点详情（v1.7.1+ P1-4 脱敏：只返 has* 标志 + 用户可编辑的非敏感字段）
+//
+// 脱敏口径与 ListAnsibleRemotes 一致：真实密码/私钥/sudo 密码不进响应。
+// 用户修改这些字段时另起一个专用接口 `POST /api/ansible/remotes/:id/secrets`（v1.7.x 后续可选），
+// 或者继续走 UpdateAnsibleRemote，前端用「hasPassword=true → 用户主动改」语义来判断。
 func GetAnsibleRemote(c *gin.Context) {
 	r, ok := loadRemote(c)
 	if !ok {
 		return
 	}
-	OK(c, r)
+	OK(c, gin.H{
+		"id":          r.ID,
+		"name":        r.Name,
+		"host":        r.Host,
+		"port":        r.Port,
+		"user":        r.User,
+		"authType":    r.AuthType,
+		"hostsPath":   r.HostsPath,
+		"networkZone": r.NetworkZone,
+		"description": r.Description,
+		"status":      r.Status,
+		"lastCheckAt": r.LastCheckAt,
+		"lastError":   r.LastError,
+		"hasPassword": r.Password != "",
+		"hasKey":      r.PrivateKey != "",
+		"hasBecome":   r.BecomePass != "",
+		"createdAt":   r.CreatedAt,
+		"updatedAt":   r.UpdatedAt,
+	})
 }
 
 // UpdateAnsibleRemote 更新节点
@@ -411,6 +433,7 @@ func ImportCMDBToRemote(c *gin.Context) {
 	for _, a := range assets {
 		var fields map[string]interface{}
 		_ = json.Unmarshal(a.Fields, &fields)
+	_ = decryptAssetFields(fields)
 		if fields == nil {
 			fields = map[string]interface{}{}
 		}
@@ -471,8 +494,13 @@ func ImportCMDBToRemote(c *gin.Context) {
 }
 
 // ExecRemoteCommand 在远端执行一条 ansible/shell 命令（拓展功能）
-// 仅允许 ad-hoc 与 ansible-playbook 等典型 ansible 命令；
-// 返回 stdout 输出（最长 64KB 截断）。
+//
+// 安全收口（v1.7.1+ · P0-5）：
+//   - 仅运维可用的命令白名单（ansible / ansible-playbook / ansible-vault / ansible-doc / ansible-inventory / ansible-galaxy）
+//   - 显式拒绝：bash / sh / curl / wget / ssh / scp / python / nc / netcat 等
+//     反向 shell / 直接 ssh 接入等危险命令
+//   - 路由层为 RequireAdminRole —— 普通 ansible:exec 用户不再能直接调
+//   - 单次 stdout 限制 64KB
 func ExecRemoteCommand(c *gin.Context) {
 	r, ok := loadRemote(c)
 	if !ok {
@@ -485,9 +513,14 @@ func ExecRemoteCommand(c *gin.Context) {
 		Fail(c, http.StatusBadRequest, 400, "请求体无效")
 		return
 	}
-	cmd := body.Command
+	cmd := strings.TrimSpace(body.Command)
 	if cmd == "" {
 		Fail(c, http.StatusBadRequest, 400, "命令不能为空")
+		return
+	}
+	// 命令白名单校验：只看命令开头第一个 token
+	if err := validateAnsibleCmd(cmd); err != nil {
+		Fail(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	client := r.ToSSHClient()
@@ -500,4 +533,51 @@ func ExecRemoteCommand(c *gin.Context) {
 		return
 	}
 	OK(c, gin.H{"stdout": out})
+}
+
+// ansibleWhiteList 允许的 ansible 系列命令（含绝对路径变体）。
+// 拒绝：bash / sh / curl / wget / ssh / scp / python / nc / netcat 等。
+var ansibleWhiteList = []string{
+	"/usr/bin/ansible ",
+	"/usr/local/bin/ansible ",
+	"ansible ",          // 当前用户 PATH 中的 ansible
+	"ansible-playbook ",
+	"ansible-vault ",
+	"ansible-doc ",
+	"ansible-inventory ",
+	"ansible-galaxy ",
+}
+
+func validateAnsibleCmd(cmd string) error {
+	// 取命令的第一个非参数 token（处理可能的 sudo / doas 等前缀）
+	fields := strings.Fields(cmd)
+	if len(fields) == 0 {
+		return fmt.Errorf("命令不能为空")
+	}
+	first := fields[0]
+	// 兼容「绝对路径 ansible」与「当前 shell PATH 中的 ansible」
+	for _, allowed := range ansibleWhiteList {
+		if strings.HasPrefix(cmd, allowed) || strings.EqualFold(cmd, strings.TrimSpace(allowed)) {
+			_ = first
+			return nil
+		}
+	}
+	// 「sudo ansible」「sudo -E ansible」 等也允许
+	if first == "sudo" || first == "doas" {
+		// 找下个 token
+		for i := 1; i < len(fields); i++ {
+			f := fields[i]
+			if strings.HasPrefix(f, "-") {
+				continue
+			}
+			for _, allowed := range ansibleWhiteList {
+				if strings.HasPrefix(f+" ", allowed) || strings.EqualFold(f, strings.TrimSpace(allowed)) {
+					_ = i
+					return nil
+				}
+			}
+			break
+		}
+	}
+	return fmt.Errorf("拒绝命令：仅允许 ansible / ansible-playbook 等 ansible 系列子命令（%q）", first)
 }

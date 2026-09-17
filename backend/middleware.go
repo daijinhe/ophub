@@ -14,15 +14,28 @@ const (
 )
 
 // AuthMiddleware 鉴权中间件：校验 JWT 并注入用户权限
+//
+// 兼容两种 token 形式（v1.7.1+）：
+//   - Authorization: Bearer <token>（老路径，外部 API 调用）
+//   - Cookie: ophub_token=<token>（httpOnly 新路径，前端浏览器自动发）
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		token := ""
 		hdr := c.GetHeader("Authorization")
-		if hdr == "" || !strings.HasPrefix(hdr, "Bearer ") {
+		if hdr != "" && strings.HasPrefix(hdr, "Bearer ") {
+			token = strings.TrimPrefix(hdr, "Bearer ")
+		}
+		if token == "" {
+			// cookie 兜底：浏览器在同源 fetch/XHR 时会自动带上 ophub_token
+			if ck, err := c.Cookie("ophub_token"); err == nil {
+				token = ck
+			}
+		}
+		if token == "" {
 			Fail(c, http.StatusUnauthorized, 401, "未登录")
 			c.Abort()
 			return
 		}
-		token := strings.TrimPrefix(hdr, "Bearer ")
 		if IsBlacklisted(token) {
 			Fail(c, http.StatusUnauthorized, 401, "登录已失效")
 			c.Abort()

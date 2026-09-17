@@ -666,8 +666,8 @@ func CollectAsset(ip string, node *AnsibleRemote, sshUser, sshPass string, sshPo
 		}
 		enc := base64.StdEncoding.EncodeToString([]byte(script))
 		ansibleCmd := fmt.Sprintf(
-			`ansible %q -i %q, -m shell -a 'echo %s | base64 -d | bash' -u %s -e "ansible_ssh_pass=%s" -e "ansible_ssh_port=%d" -o 2>/dev/null`,
-			ip, ip, enc, targetUser, targetPass, sshPort,
+			`ansible %s -i %s, -m shell -a 'echo %s | base64 -d | bash' -u %s -e "ansible_ssh_pass=%s" -e "ansible_ssh_port=%d" -o 2>/dev/null`,
+			shq(ip), shq(ip), enc, shq(targetUser), shq(targetPass), sshPort,
 		)
 		out, err := client.Run(ansibleCmd)
 		if err == nil {

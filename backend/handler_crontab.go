@@ -260,14 +260,14 @@ func (t *crontabTarget) runnerName() string {
 // ReadFile 读取目标机文件原文（必要时用提权前缀重试），语义与 SSHClient.ReadFile 一致。
 func (t *crontabTarget) ReadFile(path string) (string, error) {
 	pre := t.sudoPrefix()
-	checkCmd := fmt.Sprintf(`if [ -r %q ]; then echo OK; elif %stest -r %q; then echo OK; else echo NO; fi`,
-		path, pre, path)
+	checkCmd := fmt.Sprintf(`if [ -r %s ]; then echo OK; elif %stest -r %s; then echo OK; else echo NO; fi`,
+		shq(path), pre, shq(path))
 	checkOut, err := t.exec(checkCmd, 30*time.Second)
 	if err != nil || !strings.Contains(checkOut, "OK") {
 		return "", fmt.Errorf("文件不可读：%s（请检查 SSH 用户权限，或补齐资产的「超级管理员用户密码」）", path)
 	}
-	cmd := fmt.Sprintf(`if [ -r %q ]; then cat %q; else %scat %q; fi | base64 -w 0`,
-		path, path, pre, path)
+	cmd := fmt.Sprintf(`if [ -r %s ]; then cat %s; else %scat %s; fi | base64 -w 0`,
+		shq(path), shq(path), pre, shq(path))
 	out, err := t.exec(cmd, 30*time.Second)
 	if err != nil {
 		return "", fmt.Errorf("读取失败：%v", err)
@@ -286,13 +286,15 @@ func (t *crontabTarget) WriteFile(path, content string) error {
 	if idx := strings.LastIndex(path, "/"); idx > 0 {
 		dir = path[:idx]
 	}
-	preOut, err := t.exec(fmt.Sprintf(`%stest -w %q && echo OK || echo NO`, pre, dir), 30*time.Second)
+	preOut, err := t.exec(fmt.Sprintf(`%stest -w %s && echo OK || echo NO`, pre, shq(dir)), 30*time.Second)
 	if err != nil || !strings.Contains(preOut, "OK") {
 		return fmt.Errorf("目录不可写：%s（请补齐资产的「超级管理员用户密码」或配置 NOPASSWD sudo）", dir)
 	}
 	encoded := base64.StdEncoding.EncodeToString([]byte(content))
 	cmd := fmt.Sprintf(`%ssh -c "echo %s | base64 -d > %s.ophub.tmp && cp %s %s.ophub.bak 2>/dev/null; mv -f %s.ophub.tmp %s && chmod 644 %s"`,
-		pre, encoded, path, path, path, path, path, path)
+		pre, encoded,
+		shq(path+".ophub.tmp"), shq(path), shq(path+".ophub.bak"),
+		shq(path+".ophub.tmp"), shq(path), shq(path))
 	if _, werr := t.exec(cmd, 40*time.Second); werr != nil {
 		return fmt.Errorf("写入失败：%v", werr)
 	}
@@ -322,8 +324,8 @@ func (t *crontabTarget) ListDir(dir string) ([]scriptDirEntry, error) {
 	}
 	pre := t.sudoPrefix()
 	cmd := fmt.Sprintf(
-		`%sfind %q -mindepth 1 -maxdepth 1 -printf '%%y|%%f|%%s|%%TY-%%Tm-%%Td %%TH:%%TM|%%p\n' 2>/dev/null`,
-		pre, dir,
+		`%sfind %s -mindepth 1 -maxdepth 1 -printf '%%y|%%f|%%s|%%TY-%%Tm-%%Td %%TH:%%TM|%%p\n' 2>/dev/null`,
+		pre, shq(dir),
 	)
 	raw, err := t.exec(cmd, 20*time.Second)
 	if err != nil {
@@ -367,8 +369,8 @@ func (t *crontabTarget) Stat(path string) (bool, error) {
 	}
 	pre := t.sudoPrefix()
 	out, err := t.exec(
-		fmt.Sprintf(`%sif [ -d %q ]; then DIR; elif [ -f %q ]; then FILE; else MISSING; fi`,
-			pre, path, path), 10*time.Second)
+		fmt.Sprintf(`%sif [ -d %s ]; then DIR; elif [ -f %s ]; then FILE; else MISSING; fi`,
+			pre, shq(path), shq(path)), 10*time.Second)
 	if err != nil {
 		return false, fmt.Errorf("探测失败：%v", err)
 	}
@@ -388,7 +390,7 @@ func (t *crontabTarget) MkDir(dir string) error {
 	}
 	pre := t.sudoPrefix()
 	// -p 自动建立中间层 + 目录已存在也不会报错
-	cmd := fmt.Sprintf(`%smkdir -p %q 2>&1`, pre, dir)
+	cmd := fmt.Sprintf(`%smkdir -p %s 2>&1`, pre, shq(dir))
 	out, err := t.exec(cmd, 15*time.Second)
 	if err != nil {
 		return fmt.Errorf("创建目录失败：%s %s", strings.TrimSpace(out), err)
@@ -404,7 +406,7 @@ func (t *crontabTarget) RemoveFile(path string) error {
 		return fmt.Errorf("路径不合法：%s", path)
 	}
 	pre := t.sudoPrefix()
-	cmd := fmt.Sprintf(`%srm -f %q 2>&1`, pre, path)
+	cmd := fmt.Sprintf(`%srm -f %s 2>&1`, pre, shq(path))
 	if _, err := t.exec(cmd, 15*time.Second); err != nil {
 		return fmt.Errorf("删除文件失败：%s", err)
 	}
@@ -416,7 +418,7 @@ func (t *crontabTarget) RemoveEmptyDir(dir string) error {
 		return fmt.Errorf("路径不合法：%s", dir)
 	}
 	pre := t.sudoPrefix()
-	cmd := fmt.Sprintf(`%srmdir %q 2>&1`, pre, dir)
+	cmd := fmt.Sprintf(`%srmdir %s 2>&1`, pre, shq(dir))
 	if _, err := t.exec(cmd, 15*time.Second); err != nil {
 		return fmt.Errorf("删除目录失败（可能非空）：%s", err)
 	}
@@ -428,7 +430,7 @@ func (t *crontabTarget) RemoveRec(dir string) error {
 		return fmt.Errorf("路径不合法：%s", dir)
 	}
 	pre := t.sudoPrefix()
-	cmd := fmt.Sprintf(`%srm -rf %q 2>&1`, pre, dir)
+	cmd := fmt.Sprintf(`%srm -rf %s 2>&1`, pre, shq(dir))
 	if _, err := t.exec(cmd, 30*time.Second); err != nil {
 		return fmt.Errorf("删除目录失败：%s", err)
 	}
@@ -529,6 +531,7 @@ func crontabSSHInfo(a *Asset) (*crontabTarget, error) {
 	if len(a.Fields) > 0 {
 		_ = json.Unmarshal(a.Fields, &fields)
 	}
+	// P1-3：解密 SSH 凭据（数据库里以 enc:v1: 前缀密文存储）
 	ip := extractIP(fields)
 	if ip == "" {
 		return nil, fmt.Errorf("该资产未填写「虚拟机IPv4 / 虚拟机EIP-IPv4」，无法连接目标机")
@@ -1272,6 +1275,7 @@ func assetFields(a *Asset) map[string]interface{} {
 	fields := map[string]interface{}{}
 	if a != nil && len(a.Fields) > 0 {
 		_ = json.Unmarshal(a.Fields, &fields)
+	_ = decryptAssetFields(fields)
 	}
 	return fields
 }

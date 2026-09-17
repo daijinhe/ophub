@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -29,6 +30,10 @@ func Register(c *gin.Context) {
 	}
 	if r.Username == "" || r.Password == "" {
 		Fail(c, 400, 400, "用户名和密码必填")
+		return
+	}
+	if err := validatePasswordStrength(r.Password); err != nil {
+		Fail(c, 400, 400, err.Error())
 		return
 	}
 	var cnt int64
@@ -65,12 +70,23 @@ func Login(c *gin.Context) {
 		Fail(c, 400, 400, "参数错误")
 		return
 	}
+	ip := c.ClientIP()
+	// 1) 限流预检（P1-7）
+	if err := LoginRateLimitCheck(ip, r.Username); err != nil {
+		Fail(c, 429, 429, err.Error())
+		return
+	}
 	var user User
 	if err := DB.Preload("Roles").Where("username = ?", r.Username).First(&user).Error; err != nil {
+		RecordLoginFailure(ip, r.Username)
 		Fail(c, 401, 401, "用户名或密码错误")
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(r.Password)) != nil {
+		_, locked := RecordLoginFailure(ip, r.Username)
+		if locked {
+			log.Printf("[安全] 登录失败触发锁定：user=%s ip=%s", r.Username, ip)
+		}
 		Fail(c, 401, 401, "用户名或密码错误")
 		return
 	}
@@ -78,6 +94,7 @@ func Login(c *gin.Context) {
 		Fail(c, 403, 403, "账号已被禁用")
 		return
 	}
+	RecordLoginSuccess(ip, r.Username)
 	token, err := GenerateToken(user.ID, user.Username)
 	if err != nil {
 		Fail(c, 500, 500, "生成令牌失败")

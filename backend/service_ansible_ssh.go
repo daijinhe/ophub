@@ -38,7 +38,7 @@ func (c SSHClient) dial() (*ssh.Client, error) {
 	cfg := &ssh.ClientConfig{
 		User:            c.User,
 		Auth:            methods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // 内部平台，先放行 host key 校验
+		HostKeyCallback: makeHostKeyCallback(),
 		Timeout:         15 * time.Second,
 	}
 	return ssh.Dial("tcp", fmt.Sprintf("%s:%d", c.Host, c.Port), cfg)
@@ -95,16 +95,16 @@ func (c SSHClient) ReadFile(path string) (string, error) {
 	defer client.Close()
 	// 先探测可读性（直接读 / sudo 读），不可读则直接返回明确错误，
 	// 避免后续命令静默失败、用户看不到明确提示
-	checkCmd := fmt.Sprintf(`if [ -r %q ]; then echo OK; elif %stest -r %q; then echo OK; else echo NO; fi`,
-		path, c.sudoPrefix(), path)
+	checkCmd := fmt.Sprintf(`if [ -r %s ]; then echo OK; elif %stest -r %s; then echo OK; else echo NO; fi`,
+		shq(path), c.sudoPrefix(), shq(path))
 	checkOut, checkStderr, _ := runSSH(client, checkCmd)
 	if !strings.Contains(checkOut, "OK") {
 		return "", fmt.Errorf("文件不可读：%s（请检查 SSH 用户权限，或在节点配置中设置 sudo 密码 / 配置 NOPASSWD sudo）: %s",
 			path, strings.TrimSpace(checkStderr))
 	}
 	// 可读，开始读取
-	cmd := fmt.Sprintf(`if [ -r %q ]; then cat %q; else %scat %q; fi | base64 -w 0`,
-		path, path, c.sudoPrefix(), path)
+	cmd := fmt.Sprintf(`if [ -r %s ]; then cat %s; else %scat %s; fi | base64 -w 0`,
+		shq(path), shq(path), c.sudoPrefix(), shq(path))
 	out, _, err := runSSH(client, cmd)
 	if err != nil {
 		return "", fmt.Errorf("读取失败: %v", err)
@@ -130,7 +130,7 @@ func (c SSHClient) WriteFile(path, content string) error {
 	if idx := strings.LastIndex(path, "/"); idx > 0 {
 		dir = path[:idx]
 	}
-	preCheck := fmt.Sprintf(`%stest -w %q && echo OK || echo NO`, c.sudoPrefix(), dir)
+	preCheck := fmt.Sprintf(`%stest -w %s && echo OK || echo NO`, c.sudoPrefix(), shq(dir))
 	preOut, preStderr, _ := runSSH(client, preCheck)
 	if !strings.Contains(preOut, "OK") {
 		return fmt.Errorf("目录不可写：%s（请在节点配置中设置 sudo 密码或配置 NOPASSWD sudo）: %s",

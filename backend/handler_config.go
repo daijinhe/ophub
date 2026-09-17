@@ -81,6 +81,7 @@ func ConfigScanScope(c *gin.Context) {
 		fields := map[string]interface{}{}
 		if len(a.Fields) > 0 {
 			_ = json.Unmarshal(a.Fields, &fields)
+			_ = decryptAssetFields(fields)
 		}
 		// 展示名统一走 AssetDisplayName（与 Web 终端会话名 / 定时任务 / CMDB 同源）
 		list = append(list, item{ID: a.ID, Name: AssetDisplayName(&a), IP: extractIP(fields)})
@@ -215,7 +216,7 @@ func remoteListDir(t *crontabTarget, dir string) []string {
 		return nil
 	}
 	// 套上提权前缀：sudo 通道下以特权身份列目录。
-	cmd := fmt.Sprintf(`%sls -1L %q 2>/dev/null`, t.sudoPrefix(), dir)
+	cmd := fmt.Sprintf(`%sls -1L %s 2>/dev/null`, t.sudoPrefix(), shq(dir))
 	out, err := t.exec(cmd, 15*time.Second)
 	if err != nil {
 		return nil
@@ -234,7 +235,7 @@ func remoteFileExists(t *crontabTarget, p string) bool {
 	if !reSafePath.MatchString(p) {
 		return false
 	}
-	cmd := fmt.Sprintf(`%stest -f %q && echo OK || echo NO`, t.sudoPrefix(), p)
+	cmd := fmt.Sprintf(`%stest -f %s && echo OK || echo NO`, t.sudoPrefix(), shq(p))
 	out, err := t.exec(cmd, 10*time.Second)
 	if err != nil {
 		return false
@@ -246,7 +247,7 @@ func remoteDirExists(t *crontabTarget, p string) bool {
 	if !reSafePath.MatchString(p) {
 		return false
 	}
-	cmd := fmt.Sprintf(`%stest -d %q && echo OK || echo NO`, t.sudoPrefix(), p)
+	cmd := fmt.Sprintf(`%stest -d %s && echo OK || echo NO`, t.sudoPrefix(), shq(p))
 	out, err := t.exec(cmd, 10*time.Second)
 	if err != nil {
 		return false
@@ -384,6 +385,7 @@ func ImportNginxConfigs(c *gin.Context) {
 				fields := map[string]interface{}{}
 				if len(a.Fields) > 0 {
 					_ = json.Unmarshal(a.Fields, &fields)
+	_ = decryptAssetFields(fields)
 				}
 				if name == "" {
 					name = AssetDisplayName(&a)
@@ -519,6 +521,7 @@ func CreateNginxConfig(c *gin.Context) {
 	fields := map[string]interface{}{}
 	if len(a.Fields) > 0 {
 		_ = json.Unmarshal(a.Fields, &fields)
+		_ = decryptAssetFields(fields)
 	}
 	rec := NginxConfig{
 		ConfigType: "nginx",
@@ -592,7 +595,7 @@ func DeleteNginxConfig(c *gin.Context) {
 		if DB.First(&a, r.AssetID).Error == nil {
 			if t, err := assetTarget(a); err == nil {
 				mwOpsEnsurePriv(t) // 解析通道：sudo
-				cmd := fmt.Sprintf(`rm -f %q`, r.Path)
+				cmd := fmt.Sprintf(`rm -f %s`, shq(r.Path))
 				if _, werr := t.exec(t.sudoPrefix()+cmd, 20*time.Second); werr != nil {
 					// 远端删除失败不阻断平台记录删除，但返回告警
 					OK(c, gin.H{"deleted": true, "remoteDeleted": false, "remoteWarning": werr.Error()})

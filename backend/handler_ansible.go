@@ -292,6 +292,7 @@ func ImportAnsibleFromCMDB(c *gin.Context) {
 	for _, a := range assets {
 		var fields map[string]interface{}
 		_ = json.Unmarshal(a.Fields, &fields)
+	_ = decryptAssetFields(fields)
 		if fields == nil {
 			fields = map[string]interface{}{}
 		}
@@ -359,6 +360,7 @@ func CmdbAssets(c *gin.Context) {
 	for _, a := range assets {
 		var fields map[string]interface{}
 		_ = json.Unmarshal(a.Fields, &fields)
+		_ = decryptAssetFields(fields)
 		if fields == nil {
 			fields = map[string]interface{}{}
 		}

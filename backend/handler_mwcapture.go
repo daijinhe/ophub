@@ -574,6 +574,7 @@ func assetFieldsMap(a *Asset) map[string]interface{} {
 	m := map[string]interface{}{}
 	if a != nil && len(a.Fields) > 0 {
 		_ = json.Unmarshal(a.Fields, &m)
+	_ = decryptAssetFields(m)
 	}
 	return m
 }

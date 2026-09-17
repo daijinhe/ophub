@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -120,6 +121,15 @@ func GetAsset(c *gin.Context) {
 	}
 	// 派生展示名（单个资产直接赋值，不能走 withDisplayNames——那会改在副本上）
 	a.DisplayName = AssetDisplayName(&a)
+	// P1-3：解密「普通用户密码 / 超级管理员用户密码 / 密码」字段再返回
+	var fmap map[string]interface{}
+	if len(a.Fields) > 0 {
+		_ = json.Unmarshal(a.Fields, &fmap)
+		if fmap != nil {
+			_ = decryptAssetFields(fmap)
+			a.Fields = toJSON(fmap)
+		}
+	}
 	OK(c, a)
 }
 
@@ -250,12 +260,19 @@ func BatchUpdateAssets(c *gin.Context) {
 		if m == nil {
 			m = map[string]interface{}{}
 		}
+		// P1-3：把已加密的字段先解出来再做 merge，最后整体重新加密。
+		_ = decryptAssetFields(m)
 		for k, v := range req.Fields {
 			if v == nil {
 				delete(m, k)
 			} else {
 				m[k] = v
 			}
+		}
+		// 重新加密秘密字段
+		if err := encryptAssetFields(m); err != nil {
+			Fail(c, 400, 400, err.Error())
+			return
 		}
 		assets[i].Fields = toJSON(m)
 		// 重新派生 name / ip（与编辑资产逻辑一致）
@@ -302,7 +319,9 @@ func ImportAssets(c *gin.Context) {
 		Fail(c, 400, 400, "请上传文件")
 		return
 	}
-	tmp := filepath.Join(Cfg.UploadDir, fmt.Sprintf("%d_%d_%s", catID, time.Now().UnixNano(), file.Filename))
+	// path traversal 防御：filepath.Base 强制只取文件名，丢弃客户端 Content-Disposition 里的目录部分。
+	// 原代码会把客户端拼出的 "../../etc/cron.d/x" 当文件名前缀写到磁盘，是 P1-6。
+	tmp := filepath.Join(Cfg.UploadDir, fmt.Sprintf("%d_%d_%s", catID, time.Now().UnixNano(), filepath.Base(file.Filename)))
 	if err := c.SaveUploadedFile(file, tmp); err != nil {
 		Fail(c, 500, 500, "保存文件失败")
 		return
