@@ -1786,6 +1786,25 @@ export default function CMDB() {
                 </span>
               </span>
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                {/* 「保存」按钮：仅编辑模式可见，置于「完成」按钮左侧。
+                    之前的「保存字段」藏在 Alert banner 里很深，用户反馈位置很鸡肋难发现，
+                    这里把它抬到标题栏与「完成」并排：「保存」= 存字段不退出，「完成」= 存字段并退出编辑模式。
+                    用 ghost primary 与 solid「完成」作区别，避免两个同款按钮。 */}
+                {detailEditing && hasPerm('cmdb:update') && (
+                  <Button
+                    type="primary"
+                    ghost
+                    size="small"
+                    icon={<SaveOutlined />}
+                    loading={detailSaving}
+                    disabled={!detailFieldsDirty}
+                    onClick={saveDetailFields}
+                    title="保存资产字段与自定义字段的修改（仍留在编辑模式可继续改动）"
+                    style={{ marginInlineEnd: 4 }}
+                  >
+                    保存
+                  </Button>
+                )}
                 {/* 编辑总开关：资产全部字段 + 中间件捕捉 + 定时任务管理都挂在它下面，
                     双击行打开的详情默认只读展示。三种权限任一即可进入（各自的可操作范围在面板内再判）。 */}
                 {(hasPerm('cmdb:update') || hasPerm('mwcapture:manage') || hasPerm('crontab:manage')) && (
@@ -1860,6 +1879,10 @@ export default function CMDB() {
         style={detailMax ? { top: 12, maxWidth: '100vw' } : undefined}
         centered={!detailMax}
         closable={false}
+        /* 点击遮罩不关闭详情：编辑模式下误触会丢草稿；只读模式用户也反馈过「不知道点哪就关了」。
+           仅右上角 X 与 ESC 可关闭（keyboard 默认 true，ESC 走 onCancel=closeDetail，
+           有未保存改动时由 closeDetail 内的 modal.confirm 兜底）。 */
+        maskClosable={false}
         destroyOnClose
       >
         {detail && (() => {
@@ -2080,24 +2103,9 @@ export default function CMDB() {
                   description={
                     <span>
                       {canEditAsset
-                        ? '所有资产字段（含自定义字段）均可就地修改；「中间件和数据库信息」与「定时任务信息」也可操作（执行捕捉 / 就地编辑 / 用途维护 / 新增删除）。改完点右上角「完成」即自动保存字段并退出，也可点右侧「保存字段」只存不退；中间件与定时任务各有自己的保存入口。'
+                        ? '所有资产字段（含自定义字段）均可就地修改；「中间件和数据库信息」与「定时任务信息」也可操作（执行捕捉 / 就地编辑 / 用途维护 / 新增删除）。改完点标题栏「完成」即自动保存字段并退出，也可点「保存」只存不退；中间件与定时任务各有自己的保存入口。'
                         : '当前账号无资产字段更新权限，字段仍为只读；「中间件和数据库信息」与「定时任务信息」可操作。'}
                     </span>
-                  }
-                  action={
-                    canEditAsset ? (
-                      <Button
-                        type="primary"
-                        size="small"
-                        icon={<SaveOutlined />}
-                        loading={detailSaving}
-                        disabled={!detailFieldsDirty}
-                        onClick={saveDetailFields}
-                        title="保存资产字段与自定义字段的修改"
-                      >
-                        保存字段
-                      </Button>
-                    ) : undefined
                   }
                 />
               ) : (
