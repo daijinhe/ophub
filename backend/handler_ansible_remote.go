@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -433,7 +434,7 @@ func ImportCMDBToRemote(c *gin.Context) {
 	for _, a := range assets {
 		var fields map[string]interface{}
 		_ = json.Unmarshal(a.Fields, &fields)
-	_ = decryptAssetFields(fields)
+		_ = decryptAssetFields(fields)
 		if fields == nil {
 			fields = map[string]interface{}{}
 		}
@@ -540,7 +541,7 @@ func ExecRemoteCommand(c *gin.Context) {
 var ansibleWhiteList = []string{
 	"/usr/bin/ansible ",
 	"/usr/local/bin/ansible ",
-	"ansible ",          // 当前用户 PATH 中的 ansible
+	"ansible ", // 当前用户 PATH 中的 ansible
 	"ansible-playbook ",
 	"ansible-vault ",
 	"ansible-doc ",

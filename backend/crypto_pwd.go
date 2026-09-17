@@ -124,9 +124,9 @@ func decryptField(stored string) (string, error) {
 // 业务约定：assets.fields JSONB 里这几个 key 是 SSH 类凭据，全部走加密通道。
 // 中间件配置等其他敏感字段（密码、密钥）目前不在本平台 schema 内，由中间件表自行处理。
 var secretFieldKeys = map[string]bool{
-	"普通用户密码":         true,
+	"普通用户密码":    true,
 	"超级管理员用户密码": true,
-	"密码":               true,
+	"密码":        true,
 }
 
 // encryptAssetFields 就地加密 inputs 里的秘密字段（保护原 map，由 caller 决定是否覆盖）。

@@ -1851,7 +1851,7 @@ func mwCaptureAsset(a *Asset, by string) *MwCapture {
 	fields := map[string]interface{}{}
 	if len(a.Fields) > 0 {
 		_ = json.Unmarshal(a.Fields, &fields)
-	_ = decryptAssetFields(fields)
+		_ = decryptAssetFields(fields)
 	}
 	rec.Host = toStr(fields["虚拟机IPv4"])
 	if rec.Host == "" {

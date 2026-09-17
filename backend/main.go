@@ -12,11 +12,11 @@ import (
 // main 服务入口
 //
 // 安全相关初始化顺序（v1.7.1+）：
-//   1) LoadConfig → 配置 panic 时需要的 env 都在 Cfg 里
-//   2) enforceProductionSecrets（Cfg.Env != "dev" 时强制 JWT_SECRET / PWD_ENC_KEY 非默认值）
-//   3) initPwdCipher（须在 InitDB 播种之前）
-//   4) loadKnownHosts（启动时一次性从磁盘恢复 SSH known_hosts）
-//   5) InitRedis / InitDB（Cfg）
+//  1. LoadConfig → 配置 panic 时需要的 env 都在 Cfg 里
+//  2. enforceProductionSecrets（Cfg.Env != "dev" 时强制 JWT_SECRET / PWD_ENC_KEY 非默认值）
+//  3. initPwdCipher（须在 InitDB 播种之前）
+//  4. loadKnownHosts（启动时一次性从磁盘恢复 SSH known_hosts）
+//  5. InitRedis / InitDB（Cfg）
 func main() {
 	Cfg = LoadConfig()
 	enforceProductionSecrets(Cfg)

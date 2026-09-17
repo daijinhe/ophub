@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -220,7 +221,7 @@ func WebShellHandler(c *gin.Context) {
 
 	// 升级成功 → 立即消费 ticket（一次性）。后续 SSH 任何失败都不再退还。
 	if !legacyMode && ticket != "" {
-		_ = consumeWSTicket(ticket)
+		_, _ = consumeWSTicket(ticket)
 	}
 
 	// 4) SSH 连接
@@ -463,7 +464,7 @@ func (b *sshBridge) handleUpload(m wsMsg) {
 		}
 	}
 	if b.uploadBytes > wsUploadMaxSize {
-		b.writeMsg("\x1b[31m[上传失败] 单文件超 %d MiB 上限\x1b[0m", wsUploadMaxSize)
+		b.writeMsg(fmt.Sprintf("\x1b[31m[上传失败] 单文件超 %d MiB 上限\x1b[0m", wsUploadMaxSize/(1024*1024)))
 		_ = b.uploadFile.Close()
 		b.uploadFile = nil
 		return
@@ -482,24 +483,24 @@ const wsUploadMaxSize = 10 * 1024 * 1024
 // wsUploadAllowedExts 允许的扩展名（小写，含 "."）。其它一律拒绝。
 // 故意没列可执行类（.so .py .sh 不允许基线），避免直接往主机写脚本后被 cron 触发。
 var wsUploadAllowedExts = map[string]bool{
-	".txt":     true,
-	".log":     true,
-	".md":      true,
-	".json":    true,
-	".csv":     true,
-	".conf":    true,
-	".cfg":     true,
-	".ini":     true,
-	".yaml":    true,
-	".yml":     true,
-	".xml":     true,
+	".txt":        true,
+	".log":        true,
+	".md":         true,
+	".json":       true,
+	".csv":        true,
+	".conf":       true,
+	".cfg":        true,
+	".ini":        true,
+	".yaml":       true,
+	".yml":        true,
+	".xml":        true,
 	".properties": true,
-	".tar":     true,
-	".gz":      true,
-	".tgz":     true,
-	".zip":     true,
-	".bak":     true,
-	".bak.":    true, // 任意 .bak.* 也允许
+	".tar":        true,
+	".gz":         true,
+	".tgz":        true,
+	".zip":        true,
+	".bak":        true,
+	".bak.":       true, // 任意 .bak.* 也允许
 }
 
 // wsUploadAllowedPrefixes 允许上传到的目标路径前缀（绝对路径）。
@@ -633,6 +634,7 @@ func (b *sshBridge) pumpStdin() {
 		if mt == websocket.TextMessage {
 			// 尝试解析控制消息
 			var ctl wsMsg
+			if json.Unmarshal(msg, &ctl) == nil && ctl.Type != "" {
 				switch ctl.Type {
 				case "resize":
 					if ctl.Cols > 0 && ctl.Rows > 0 {

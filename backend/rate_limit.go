@@ -16,6 +16,7 @@ package main
 //
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -28,6 +29,12 @@ const (
 	loginMaxFailures     = 5
 	loginLockoutDuration = 10 * time.Minute
 )
+
+// shortCtx 给 Redis 调用一个统一短超时，避免 Redis 卡死时把登录请求整个拖挂。
+// 调用方必须 defer cancel()。
+func shortCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 3*time.Second)
+}
 
 func loginCountersKey(scope, ident string) string {
 	return "login:fail:" + scope + ":" + ident
@@ -44,7 +51,7 @@ func bumpLoginFailure(scope, ident string) (count int64, locked bool) {
 	if RDB == nil || strings.TrimSpace(ident) == "" {
 		return 0, false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := shortCtx()
 	defer cancel()
 	k := loginCountersKey(scope, ident)
 	n, err := RDB.Incr(ctx, k).Result()
@@ -67,7 +74,7 @@ func LoginRateLimitCheck(ip, username string) error {
 	if RDB == nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := shortCtx()
 	defer cancel()
 	if ip != "" {
 		if exists, _ := RDB.Exists(ctx, loginLockKey("ip", ip)).Result(); exists > 0 {
@@ -110,7 +117,8 @@ func RecordLoginSuccess(ip, username string) {
 	if RDB == nil {
 		return
 	}
-	ctx := shortCtx()
+	ctx, cancel := shortCtx()
+	defer cancel()
 	if ip != "" {
 		RDB.Del(ctx, loginCountersKey("ip", ip))
 	}

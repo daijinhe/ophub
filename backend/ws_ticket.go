@@ -66,6 +66,24 @@ func newWSTicket(uid uint) (string, error) {
 	return t, nil
 }
 
+// peekWSTicket 只验证不消费（WebShellHandler 在权限校验通过后才真正消费，
+// 避免「没权限的人连接一次就把 ticket 作废」的拒绝服务）。
+func peekWSTicket(ticket string) (wsTicket, error) {
+	if ticket == "" || ticket == "legacy-token-url" {
+		return wsTicket{}, errTicketInvalid
+	}
+	wsTicketsMu.RLock()
+	v, ok := wsTickets[ticket]
+	wsTicketsMu.RUnlock()
+	if !ok {
+		return wsTicket{}, errTicketInvalid
+	}
+	if time.Now().After(v.ExpiresAt) {
+		return wsTicket{}, errTicketExpired
+	}
+	return v, nil
+}
+
 // consumeWSTicket 验证+消费（WebShellHandler 用），成功立即删除。
 func consumeWSTicket(ticket string) (wsTicket, error) {
 	if ticket == "" || ticket == "legacy-token-url" {
@@ -110,7 +128,8 @@ func getUIDFromToken(tokenStr string) (uint, error) {
 }
 
 // WsTicketHandler 前端 POST /api/ws/ssh/ticket 拿一次性 ticket。
-//   必须先登录拿到 JWT 后再来取；权限门槛与 Web 终端一致：内置 admin 角色。
+//
+//	必须先登录拿到 JWT 后再来取；权限门槛与 Web 终端一致：内置 admin 角色。
 func WsTicketHandler(c *gin.Context) {
 	uid := currentUID(c)
 	if uid == 0 {

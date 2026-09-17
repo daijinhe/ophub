@@ -116,7 +116,7 @@ func CalibrateAsset(c *gin.Context) {
 	fields := map[string]interface{}{}
 	if len(a.Fields) > 0 {
 		_ = json.Unmarshal(a.Fields, &fields)
-	_ = decryptAssetFields(fields)
+		_ = decryptAssetFields(fields)
 	}
 	if fields == nil {
 		fields = map[string]interface{}{}

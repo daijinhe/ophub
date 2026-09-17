@@ -83,8 +83,8 @@ func TestMwEsItemRealShapedOutput(t *testing.T) {
 	got := mwEsItemTest(
 		nil,
 		map[int]bool{1234: true, 1235: true}, // 假设 2 个 ES Java 进程
-		"/usr/share/elasticsearch", // cmdline -Des.path.home= 命中
-		"192.168.10.5",             // cmdline -Des.network.host=192.168.10.5
+		"/usr/share/elasticsearch",           // cmdline -Des.path.home= 命中
+		"192.168.10.5",                       // cmdline -Des.network.host=192.168.10.5
 		[]string{},
 		probes,
 		"",

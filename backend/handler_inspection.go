@@ -227,7 +227,7 @@ func executeInspection(task *InspectionTask) (*InspectionRecord, error) {
 	for _, a := range assets {
 		var fields map[string]interface{}
 		_ = json.Unmarshal(a.Fields, &fields)
-	_ = decryptAssetFields(fields)
+		_ = decryptAssetFields(fields)
 		ip := extractIP(fields)
 		mwTypes := extractMiddlewareTypes(fields)
 		res := InspectionResult{
