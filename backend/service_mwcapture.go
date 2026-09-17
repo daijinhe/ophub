@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -236,6 +237,78 @@ fi
     fi
   done
 } | cap | sec tomcat_info
+
+# ---------------- ElasticSearch（2026-09-17 用户新增：版本/端口/安装目录/访问地址/账号/密码/备注）----------------
+# 进程发现：主类 org.elasticsearch.bootstrap.Elasticsearch（5.x~8.x 一致）
+ES_PIDS=
+for p in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$'); do
+  cl=$(tr '\0' ' ' < /proc/$p/cmdline 2>/dev/null)
+  case "$cl" in
+    *'org.elasticsearch.bootstrap'*|*'elasticsearch.EsMain'*)
+      ES_PIDS="$ES_PIDS $p"
+      ;;
+  esac
+done
+{
+  for p in $ES_PIDS; do
+    e=$(readlink -f /proc/$p/exe 2>/dev/null)
+    echo "$p|$e"
+  done
+} | sec es_exe
+{
+  for p in $ES_PIDS; do
+    cl=$(tr '\0' ' ' < /proc/$p/cmdline 2>/dev/null)
+    # ES home：7.x 是 -Des.path.home，8.x 改成 -Epath.home
+    h=$(echo "$cl" | grep -oE '\-Des\.path\.home=[^ ]+|\-Epath\.home=[^ ]+|\-Dpath\.home=[^ ]+' | head -1 | cut -d= -f2)
+    b=$(echo "$cl" | grep -oE '\-Des\.network\.host=[^ ]+|\-Enetwork\.host=[^ ]+' | head -1 | cut -d= -f2)
+    hp=$(echo "$cl" | grep -oE '\-Des\.http\.port=[^ ]+|\-Ehttp\.port=[^ ]+' | head -1 | cut -d= -f2)
+    echo "#HOME=$h"
+    echo "#BIND=$b"
+    echo "#HPORT=$hp"
+  done
+  # 找 elasticsearch.yml 落点（不读内容，单独 sec 读）
+  for f in /usr/share/elasticsearch/config/elasticsearch.yml /opt/elasticsearch/config/elasticsearch.yml /data/elasticsearch/config/elasticsearch.yml /etc/elasticsearch/elasticsearch.yml /usr/local/elasticsearch/config/elasticsearch.yml /var/lib/elasticsearch/elasticsearch.yml; do
+    [ -f "$f" ] && echo "#YML=$f"
+  done
+} | sec es_meta
+
+# HTTP 探测：默认端口试一遍（-k 跳过 TLS）
+{
+  for pt in 9200 9201 9202 19200; do
+    echo "#PROBE port=$pt"
+    if command -v curl >/dev/null 2>&1; then
+      timeout 4 curl -sS -m 3 -k "http://127.0.0.1:$pt/" 2>/dev/null | head -c 3000
+    elif command -v wget >/dev/null 2>&1; then
+      timeout 4 wget -qO- --timeout=3 --no-check-certificate "http://127.0.0.1:$pt/" 2>/dev/null | head -c 3000
+    fi
+    echo
+  done
+} | sec es_http
+
+# 配置 / 安全相关文件：拼装启动参数里的 conf path（兼容 7/8）+ 默认落点
+{
+  CONF_PATH=
+  if [ -n "$ES_PIDS" ]; then
+    for p in $ES_PIDS; do
+      cl=$(tr '\0' ' ' < /proc/$p/cmdline 2>/dev/null)
+      cp=$(echo "$cl" | grep -oE '\-Des\.path\.conf=[^ ]+|\-Epath\.conf=[^ ]+' | head -1 | cut -d= -f2)
+      [ -n "$cp" ] && CONF_PATH="$cp"
+    done
+  fi
+  for f in \
+    "$CONF_PATH/elasticsearch.yml" \
+    /usr/share/elasticsearch/config/elasticsearch.yml \
+    /opt/elasticsearch/config/elasticsearch.yml \
+    /data/elasticsearch/config/elasticsearch.yml \
+    /etc/elasticsearch/elasticsearch.yml \
+    /usr/local/elasticsearch/config/elasticsearch.yml; do
+    [ -f "$f" ] && { echo "#FILE $f"; grep -vE '^[[:space:]]*#|^[[:space:]]*$' "$f" 2>/dev/null | head -60; }
+  done
+  # 安全相关（账号候选来源）
+  for f in /etc/elasticsearch/users /etc/elasticsearch/users_roles /etc/elasticsearch/roles.yml /usr/share/elasticsearch/config/users /usr/share/elasticsearch/config/users_roles /usr/share/elasticsearch/config/roles.yml; do
+    [ -f "$f" ] && { echo "#FILE $f"; head -40 "$f" 2>/dev/null; }
+  done
+} | cap | sec es_conf
 
 # ---------------- 证书目录 ----------------
 {
@@ -998,6 +1071,225 @@ func mwBwsVersion(raw string) string {
 	return best
 }
 
+// mwEsProbe 单个 ES HTTP 探针端口的探测结果（私）。
+//
+// 与 mwCaptureScript() 的 es_http 段配对：每段按 `#PROBE port=xxx` 切成多份，
+// 该行之后直到下一个 #PROBE 或段尾都是该端口的 curl 输出（空字符串 = 没有 curl
+// 或端口拒绝连接）。
+type mwEsProbe struct {
+	Port string
+	Raw  string
+}
+
+// mwEsParseProbes 把 es_http 段按 `#PROBE port=xxx` 切成多份。
+func mwEsParseProbes(raw string) []mwEsProbe {
+	out := []mwEsProbe{}
+	var cur *mwEsProbe
+	for _, ln := range strings.Split(raw, "\n") {
+		trim := strings.TrimSpace(strings.TrimRight(ln, "\r"))
+		if strings.HasPrefix(trim, "#PROBE port=") {
+			if cur != nil {
+				cur.Raw = strings.TrimSpace(cur.Raw)
+				out = append(out, *cur)
+			}
+			cur = &mwEsProbe{Port: strings.TrimSpace(strings.TrimPrefix(trim, "#PROBE port="))}
+			continue
+		}
+		if cur != nil {
+			cur.Raw += strings.TrimRight(ln, "\r") + "\n"
+		}
+	}
+	if cur != nil {
+		cur.Raw = strings.TrimSpace(cur.Raw)
+		out = append(out, *cur)
+	}
+	return out
+}
+
+// mwEsPickUser 从 es_conf 段里挑一个用户名作为占位（仅当存在 users 文件时）。
+//
+// Elasticsearch 5.x~8.x 的内置用户文件是 /etc/elasticsearch/users 或
+// $ES_HOME/config/users，行格式为「用户名:$2y$...」（bcrypt hash 在冒号后面）。
+// 这里只取冒号前的用户名（hash 不读），多数情况下仍由用户手填密码。
+func mwEsPickUser(raw string) string {
+	inUsers := false
+	for _, ln := range strings.Split(raw, "\n") {
+		t := strings.TrimSpace(ln)
+		if strings.HasPrefix(t, "#FILE") {
+			fp := strings.TrimSpace(strings.TrimPrefix(t, "#FILE"))
+			// 形如 /etc/elasticsearch/users 才计入（users_roles / roles.yml 不算）
+			inUsers = !strings.Contains(fp, "_roles") && strings.HasSuffix(fp, "/users")
+			continue
+		}
+		if !inUsers || t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		// users 文件行：「用户名:$2y$10$...」（hash 段含 : 和 $，用 strings.Fields 会把整行当一列）
+		name := strings.SplitN(t, ":", 2)[0]
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		return name
+	}
+	return ""
+}
+
+// mwEsItem 构造 Elasticsearch 条目（2026-09-17 用户新增）。
+//
+// 字段：版本 / 端口 / 安装目录 / 访问地址 / 账号 / 密码 / 备注。
+//
+// 探测思路：
+//   - 进程：cmdline 含 "org.elasticsearch.bootstrap" 或 "elasticsearch.EsMain"
+//     （兼容 5.x~8.x；ES 旧版 2.x/1.x 用 elasticsearch.EsMain）
+//   - 版本：HTTP GET / 拿 JSON 的 version.number；curl 不到时跑不出，先留空
+//   - 安装目录：cmdline 里 -Des.path.home= / -Epath.home= 优先；退回
+//     JVM argv[0] 向上 3 级（…/jdk/bin/java → ES_HOME）；再退回标准落点
+//   - 访问地址：http://<bind>:<port>；bind 从 cmdline -Des.network.host 推断
+//     （_local_/空/127.0.0.1 → 127.0.0.1；具体 IP → 用它；0.0.0.0 → 127.0.0.1 让用户改）
+//   - 账号：仅在读到 users 文件时填一个用户名（多数情况下用户需手填）
+//   - 跑不出的字段全部留空，前端编辑模式让用户补
+func mwEsItem(secs map[string]string, procs []mwProc, portsByPid map[int][]string, privileged bool) *MwCaptureItem {
+	// 1) ES 进程：cmdline 含 ES 主类
+	esPids := map[int]bool{}
+	for _, p := range procs {
+		cl := p.Args
+		if strings.Contains(cl, "org.elasticsearch.bootstrap") || strings.Contains(cl, "elasticsearch.EsMain") {
+			esPids[p.Pid] = true
+		}
+	}
+	// 2) es_meta 段：HOME / BIND / HPORT（启动命令行静态参数）
+	var (
+		installFromCli string
+		bindIP         string
+		portsFromCli   []string
+	)
+	for _, ln := range strings.Split(secs["es_meta"], "\n") {
+		t := strings.TrimSpace(ln)
+		switch {
+		case strings.HasPrefix(t, "#HOME="):
+			installFromCli = strings.TrimSpace(strings.TrimPrefix(t, "#HOME="))
+		case strings.HasPrefix(t, "#BIND="):
+			bindIP = strings.TrimSpace(strings.TrimPrefix(t, "#BIND="))
+		case strings.HasPrefix(t, "#HPORT="):
+			if p := strings.TrimSpace(strings.TrimPrefix(t, "#HPORT=")); p != "" {
+				portsFromCli = append(portsFromCli, p)
+			}
+		}
+	}
+
+	// 3) HTTP 探测 → 版本 / 端口
+	probes := mwEsParseProbes(secs["es_http"])
+	var version string
+	ports := append([]string{}, portsFromCli...)
+	for i := range probes {
+		pr := &probes[i]
+		body := strings.TrimSpace(pr.Raw)
+		if body == "" || !strings.HasPrefix(body, "{") {
+			continue
+		}
+		var root struct {
+			Name        string `json:"name"`
+			ClusterName string `json:"cluster_name"`
+			Version     struct {
+				Number string `json:"number"`
+			} `json:"version"`
+		}
+		if err := json.Unmarshal([]byte(body), &root); err == nil && root.Version.Number != "" {
+			if version == "" {
+				version = root.Version.Number
+			}
+			if pr.Port != "" {
+				ports = append(ports, pr.Port)
+			}
+		}
+	}
+	ports = mwSortPorts(ports)
+
+	// 4) 安装目录：先 cmdline 提取；退回 JVM argv[0] 上推三级；最后标准落点
+	installPath := installFromCli
+	if installPath == "" {
+		for _, p := range procs {
+			if !esPids[p.Pid] {
+				continue
+			}
+			fs := strings.Fields(p.Args)
+			if len(fs) == 0 {
+				continue
+			}
+			jvmPath := fs[0]
+			parts := strings.Split(jvmPath, "/")
+			// ES 7+ 自带 jdk：…/jdk/bin/java
+			if len(parts) >= 4 && parts[len(parts)-2] == "bin" && parts[len(parts)-3] == "jdk" {
+				installPath = strings.Join(parts[:len(parts)-3], "/")
+				break
+			}
+			// ES 5/6 自带 jre：…/jre/bin/java
+			if len(parts) >= 4 && parts[len(parts)-2] == "bin" && parts[len(parts)-3] == "jre" {
+				installPath = strings.Join(parts[:len(parts)-3], "/")
+				break
+			}
+		}
+	}
+	if installPath == "" {
+		for _, cand := range []string{
+			"/usr/share/elasticsearch",
+			"/opt/elasticsearch",
+			"/data/elasticsearch",
+			"/etc/elasticsearch",
+			"/usr/local/elasticsearch",
+		} {
+			if _, err := os.Stat(cand); err == nil {
+				installPath = cand
+				break
+			}
+		}
+	}
+
+	// 5) 访问地址：http://<bind>:<port>
+	accessHost := "127.0.0.1"
+	switch bindIP {
+	case "", "127.0.0.1", "localhost", "_local_":
+		accessHost = "127.0.0.1"
+	case "0.0.0.0":
+		// 0.0.0.0 → bind 全网卡；给本机 IP（用户后续可改成对外 IP）
+		accessHost = "127.0.0.1"
+	default:
+		accessHost = bindIP
+	}
+	var accessUrl string
+	if len(ports) > 0 {
+		accessUrl = fmt.Sprintf("http://%s:%s", accessHost, ports[0])
+	}
+
+	// 什么也没扫到 → 不出条目
+	if len(esPids) == 0 && version == "" && installPath == "" && len(ports) == 0 {
+		return nil
+	}
+	it := &MwCaptureItem{
+		Type:        "es",
+		Label:       "ElasticSearch",
+		Running:     len(esPids) > 0,
+		Version:     version,
+		Ports:       ports,
+		InstallPath: installPath,
+		AccessUrl:   accessUrl,
+	}
+	it.Username = mwEsPickUser(secs["es_conf"])
+
+	// 备注：尽量给用户一个"接下来改什么"的明确指引，而不是让一整行留空
+	switch {
+	case len(esPids) == 0 && (version != "" || accessUrl != ""):
+		it.Notes = append(it.Notes, "未探测到 ES Java 进程，但 HTTP 端口可连通（可能正在重启或非标启动）")
+	case !privileged && installPath == "":
+		it.Notes = append(it.Notes, "未取得 root 权限，未读取到 ES 安装目录；如需该字段请手工填写")
+	}
+	if it.Version == "" && len(ports) > 0 {
+		it.Notes = append(it.Notes, "未能解析 ES 版本（可能开启了 xpack security，请配置账号密码后用 curl 测试）")
+	}
+	return it
+}
+
 // mwTomcatItem 构造 Tomcat 条目。
 //
 // Tomcat 本质是 java 进程，靠 cmdline 里的 catalina 关键字识别；
@@ -1617,6 +1909,7 @@ func mwCaptureAsset(a *Asset, by string) *MwCapture {
 		mwJavaItem(secs, procs, portsByPid),
 		mwRedisItem(secs, procs, portsByPid, privileged),
 		mwBwsItem(secs, procs, portsByPid, privileged),
+		mwEsItem(secs, procs, portsByPid, privileged),
 	} {
 		if it != nil {
 			items = append(items, *it)

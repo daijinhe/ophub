@@ -118,6 +118,7 @@ export const MW_CAPTURE_TYPES: { type: string; label: string; short: string }[] 
   { type: 'php', label: 'PHP-FPM', short: 'php' },
   { type: 'java', label: 'Java', short: 'java' },
   { type: 'redis', label: 'Redis', short: 'redis' },
+  { type: 'es', label: 'ElasticSearch', short: 'es' },
   { type: 'bws310', label: '宝兰德 BWS310', short: 'bws310' },
   { type: 'tomcat', label: 'Tomcat', short: 'tomcat' },
 ]

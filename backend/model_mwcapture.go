@@ -93,6 +93,8 @@ func (c MwCapture) TypeList() []string {
 // LogPaths/CodePaths/Certs；php 只用 InstallPath/ConfigPaths；java 用 Version/Jars。
 // redis 用 Version/Ports/InstallPath/Password —— 2026-09-17 用户要求去掉「配置文件位置 /
 // 日志路径 / 存储位置」，改为登记 Redis 访问密码。
+// elasticsearch 用 Version/Ports/InstallPath/AccessUrl/Username/Password —— 2026-09-17
+// 用户新增：访问地址（HTTP endpoint）、账号（xpack 用户名），跑不出时留空让用户手填。
 // 没有的字段留空，前端不渲染空行。
 type MwCaptureItem struct {
 	Type        string       `json:"type"`
@@ -101,13 +103,15 @@ type MwCaptureItem struct {
 	Version     string       `json:"version,omitempty"`
 	Ports       []string     `json:"ports,omitempty"`
 	InstallPath string       `json:"installPath,omitempty"`
+	AccessUrl   string       `json:"accessUrl,omitempty"` // 访问地址（ES 用户新增 2026-09-17）
+	Username    string       `json:"username,omitempty"`  // 账号（ES 用户新增 2026-09-17；密码另存 Password）
 	ConfigPaths []string     `json:"configPaths,omitempty"`
 	LogPaths    []string     `json:"logPaths,omitempty"`
 	CodePaths   []MwCodePath `json:"codePaths,omitempty"`
 	Certs       []string     `json:"certs,omitempty"`
 	Jars        []MwJavaApp  `json:"jars,omitempty"`
 	Storage     []MwKv       `json:"storage,omitempty"`
-	Password    string       `json:"password,omitempty"` // 访问密码（2026-09-17 新增，当前仅 redis 使用）
+	Password    string       `json:"password,omitempty"` // 访问密码（2026-09-17 新增，当前 redis / es 使用）
 	Notes       []string     `json:"notes,omitempty"`
 }
 
@@ -147,6 +151,7 @@ var mwTypeLabelMap = map[string]string{
 	"php":    "PHP-FPM",
 	"java":   "Java",
 	"redis":  "Redis",
+	"es":     "ElasticSearch",
 	"bws310": "BWS310",
 	"tomcat": "Tomcat",
 }

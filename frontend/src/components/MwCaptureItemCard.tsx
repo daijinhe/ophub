@@ -37,6 +37,16 @@ export const MW_TYPE_FIELDS: Record<string, { key: string; label: string }[]> = 
     { key: 'installPath', label: '安装位置' },
     { key: 'password', label: '密码' },
   ],
+  // 2026-09-17 用户新增：ElasticSearch（版本 / 端口 / 安装目录 / 访问地址 / 账号 / 密码 / 备注）
+  // 探测拿不到的字段（账号、密码、访问地址含主机 IP 部分）一律留空让用户编辑模式手动补
+  es: [
+    { key: 'version', label: '版本' },
+    { key: 'ports', label: '端口' },
+    { key: 'installPath', label: '安装目录' },
+    { key: 'accessUrl', label: '访问地址' },
+    { key: 'username', label: '账号' },
+    { key: 'password', label: '密码' },
+  ],
   bws310: [
     { key: 'version', label: '版本号' },
     { key: 'ports', label: '端口' },
