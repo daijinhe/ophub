@@ -526,13 +526,36 @@ export default function CMDB() {
 
   // 标题栏「编辑 / 完成」总开关：编辑模式下可改「全部资产字段」（就地编辑 + 保存），
   // 同时解锁中间件捕捉面板与定时任务面板的管理动作；默认关闭 = 纯展示。
-  // 退出时若还有未保存的修改，先确认再退出。
-  const toggleDetailEditing = () => {
+  // 点「完成」退出时：若有就地修改过的资产字段（含自定义字段），先自动保存再退出，
+  // 保存失败则留在编辑模式让用户重试；中间件面板有自己的保存入口，若它还有
+  // 未保存改动则单独确认丢弃。
+  const toggleDetailEditing = async () => {
     if (!detailEditing) {
       setDetailEditing(true)
       return
     }
-    if (!detailDirty) {
+    if (detailFieldsDirty) {
+      const ok = await saveDetailFields()
+      if (!ok) return // 保存失败：留在编辑模式，草稿还在，用户可直接重试
+      if (mwDirty) {
+        modal.confirm({
+          title: '中间件信息还有未保存的修改？',
+          icon: <ExclamationCircleOutlined style={{ color: '#faad14' }} />,
+          width: 480,
+          okText: '放弃中间件修改',
+          cancelText: '留在编辑模式',
+          content: '资产字段已保存。「中间件和数据库信息」的修改有自己的保存入口，放弃后将丢失。',
+          onOk: () => {
+            setDetailEditing(false)
+            setMwDirty(false)
+          },
+        })
+        return
+      }
+      setDetailEditing(false)
+      return
+    }
+    if (!mwDirty) {
       setDetailEditing(false)
       resetDetailDraft()
       return
@@ -543,7 +566,7 @@ export default function CMDB() {
       width: 480,
       okText: '退出并丢弃',
       cancelText: '继续编辑',
-      content: '「资产字段」或「中间件和数据库信息」里有未保存的修改，退出编辑模式后将丢失。',
+      content: '「中间件和数据库信息」里有未保存的修改，退出编辑模式后将丢失。',
       onOk: () => {
         setDetailEditing(false)
         setMwDirty(false)
@@ -796,7 +819,7 @@ export default function CMDB() {
    * 避免把 80+ 个字段全量回写（也避免并发编辑时互相覆盖未展示字段）。
    */
   const saveDetailFields = async () => {
-    if (!detail) return
+    if (!detail) return false
     setDetailSaving(true)
     try {
       const fields: Record<string, any> = { ...((detail.fields || {}) as Record<string, any>) }
@@ -822,8 +845,10 @@ export default function CMDB() {
       const r = await api.get(`/assets/${detail.id}`)
       setDetail(r.data.data)
       loadAssets()
+      return true
     } catch (e: any) {
       message.error(e?.response?.data?.msg || '保存失败')
+      return false
     } finally {
       setDetailSaving(false)
     }
@@ -1771,7 +1796,7 @@ export default function CMDB() {
                     onClick={toggleDetailEditing}
                     title={
                       detailEditing
-                        ? '退出编辑模式（未保存的修改会丢失）'
+                        ? '保存字段并退出编辑模式（改过的资产字段会自动保存）'
                         : '进入编辑模式：可修改资产全部字段，并执行中间件捕捉 / 就地编辑、定时任务的用途维护与新增删除'
                     }
                     style={detailEditing ? { marginInlineEnd: 4 } : { color: '#1677ff' }}
@@ -2055,7 +2080,7 @@ export default function CMDB() {
                   description={
                     <span>
                       {canEditAsset
-                        ? '所有资产字段（含自定义字段）均可就地修改；「中间件和数据库信息」与「定时任务信息」也可操作（执行捕捉 / 就地编辑 / 用途维护 / 新增删除）。字段改完点右侧「保存字段」落库，中间件与定时任务各自有自己的保存入口。'
+                        ? '所有资产字段（含自定义字段）均可就地修改；「中间件和数据库信息」与「定时任务信息」也可操作（执行捕捉 / 就地编辑 / 用途维护 / 新增删除）。改完点右上角「完成」即自动保存字段并退出，也可点右侧「保存字段」只存不退；中间件与定时任务各有自己的保存入口。'
                         : '当前账号无资产字段更新权限，字段仍为只读；「中间件和数据库信息」与「定时任务信息」可操作。'}
                     </span>
                   }
