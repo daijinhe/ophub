@@ -346,6 +346,33 @@ func (t *crontabTarget) ListDir(dir string) ([]scriptDirEntry, error) {
 	return out, nil
 }
 
+// Stat 探测远端路径是目录还是文件。
+//
+// 为什么需要它：删除接口要区分「删文件 / 删空目录 / 递归删目录」三种语义，
+// 而 ListDir 无法区分「空目录」和「文件」（find 对两者都返回空），
+// 所以必须有一个明确的 stat 通道。
+//
+// 返回 (isDir, err)：err 非空表示条目不存在或探测失败。
+func (t *crontabTarget) Stat(path string) (bool, error) {
+	if !reSafePath.MatchString(path) {
+		return false, fmt.Errorf("路径不合法：%s", path)
+	}
+	pre := t.sudoPrefix()
+	out, err := t.exec(
+		fmt.Sprintf(`%sif [ -d %q ]; then DIR; elif [ -f %q ]; then FILE; else MISSING; fi`,
+			pre, path, path), 10*time.Second)
+	if err != nil {
+		return false, fmt.Errorf("探测失败：%v", err)
+	}
+	switch {
+	case strings.Contains(out, "DIR"):
+		return true, nil
+	case strings.Contains(out, "FILE"):
+		return false, nil
+	}
+	return false, fmt.Errorf("条目不存在：%s", path)
+}
+
 // MkDir 在目标机上创建目录（已存在不报错；中间权限不足套 sudoPrefix）。
 func (t *crontabTarget) MkDir(dir string) error {
 	if !reSafePath.MatchString(dir) {

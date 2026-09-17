@@ -68,6 +68,10 @@ services:
       - "8080"
     volumes:
       - ansible-data:/etc/ansible
+      # 脚本管理「平台本机」模式：把宿主机的 Java 启停脚本目录挂进容器。
+      # 不挂的话后端 os.ReadDir 读到的是**容器自己的空目录**，永远列不出脚本。
+      # 路径可用 .env 里的 SCRIPT_HOST_ROOT 覆盖（默认与页面上的根路径一致）。
+      - ${SCRIPT_HOST_ROOT:-/data/jenkins_home/scripts/Java_Start_Stop_SH}:${SCRIPT_HOST_ROOT:-/data/jenkins_home/scripts/Java_Start_Stop_SH}:rw
     networks:
       - ophub
 

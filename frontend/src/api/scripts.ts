@@ -11,9 +11,15 @@ import api from './client'
 //   POST /scripts/java/dir       → 新建服务目录
 //   DELETE /scripts/java/entry   → 删除（文件 / 空目录 / 递归目录，自适应）
 //
-// 所有路径在入口做了 normalizeScriptPath 校验（必须落在 root 之下）；
-// host 形参是「目标资产 ID」（即脚本管理目标机）—— 复用资产管理，不另接临时通道。
+// 双落点（source）：
+//   - 'local'  平台本机 —— 直接读写平台所在机器的文件系统（不经 ansible）
+//   - 'remote' 目标服务器 —— 经 ansible 控制节点操作选中的资产
+//
+// 两种落点共用同一套路径约束（必须落在 root 之下）与 1MiB 大小上限。
 // ============================================================================
+
+/** 数据落点：平台本机 / 目标服务器 */
+export type ScriptSource = 'local' | 'remote'
 
 export interface ScriptDirEntry {
   name: string
@@ -35,74 +41,86 @@ export interface ScriptFile {
   content: string
 }
 
-export interface ScriptHost {
-  id: number
-  hostname: string
-  displayName?: string
-  ip: string
-  sshUser?: string
-}
-
 const BASE = '/scripts/java'
 
+/** 统一拼 query：本机模式下不传 host（后端也不校验） */
+function q(
+  source: ScriptSource,
+  host: number | undefined,
+  path: string,
+  root?: string,
+) {
+  return {
+    source,
+    host: source === 'local' ? undefined : host,
+    path,
+    root: root || undefined,
+  }
+}
+
 export function listScripts(
-  host: number,
+  source: ScriptSource,
+  host: number | undefined,
   path: string,
   root?: string,
 ): Promise<ScriptListResponse> {
-  return api.get(BASE + '/ls', {
-    params: { host, path, root: root || undefined },
-  })
+  return api.get(BASE + '/ls', { params: q(source, host, path, root) })
 }
 
 export function getScriptFile(
-  host: number,
+  source: ScriptSource,
+  host: number | undefined,
   path: string,
   root?: string,
 ): Promise<ScriptFile> {
-  return api.get(BASE + '/file', {
-    params: { host, path, root: root || undefined },
-  })
+  return api.get(BASE + '/file', { params: q(source, host, path, root) })
 }
 
 export function putScriptFile(
-  host: number,
+  source: ScriptSource,
+  host: number | undefined,
   path: string,
   content: string,
   root?: string,
 ): Promise<{ msg: string; path: string; size: number }> {
   return api.put(BASE + '/file', { content }, {
-    params: { host, path, root: root || undefined },
+    params: q(source, host, path, root),
   })
 }
 
 export function createScriptDir(
-  host: number,
+  source: ScriptSource,
+  host: number | undefined,
   root: string,
   name: string,
 ): Promise<{ msg: string; path: string }> {
   return api.post(BASE + '/dir', undefined, {
-    params: { host, root, name },
+    params: {
+      source,
+      host: source === 'local' ? undefined : host,
+      root,
+      name,
+    },
   })
 }
 
 export function createScriptFile(
-  host: number,
+  source: ScriptSource,
+  host: number | undefined,
   path: string,
   content: string,
   root?: string,
 ): Promise<{ msg: string; path: string }> {
   return api.post(BASE + '/file', undefined, {
-    params: { host, path, content, root: root || undefined },
+    params: { ...q(source, host, path, root), content },
   })
 }
 
 export function deleteScriptEntry(
-  host: number,
+  source: ScriptSource,
+  host: number | undefined,
   path: string,
   root?: string,
 ): Promise<{ msg: string; path: string }> {
-  return api.delete(BASE + '/entry', {
-    params: { host, path, root: root || undefined },
-  })
+  return api.delete(BASE + '/entry', { params: q(source, host, path, root) })
 }

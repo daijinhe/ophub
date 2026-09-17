@@ -13,6 +13,7 @@ import {
   Modal,
   Popconfirm,
   Row,
+  Segmented,
   Select,
   Space,
   Spin,
@@ -44,6 +45,7 @@ import {
   listScripts,
   putScriptFile,
   type ScriptDirEntry,
+  type ScriptSource,
 } from '../api/scripts'
 import { listCrontabAssets, type CrontabHostOption } from '../api/crontab'
 import { useAuth } from '../store/AuthContext'
@@ -84,6 +86,8 @@ export default function JavaScriptManager() {
   const [hosts, setHosts] = useState<CrontabHostOption[]>([])
   const [hostsLoading, setHostsLoading] = useState(false)
   const [hostId, setHostId] = useState<number | undefined>()
+  // 数据落点：平台本机（local，直接读写平台所在机器）还是目标服务器（remote，经 ansible）
+  const [source, setSource] = useState<ScriptSource>('remote')
   const [rootPath, setRootPath] = useState(ROOT_DEFAULT)
 
   // 服务（子目录）树 + 当前选中节点
@@ -129,10 +133,11 @@ export default function JavaScriptManager() {
 
   /* ---------- 加载服务列表（根目录下子目录） ---------- */
   const loadDirs = useCallback(async () => {
-    if (!hostId) return
+    // 本机模式不需要选主机；远端模式必须先选资产（否则后端无从连接）
+    if (source === 'remote' && !hostId) return
     setDirsLoading(true)
     try {
-      const r = await listScripts(hostId, rootPath)
+      const r = await listScripts(source, hostId, rootPath)
       setDirs((r.items || []).filter((it) => it.isDir))
     } catch (e) {
       message.error('加载服务列表失败：' + errMsg(e))
@@ -140,7 +145,7 @@ export default function JavaScriptManager() {
     } finally {
       setDirsLoading(false)
     }
-  }, [hostId, rootPath])
+  }, [source, hostId, rootPath])
 
   useEffect(() => {
     loadDirs()
@@ -149,13 +154,13 @@ export default function JavaScriptManager() {
   /* ---------- 加载选中服务下的文件 ---------- */
   const loadFiles = useCallback(
     async (dir: ScriptDirEntry | null) => {
-      if (!hostId || !dir) {
+      if ((source === 'remote' && !hostId) || !dir) {
         setFiles([])
         return
       }
       setFilesLoading(true)
       try {
-        const r = await listScripts(hostId, dir.path, rootPath)
+        const r = await listScripts(source, hostId, dir.path, rootPath)
         // 文件型条目（脚本文件们）
         setFiles((r.items || []).filter((it) => !it.isDir))
       } catch (e) {
@@ -165,7 +170,7 @@ export default function JavaScriptManager() {
         setFilesLoading(false)
       }
     },
-    [hostId, rootPath],
+    [source, hostId, rootPath],
   )
 
   useEffect(() => {
@@ -175,27 +180,33 @@ export default function JavaScriptManager() {
   /* ---------- 打开文件到编辑器 ---------- */
   const openFile = useCallback(
     async (f: ScriptDirEntry) => {
-      if (!hostId) return
+      if (source === 'remote' && !hostId) return
       try {
-        const r = await getScriptFile(hostId, f.path, rootPath)
+        const r = await getScriptFile(source, hostId, f.path, rootPath)
         setSelectedFile(f)
         setEditorContent({ open: true, dirty: false, loading: false, content: r.content })
       } catch (e) {
         message.error('打开文件失败：' + errMsg(e))
       }
     },
-    [hostId, rootPath],
+    [source, hostId, rootPath],
   )
 
   /* ---------- 保存当前编辑 ---------- */
   const saveFile = useCallback(async () => {
-    if (!hostId || !selectedFile) return
+    if ((source === 'remote' && !hostId) || !selectedFile) return
     if (!editorOpen.dirty) {
       message.info('没有改动')
       return
     }
     try {
-      await putScriptFile(hostId, selectedFile.path, editorOpen.content, rootPath)
+      await putScriptFile(
+        source,
+        hostId,
+        selectedFile.path,
+        editorOpen.content,
+        rootPath,
+      )
       message.success('保存成功')
       setEditorContent({ ...editorOpen, dirty: false })
       // 刷新文件列表（大小/时间会变）
@@ -203,13 +214,13 @@ export default function JavaScriptManager() {
     } catch (e) {
       message.error('保存失败：' + errMsg(e))
     }
-  }, [hostId, selectedFile, selectedDir, editorOpen, rootPath, loadFiles])
+  }, [source, hostId, selectedFile, selectedDir, editorOpen, rootPath, loadFiles])
 
   /* ---------- 新建服务目录 ---------- */
   const onCreateDir = async (vals: { name: string }) => {
-    if (!hostId) return
+    if (source === 'remote' && !hostId) return
     try {
-      await createScriptDir(hostId, rootPath, vals.name)
+      await createScriptDir(source, hostId, rootPath, vals.name)
       message.success('服务目录已创建：' + vals.name)
       setCreateDirOpen(false)
       loadDirs()
@@ -220,13 +231,13 @@ export default function JavaScriptManager() {
 
   /* ---------- 新建脚本文件 ---------- */
   const onCreateFile = async (vals: { name: string; content?: string }) => {
-    if (!hostId || !selectedDir) {
+    if ((source === 'remote' && !hostId) || !selectedDir) {
       message.warning('请先选择左侧一个服务')
       return
     }
     try {
       const fullPath = `${selectedDir.path}/${vals.name}`
-      await createScriptFile(hostId, fullPath, vals.content || '', rootPath)
+      await createScriptFile(source, hostId, fullPath, vals.content || '', rootPath)
       message.success('脚本已创建：' + vals.name)
       setCreateFileOpen(false)
       loadFiles(selectedDir)
@@ -237,7 +248,7 @@ export default function JavaScriptManager() {
 
   /* ---------- 删除条目（服务目录 / 脚本） ---------- */
   const onDelete = async (entry: ScriptDirEntry) => {
-    if (!hostId) return
+    if (source === 'remote' && !hostId) return
     const isDir = entry.isDir
     const confirmText = isDir
       ? `确认删除服务目录「${entry.name}」及其下所有脚本？此操作不可恢复！`
@@ -250,7 +261,7 @@ export default function JavaScriptManager() {
       cancelText: '取消',
       onOk: async () => {
         try {
-          await deleteScriptEntry(hostId, entry.path, rootPath)
+          await deleteScriptEntry(source, hostId, entry.path, rootPath)
           message.success('已删除：' + entry.name)
           if (isDir) {
             if (selectedDir?.path === entry.path) {
@@ -286,7 +297,7 @@ export default function JavaScriptManager() {
           <CodeOutlined style={{ marginRight: 8 }} />
           Java 启停脚本管理
         </Title>
-        <Tag color="purple">v1.6.2</Tag>
+        <Tag color="purple">v1.6.4</Tag>
         <div style={{ flex: 1 }} />
         <Tooltip title="查看使用说明">
           <Button icon={<QuestionCircleOutlined />} onClick={() => setHelpOpen(true)}>
@@ -295,29 +306,47 @@ export default function JavaScriptManager() {
         </Tooltip>
       </div>
 
-      {/* 顶部：主机 + 根路径 */}
+      {/* 顶部：数据源 + 主机 + 根路径 */}
       <Card size="small" style={{ marginBottom: 12 }}>
         <Form layout="inline">
-          <Form.Item label="目标主机" style={{ minWidth: 280 }}>
-            <Select
-              showSearch
-              loading={hostsLoading}
-              value={hostId}
-              placeholder="选择资产（脚本所在机器）"
-              optionFilterProp="label"
-              options={hostValue.map((h) => ({
-                value: h.value,
-                label: h.label + (h.vm ? ` (${h.vm})` : ''),
-              }))}
+          <Form.Item label="数据源">
+            <Segmented
+              value={source}
               onChange={(v) => {
-                setHostId(v as number)
+                setSource(v as ScriptSource)
+                // 切换落点后路径语义变了，清空选中态避免拿旧机器的路径去操作新落点
                 setSelectedDir(null)
                 setSelectedFile(null)
                 setEditorContent({ open: false, dirty: false, content: '' })
               }}
-              style={{ minWidth: 260 }}
+              options={[
+                { label: '目标服务器', value: 'remote', icon: <CloudServerOutlined /> },
+                { label: '平台本机', value: 'local', icon: <CodeOutlined /> },
+              ]}
             />
           </Form.Item>
+          {source === 'remote' && (
+            <Form.Item label="目标主机" style={{ minWidth: 280 }}>
+              <Select
+                showSearch
+                loading={hostsLoading}
+                value={hostId}
+                placeholder="选择资产（脚本所在机器）"
+                optionFilterProp="label"
+                options={hostValue.map((h) => ({
+                  value: h.value,
+                  label: h.label + (h.vm ? ` (${h.vm})` : ''),
+                }))}
+                onChange={(v) => {
+                  setHostId(v as number)
+                  setSelectedDir(null)
+                  setSelectedFile(null)
+                  setEditorContent({ open: false, dirty: false, content: '' })
+                }}
+                style={{ minWidth: 260 }}
+              />
+            </Form.Item>
+          )}
           <Form.Item label="脚本根路径" style={{ minWidth: 420 }}>
             <Input
               value={rootPath}
@@ -334,7 +363,7 @@ export default function JavaScriptManager() {
                   loadDirs()
                   if (selectedDir) loadFiles(selectedDir)
                 }}
-                disabled={!hostId}
+                disabled={source === 'remote' && !hostId}
               >
                 刷新
               </Button>
@@ -342,7 +371,7 @@ export default function JavaScriptManager() {
                 <Button
                   icon={<FolderAddOutlined />}
                   type="primary"
-                  disabled={!hostId}
+                  disabled={source === 'remote' && !hostId}
                   onClick={() => setCreateDirOpen(true)}
                 >
                   新建服务
@@ -353,7 +382,7 @@ export default function JavaScriptManager() {
         </Form>
       </Card>
 
-      {!hostId ? (
+      {source === 'remote' && !hostId ? (
         <Alert
           type="info"
           showIcon
@@ -528,9 +557,25 @@ export default function JavaScriptManager() {
           </pre>
         </Paragraph>
         <Paragraph>
-          <strong>通道：</strong>
-          平台获取虚拟机信息一律经 ansible 控制节点。你在页面选择的"目标主机"必须是在
-          CMDB 资产管理里登记过、能经 ansible 控制节点 SSH 到的机器。
+          <strong>两种数据源（顶部切换）：</strong>
+          <ul>
+            <li>
+              <Tag color="blue">目标服务器</Tag>
+              管理<strong>远程机器</strong>上的脚本 —— 经 ansible 控制节点操作，
+              所选主机必须是在 CMDB 登记过、控制节点能 SSH 到的资产。
+            </li>
+            <li>
+              <Tag color="green">平台本机</Tag>
+              管理<strong>平台自己所在机器</strong>上的脚本 —— 后端直接读写本机文件系统，
+              不经 ansible。适合「Jenkins 与平台同机」的场景。
+            </li>
+          </ul>
+          <Text type="secondary">
+            ⚠️ 平台跑在 Docker 里时，「平台本机」= <strong>容器</strong>文件系统。
+            要管理宿主机的目录，必须在 <code>docker-compose.yml</code> 的
+            <code>backend.volumes</code> 里把该路径挂进容器（已默认挂
+            <code>{ROOT_DEFAULT}</code>），否则列出来是空的。
+          </Text>
         </Paragraph>
         <Paragraph>
           <strong>权限：</strong>
