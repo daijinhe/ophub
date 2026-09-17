@@ -306,37 +306,42 @@ export default function WebTerminal({ open, asset, onClose, standalone = false }
 
       // 建立 WebSocket（v1.7.1+ 鉴权方式：先拿一次性 ticket，再用 ticket 升级 WS）
       // 兼容期：后端 ALLOW_WS_TOKEN_URL=true 时仍支持 ?token=，但默认走 ticket。
+      // 这里把 WebSocket 创建挪到 IIFE：让 init 本身保持同步签名，
+      // 等 ticket 拿到后再建 WS；后续 cleanup 通过外层 ws 引用做 null 安全检查。
       const proto = location.protocol === 'https:' ? 'wss://' : 'ws://'
       const wsToken = localStorage.getItem('token') || ''
-      const useTicket = await fetchWsTicket(wsToken)
-      let wsUrl: string
-      if (useTicket) {
-        wsUrl = `${proto}${location.host}/api/ws/ssh?assetId=${asset.id}&ticket=${encodeURIComponent(useTicket)}`
-      } else {
-        wsUrl = `${proto}${location.host}/api/ws/ssh?assetId=${asset.id}&token=${encodeURIComponent(wsToken)}`
-      }
-      const ws = new WebSocket(wsUrl)
-      wsRef.current = ws
-      queryAddon.setWebSocket(ws)
-
-      ws.onopen = () => term.focus()
-      ws.onmessage = (ev) => {
-        const data = typeof ev.data === 'string' ? ev.data : ''
-        // 先经过 vim 查询响应 addon —— 拦截 cursor pos / DA 等查询立即回包
-        const safe = queryAddon.processIncoming(data)
-        term.write(safe)
-      }
-      ws.onclose = () => {
-        term.writeln('')
-        term.writeln('\x1b[33m[连接已断开]\x1b[0m')
-      }
-      ws.onerror = () => {
-        term.writeln('')
-        term.writeln('\x1b[31m[连接错误，请检查服务器连通性与资产凭证]\x1b[0m')
-      }
+      let ws: WebSocket | null = null
+      ;(async () => {
+        try {
+          const useTicket = await fetchWsTicket(wsToken)
+          const wsUrl = useTicket
+            ? `${proto}${location.host}/api/ws/ssh?assetId=${asset.id}&ticket=${encodeURIComponent(useTicket)}`
+            : `${proto}${location.host}/api/ws/ssh?assetId=${asset.id}&token=${encodeURIComponent(wsToken)}`
+          ws = new WebSocket(wsUrl)
+          wsRef.current = ws
+          queryAddon.setWebSocket(ws)
+          ws.onopen = () => term.focus()
+          ws.onmessage = (ev) => {
+            const data = typeof ev.data === 'string' ? ev.data : ''
+            // 先经过 vim 查询响应 addon —— 拦截 cursor pos / DA 等查询立即回包
+            const safe = queryAddon.processIncoming(data)
+            term.write(safe)
+          }
+          ws.onclose = () => {
+            term.writeln('')
+            term.writeln('\x1b[33m[连接已断开]\x1b[0m')
+          }
+          ws.onerror = () => {
+            term.writeln('')
+            term.writeln('\x1b[31m[连接错误，请检查服务器连通性与资产凭证]\x1b[0m')
+          }
+        } catch (e: any) {
+          term.writeln('\x1b[31m[连接失败] 无法获取 WebSocket 鉴权：' + (e?.message || e) + '\x1b[0m')
+        }
+      })()
 
       const dataDisposable = term.onData((data) => {
-        if (ws.readyState === WebSocket.OPEN) ws.send(data)
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(data)
       })
 
       const onResize = () => {
@@ -346,7 +351,7 @@ export default function WebTerminal({ open, asset, onClose, standalone = false }
         } catch {
           /* noop */
         }
-        if (ws.readyState === WebSocket.OPEN) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'resize', cols: termRef.current.cols, rows: termRef.current.rows }))
         }
       }
@@ -360,7 +365,7 @@ export default function WebTerminal({ open, asset, onClose, standalone = false }
         ro.disconnect()
         window.removeEventListener('resize', onResize)
         clearTimeout(t1)
-        if (ws.readyState === WebSocket.OPEN) ws.close()
+        if (ws && ws.readyState === WebSocket.OPEN) ws.close()
         wsRef.current = null
         term.dispose()
         queryAddonRef.current = null
