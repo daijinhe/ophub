@@ -2,11 +2,37 @@ package main
 
 import (
 	"log"
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
 )
+
+// setAuthCookie 下发/清除 JWT cookie（P0-3：让 token 不再只存在于 localStorage）。
+//
+// 参数 token 为空串 = 清除（Logout 用）。
+//
+// 属性说明：
+//   - HttpOnly：JS 读不到，XSS 拿不走（这是相对 localStorage 的核心收益）
+//   - SameSite=Lax：跨站 POST/iframe 不带 cookie，拦掉 CSRF；
+//     选 Lax 而不是 Strict 是因为从外站链接跳回平台时 Strict 会导致「进来就掉登录」
+//   - Secure：仅 HTTPS 下发。内网 HTTP 部署时若强行设 Secure，浏览器会直接丢弃整条 cookie
+//     （表现为登录成功但一刷新就掉线），所以按请求实际协议判断
+//   - Path=/：全站有效
+func setAuthCookie(c *gin.Context, token string) {
+	secure := c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https")
+	c.SetSameSite(http.SameSiteLaxMode)
+	if token == "" {
+		c.SetCookie("ophub_token", "", -1, "/", "", secure, true)
+		return
+	}
+	maxAge := Cfg.JWTTTL * 60 // 配置是分钟
+	if maxAge <= 0 {
+		maxAge = 720 * 60
+	}
+	c.SetCookie("ophub_token", token, maxAge, "/", "", secure, true)
+}
 
 type loginReq struct {
 	Username string `json:"username"`
@@ -100,6 +126,9 @@ func Login(c *gin.Context) {
 		Fail(c, 500, 500, "生成令牌失败")
 		return
 	}
+	// P0-3：同时下发 httpOnly cookie，前端 axios(withCredentials) 自动带；
+	// 响应体仍返回 token 以兼容老客户端（彻底移除依赖 localStorage 见 v1.7.2）。
+	setAuthCookie(c, token)
 	OK(c, gin.H{
 		"token":    token,
 		"username": user.Username,
@@ -110,11 +139,17 @@ func Login(c *gin.Context) {
 	})
 }
 
-// Logout 登出（令牌黑名单）
+// Logout 登出（令牌黑名单 + 清 cookie）
 func Logout(c *gin.Context) {
 	hdr := c.GetHeader("Authorization")
 	token := strings.TrimPrefix(hdr, "Bearer ")
+	if token == "" {
+		if ck, err := c.Cookie("ophub_token"); err == nil {
+			token = ck
+		}
+	}
 	_ = LogoutToken(token)
+	setAuthCookie(c, "") // 清 cookie
 	OK(c, nil)
 }
 
