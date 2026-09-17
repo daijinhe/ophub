@@ -74,6 +74,8 @@ export default function MainLayout() {
     if (p.startsWith('/deploy') || p.startsWith('/sysinit-config')) return ['middleware', 'deploy']
     if (p.startsWith('/mwops')) return ['middleware', 'ops']
     if (p.startsWith('/crontab')) return []
+    // 脚本管理是独立一级分组（与定时任务平级），展开它才能看到子项
+    if (p.startsWith('/scripts')) return ['scripts']
     if (p.startsWith('/nginx-config')) return ['middleware', 'mwconfig']
     if (p.startsWith('/cmdb') || p.startsWith('/ansible')) return ['resource']
     if (p.startsWith('/users') || p.startsWith('/roles')) return ['system']
@@ -134,14 +136,17 @@ export default function MainLayout() {
       ],
     },
 
-    // 定时任务 → 脚本管理：统一为"主机运维"分组，每项都是"选主机"开头
-    // （主机运维的特征是「先选机器再谈功能」，crontab 与 java 启停脚本完全一致）
+    // 定时任务：一级菜单（独立域，管理的是目标机 crontab，与中间件部署/管控无关）
+    { key: '/crontab', icon: <FieldTimeOutlined />, label: '定时任务', perm: 'crontab:view' },
+
+    // 脚本管理：独立一级菜单，与定时任务平级。
+    // 目前只有「Java 启停脚本管理」一个子项，未来扩展 PHP / Python / Shell 时
+    // 只需往 children 追加，架构不动。
     {
-      key: 'crontab',
-      icon: <FieldTimeOutlined />,
-      label: '定时任务',
+      key: 'scripts',
+      icon: <CodeOutlined />,
+      label: '脚本管理',
       children: [
-        { key: '/crontab', icon: <FieldTimeOutlined />, label: '定时任务', perm: 'crontab:view' },
         {
           key: '/scripts/java',
           icon: <CodeOutlined />,
