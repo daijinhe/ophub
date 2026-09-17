@@ -18,6 +18,7 @@ import {
   FileProtectOutlined,
   FileSearchOutlined,
   ClusterOutlined,
+  CodeOutlined,
   ControlOutlined,
   FileTextOutlined,
   AlertOutlined,
@@ -133,9 +134,22 @@ export default function MainLayout() {
       ],
     },
 
-    // 定时任务原在「中间件管理 → 中间件运维」下，现独立为一级菜单：
-    // 它管理的是目标机 crontab（偏主机运维），与中间件部署/管控是不同域。
-    { key: '/crontab', icon: <FieldTimeOutlined />, label: '定时任务', perm: 'crontab:view' },
+    // 定时任务 → 脚本管理：统一为"主机运维"分组，每项都是"选主机"开头
+    // （主机运维的特征是「先选机器再谈功能」，crontab 与 java 启停脚本完全一致）
+    {
+      key: 'crontab',
+      icon: <FieldTimeOutlined />,
+      label: '定时任务',
+      children: [
+        { key: '/crontab', icon: <FieldTimeOutlined />, label: '定时任务', perm: 'crontab:view' },
+        {
+          key: '/scripts/java',
+          icon: <CodeOutlined />,
+          label: 'Java 启停脚本管理',
+          perm: 'script:view',
+        },
+      ],
+    },
 
     {
       key: 'monitor',

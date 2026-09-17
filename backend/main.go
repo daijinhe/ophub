@@ -232,6 +232,16 @@ func main() {
 			auth.DELETE("/crontab/asset/:id/tasks", RequirePermission("crontab:manage"), DeleteAssetCrontabTask)
 			auth.PUT("/crontab/asset/:id/raw", RequirePermission("crontab:manage"), SaveAssetCrontabRaw)
 			auth.PUT("/crontab/asset/:id/notes", RequirePermission("crontab:manage"), SetCrontabTaskNote)
+
+			// 脚本管理：Java 启停脚本
+			// 读用 script:view，写/删用 script:manage；
+			// host 形参叫「主机/资产」而不是「schedule target」，与现有 crontab 语义保持一致。
+			auth.GET("/scripts/java/ls", RequirePermission("script:view"), ListScriptsEntry)
+			auth.GET("/scripts/java/file", RequirePermission("script:view"), GetScriptFile)
+			auth.PUT("/scripts/java/file", RequirePermission("script:manage"), PutScriptFile)
+			auth.POST("/scripts/java/file", RequirePermission("script:manage"), PostScriptFile)
+			auth.POST("/scripts/java/dir", RequirePermission("script:manage"), MakeScriptDir)
+			auth.DELETE("/scripts/java/entry", RequirePermission("script:manage"), DeleteScriptEntry)
 		}
 	}
 

@@ -291,6 +291,115 @@ func (t *crontabTarget) WriteFile(path, content string) error {
 	return nil
 }
 
+// scriptDirEntry 单条目录条目（脚本管理用）。
+//
+// 只在脚本管理的 list 接口内部使用，避免与 plugin 公共结构体耦合；
+// 字段保持最小集：是否目录 + 大小 + 修改时间足够前端展示。
+type scriptDirEntry struct {
+	Name    string `json:"name"`
+	Path    string `json:"path"`
+	IsDir   bool   `json:"isDir"`
+	Size    int64  `json:"size"`
+	ModTime string `json:"modTime"` // YYYY-MM-DD HH:MM
+}
+
+// ListDir 列出目录下的一级条目，含目录/文件区分 + 大小 + 修改时间。
+//
+// 用 `find -printf` 而不是 `ls -la`：find 的 %y 单字段直接表达类型，
+// 不会被本地化（中文/英文）影响，且天然不返回 `.`、`..`。
+// 命令经 sudoPrefix 提权，对只读权限有限但仍想管理的环境也兼容。
+func (t *crontabTarget) ListDir(dir string) ([]scriptDirEntry, error) {
+	if !reSafePath.MatchString(dir) {
+		return nil, fmt.Errorf("路径不合法：%s", dir)
+	}
+	pre := t.sudoPrefix()
+	cmd := fmt.Sprintf(
+		`%sfind %q -mindepth 1 -maxdepth 1 -printf '%%y|%%f|%%s|%%TY-%%Tm-%%Td %%TH:%%TM|%%p\n' 2>/dev/null`,
+		pre, dir,
+	)
+	raw, err := t.exec(cmd, 20*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("列目录失败：%v", err)
+	}
+	// find 的 %y：d 目录 / f 文件 / l 链接 / b/c/s/p 设备/管道
+	// 我们只关心 d 与 f，其余统一当作「其他」（前端默认按文件处理）
+	out := make([]scriptDirEntry, 0, 8)
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "|", 5)
+		if len(parts) != 5 {
+			continue
+		}
+		var size int64
+		fmt.Sscanf(parts[2], "%d", &size)
+		out = append(out, scriptDirEntry{
+			Name:    parts[1],
+			Path:    parts[4],
+			IsDir:   parts[0] == "d",
+			Size:    size,
+			ModTime: parts[3],
+		})
+	}
+	return out, nil
+}
+
+// MkDir 在目标机上创建目录（已存在不报错；中间权限不足套 sudoPrefix）。
+func (t *crontabTarget) MkDir(dir string) error {
+	if !reSafePath.MatchString(dir) {
+		return fmt.Errorf("路径不合法：%s", dir)
+	}
+	pre := t.sudoPrefix()
+	// -p 自动建立中间层 + 目录已存在也不会报错
+	cmd := fmt.Sprintf(`%smkdir -p %q 2>&1`, pre, dir)
+	out, err := t.exec(cmd, 15*time.Second)
+	if err != nil {
+		return fmt.Errorf("创建目录失败：%s %s", strings.TrimSpace(out), err)
+	}
+	return nil
+}
+
+// Remove 删除文件；rmdir 删除空目录；RmRec 删除非空目录。
+//
+// 三个独立 API 而不是合并参数：前端在确认弹窗上区分「仅删脚本」「连同服务目录一起删」语义不同。
+func (t *crontabTarget) RemoveFile(path string) error {
+	if !reSafePath.MatchString(path) {
+		return fmt.Errorf("路径不合法：%s", path)
+	}
+	pre := t.sudoPrefix()
+	cmd := fmt.Sprintf(`%srm -f %q 2>&1`, pre, path)
+	if _, err := t.exec(cmd, 15*time.Second); err != nil {
+		return fmt.Errorf("删除文件失败：%s", err)
+	}
+	return nil
+}
+
+func (t *crontabTarget) RemoveEmptyDir(dir string) error {
+	if !reSafePath.MatchString(dir) {
+		return fmt.Errorf("路径不合法：%s", dir)
+	}
+	pre := t.sudoPrefix()
+	cmd := fmt.Sprintf(`%srmdir %q 2>&1`, pre, dir)
+	if _, err := t.exec(cmd, 15*time.Second); err != nil {
+		return fmt.Errorf("删除目录失败（可能非空）：%s", err)
+	}
+	return nil
+}
+
+func (t *crontabTarget) RemoveRec(dir string) error {
+	if !reSafePath.MatchString(dir) {
+		return fmt.Errorf("路径不合法：%s", dir)
+	}
+	pre := t.sudoPrefix()
+	cmd := fmt.Sprintf(`%srm -rf %q 2>&1`, pre, dir)
+	if _, err := t.exec(cmd, 30*time.Second); err != nil {
+		return fmt.Errorf("删除目录失败：%s", err)
+	}
+	return nil
+}
+
 // composeTargetScript 把「提权前缀」编进脚本文件本身（ansible `-m script` 模式专用）。
 //
 // 为什么要自包装：Script 路径把脚本 SCP 到目标机后**直接执行文件**，无法像直连

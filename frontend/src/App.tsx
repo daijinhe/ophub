@@ -16,6 +16,7 @@ import CertManage from './pages/CertManage'
 import SysInitConfig from './pages/SysInitConfig'
 import NginxConfig from './pages/NginxConfig'
 import CrontabManage from './pages/CrontabManage'
+import JavaScriptManager from './pages/JavaScriptManager'
 import InspectionTasks from './pages/InspectionTasks'
 import InspectionRecords from './pages/InspectionRecords'
 import InspectionAlertRules from './pages/InspectionAlertRules'
@@ -86,6 +87,7 @@ export default function App() {
         <Route path="mw-capture" element={<RequirePerm perm="mwcapture:view"><MiddlewareCapture /></RequirePerm>} />
         <Route path="nginx-config" element={<RequirePerm perm="config:view"><NginxConfig /></RequirePerm>} />
         <Route path="crontab" element={<RequirePerm perm="crontab:view"><CrontabManage /></RequirePerm>} />
+        <Route path="scripts/java" element={<RequirePerm perm="script:view"><JavaScriptManager /></RequirePerm>} />
         <Route path="inspection/tasks" element={<RequirePerm perm="inspection:view"><InspectionTasks /></RequirePerm>} />
         <Route path="inspection/records" element={<RequirePerm perm="inspection:view"><InspectionRecords /></RequirePerm>} />
         <Route path="inspection/alert-rules" element={<RequirePerm perm="inspection:manage"><InspectionAlertRules /></RequirePerm>} />

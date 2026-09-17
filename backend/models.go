@@ -182,6 +182,10 @@ var PermissionCatalog = []PermissionDef{
 	// ===== 定时任务 =====
 	{Code: "crontab:view", Name: "查看定时任务", Group: "定时任务"},
 	{Code: "crontab:manage", Name: "管理定时任务", Group: "定时任务"},
+	// 脚本管理：Java 启停脚本（以及未来可能要扩展的 PHP / Python 等）
+	// 读 / 写分离：可见性权单独一档，可以单独授权"只读运维"角色。
+	{Code: "script:view", Name: "查看脚本", Group: "脚本管理"},
+	{Code: "script:manage", Name: "管理脚本（增删改）", Group: "脚本管理"},
 
 	// ===== 智能巡检 · 任务 =====
 	{Code: "inspection:view", Name: "查看巡检（全部）", Group: "智能巡检"},

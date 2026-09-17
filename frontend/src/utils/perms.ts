@@ -8,6 +8,7 @@ export const ROUTE_PERMS: { path: string; perm: string }[] = [
   { path: '/roles', perm: 'role:view' },
   { path: '/ansible', perm: 'ansible:manage' },
   { path: '/crontab', perm: 'crontab:view' },
+  { path: '/scripts/java', perm: 'script:view' },
   { path: '/deploy', perm: 'deploy:manage' },
   { path: '/deploy-config', perm: 'deploy:manage' },
   { path: '/deploy-certs', perm: 'deploy:manage' },
