@@ -79,8 +79,22 @@ check_registry() {
   return 1
 }
 
+# 检查 ~/.docker/config.json 是否已有该 registry 的凭据条目
+# （明文 base64 / Windows 凭据管理器占位条目都是这种形式）。用 grep 即可，
+# 避免 bash 嵌套 python 时的引号/变量展开坑。
+has_auth() {
+  local reg="$1" cfg="$HOME/.docker/config.json"
+  [ -f "$cfg" ] || return 1
+  grep -qF "\"$reg\"" "$cfg" 2>/dev/null
+}
+
 do_login() {
   [ -n "$HARBOR_REGISTRY" ] || die "未配置 HARBOR_REGISTRY（见 .env.harbor.example）"
+  # 已缓存凭据（GCM / wincred / keychain 等）就跳过，避免非 TTY 下交互失败
+  if has_auth "$HARBOR_REGISTRY"; then
+    ok "已检测到 $HARBOR_REGISTRY 的 Docker 凭据缓存，跳过 login"
+    return 0
+  fi
   if [ -n "$HARBOR_USER" ] && [ -n "$HARBOR_PASSWORD" ]; then
     printf '%s' "$HARBOR_PASSWORD" | docker login "$HARBOR_REGISTRY" -u "$HARBOR_USER" --password-stdin
   elif [ -n "$HARBOR_USER" ]; then
