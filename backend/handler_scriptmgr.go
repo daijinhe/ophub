@@ -1,14 +1,12 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -17,23 +15,23 @@ import (
 // ============================================================================
 // 脚本管理 —— Java 启停脚本
 //
-// 两个数据落点（2026-09-17 扩展）：
-//   - remote（默认）：经 crontabTarget 走 ansible 控制节点操作**目标服务器**，
-//     与定时任务 / 中间件捕捉 / Nginx 扫描同一条远端通道，无任何直连 SSH 路径。
-//   - local：直接读写**平台自身所在机器**的文件系统（os 包），
-//     适用「Jenkins 与平台同机、脚本就在平台这台机器上」的场景。
+// v1.7.9 起只支持「平台本机」模式（远端功能下线）：
 //
-// 两种落点被抽象成 scriptHost 接口，上层 7 个 handler 完全不关心
-// 「这一笔操作发生在哪台机器上」，新增落点（以后接对象存储 / 跳板机）
-// 只要实现这 8 个方法即可。
+//   平台获取虚拟机信息一律经 ansible —— 但脚本管理的典型场景是「Jenkins 与
+//   平台同机、脚本就在这台机器上」，走 ansible 中转既没必要也徒增配置成本。
+//   所以脚本管理在这里不开远端通道，直接读写平台所在机器的文件系统。
 //
-// 安全（两种落点共用同一套约束）：
+// 安全约束（沿用）：
 //   - 路径硬约束：所有读写路径必须落在「允许根」之下（默认
 //     /data/jenkins_home/scripts/Java_Start_Stop_SH）—— 即使前端把 root 传成
 //     更宽的目录，读写也只能落在被约束的子树下，防止越界改 /etc、/home。
 //   - 服务名 / 文件名再用 ^[A-Za-z0-9_.-]+$ 收口，禁掉空格与斜杠。
-//   - 写文件大小上限 1MiB：远端模式下 base64 会撑爆控制节点 argv；
-//     本机模式同样受限，保持两种落点行为一致。
+//   - 写文件大小上限 1MiB（防 base64 撑爆控制节点 argv，本机模式同样受限）。
+//
+// ⚠️ 平台跑在容器里时「本机」= 容器文件系统。要管理宿主机的脚本目录，必须
+// 在 docker-compose.yml 的 backend.volumes 里把该路径挂进容器（默认挂
+// /data/jenkins_home/scripts/Java_Start_Stop_SH，通过 SCRIPT_HOST_ROOT 覆盖），
+// 否则容器内看到的是一个空目录。
 //
 // 权限：列出 / 读取 用 script:view；创建 / 修改 / 删除 用 script:manage。
 // ============================================================================
@@ -212,26 +210,10 @@ func normalizeScriptPath(root, p string) (absRoot, absPath string, err error) {
 	return absRoot, absPath, nil
 }
 
-// resolveScriptHost 按前端传入的 source 选择落点。
-//
-//	source=local → 平台本机（不经 ansible，直接读写本地文件系统）
-//	其它 / 空    → 远程目标服务器（经 ansible 控制节点，必须传 host）
+// resolveScriptHost 自 v1.7.9 起只支持本机模式 —— 远端功能下线，
+// 接口签名保留 c 形参只是为了和旧路由 7 个 handler 一致，参数全忽略。
 func resolveScriptHost(c *gin.Context) (scriptHost, error) {
-	if strings.TrimSpace(c.Query("source")) == "local" {
-		return localScriptHost{}, nil
-	}
-	assetID, _ := strconv.ParseInt(c.Query("host"), 10, 64)
-	if assetID <= 0 {
-		return nil, errors.New("请选择目标资产")
-	}
-	var a Asset
-	if err := DB.First(&a, assetID).Error; err != nil {
-		return nil, fmt.Errorf("资产不存在或已被删除（ID=%d）", assetID)
-	}
-	if strings.TrimSpace(a.IP) == "" {
-		return nil, errors.New("资产缺少 IP，无法连接")
-	}
-	return assetTarget(a)
+	return localScriptHost{}, nil
 }
 
 // ---------------------------------------------------------------------------
