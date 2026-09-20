@@ -73,8 +73,8 @@ cp .env.example .env
 docker compose up -d --build
 
 # 3. 访问
-#    前端：  http://localhost:8088
-#    接口：  http://localhost:8088/api
+#    前端：  http://localhost:10001
+#    接口：  http://localhost:10001/api
 ```
 
 默认管理员账号：**admin / admin123**（首次启动自动播种，请尽快修改密码）。

@@ -29,7 +29,7 @@ import time
 
 import requests
 
-BASE = "http://localhost:8088/api"
+BASE = "http://localhost:10001/api"
 USER, PASS = "admin", "admin123"
 STRICT = False          # --strict：预检不通过也照常硬判（禁止 SKIP）
 

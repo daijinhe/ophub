@@ -6,7 +6,7 @@ import json
 import sys
 import urllib.request
 
-BASE = "http://localhost:8088/api"
+BASE = "http://localhost:10001/api"
 USER, PASS = "admin", "admin123"
 
 passed = 0

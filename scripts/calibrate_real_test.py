@@ -5,7 +5,7 @@ import json
 import urllib.error
 import urllib.request
 
-BASE = "http://localhost:8088/api"
+BASE = "http://localhost:10001/api"
 
 
 def call(method, path, token=None, body=None, timeout=120):

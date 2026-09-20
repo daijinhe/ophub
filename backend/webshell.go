@@ -42,7 +42,7 @@ var wsUpgrader = websocket.Upgrader{
 //
 // ⚠️ 历史坑（v1.7.0 引入 403）：当时 getWsOrigins() 在 ALLOW_WS_ORIGINS 为空时会
 // 回落到 CORS 的 ALLOW_ORIGINS（`.env` 默认 `*`），而这里的比较是**字面量**比较，
-// `*` 与 `http://localhost:8088` 永不相等 → 浏览器（升级 WS 必带 Origin）100% 被拒。
+// `*` 与 `http://localhost:10001` 永不相等 → 浏览器（升级 WS 必带 Origin）100% 被拒。
 // 现在：白名单里的 `*` 按下标通配处理，且不再从 CORS 配置回落（见 getWsOrigins）。
 func wsCheckOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")

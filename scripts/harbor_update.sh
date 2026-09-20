@@ -161,7 +161,7 @@ docker compose up -d --no-build backend frontend
 
 # ---------- 健康检查 ----------
 if [ "$DO_HEALTH" -eq 1 ]; then
-  WEB_PORT="$(get_env WEB_PORT)"; : "${WEB_PORT:=8088}"
+  WEB_PORT="$(get_env WEB_PORT)"; : "${WEB_PORT:=10001}"
   info "健康检查 …"
   http_code() {
     local c

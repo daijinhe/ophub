@@ -26,7 +26,7 @@ scripts/e2e-crontab/（Dockerfile + base.crontab + e2e_crontab_user.py）。
     CRONTAB_ASSET_ID=120 python scripts/verify_crontab.py
 
 环境变量：
-    CRONTAB_BASE             API 基址（默认 http://localhost:8088/api）
+    CRONTAB_BASE             API 基址（默认 http://localhost:10001/api）
     CRONTAB_ASSET_ID         主测资产（执行完整增删改查；建议用「管理员密码错」的机器）
     CRONTAB_ROOT_ASSET_ID    直连模式资产（SSH 用户 = root，只做读取断言）
     CRONTAB_ALT_ASSET_ID     未填「超级管理员用户密码」的资产（回退到 SSH 用户密码）
@@ -41,7 +41,7 @@ import time
 
 import requests
 
-BASE = os.environ.get("CRONTAB_BASE", "http://localhost:8088/api")
+BASE = os.environ.get("CRONTAB_BASE", "http://localhost:10001/api")
 USER, PASS = "admin", "admin123"
 
 RESULTS = []

@@ -195,7 +195,7 @@ cat > "$WORK/README-内网部署.md" <<'EOF'
    若 Harbor 地址与导出时不同，可覆盖：
    bash scripts/migrate_import.sh --harbor harbor.internal.example --project ophub
 
-3) 访问 http://<内网IP>:8088  默认账号 admin / admin123（**登录后立刻改密**）
+3) 访问 http://<内网IP>:10001  默认账号 admin / admin123（**登录后立刻改密**）
 
 ⚠️ 包内 env/.env 含密钥，等同密码文件，用完请从内网删除或妥善保管。
 ⚠️ PWD_ENC_KEY 不能改：改了之后库里加密存储的资产密码会全部解不开。

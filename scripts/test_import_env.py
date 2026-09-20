@@ -8,7 +8,7 @@
 import json, os, sys, urllib.request, urllib.error, urllib.parse, uuid
 import openpyxl
 
-BASE = "http://127.0.0.1:8088/api"
+BASE = "http://127.0.0.1:10001/api"
 TMPL = r"D:/User/Administrator/Desktop/平台录入模板.xlsx"
 OUT = r"D:/User/Administrator/Desktop/ophub/.workbuddy/tmp/import_test.xlsx"
 TEST_IP = "192.0.2.99"

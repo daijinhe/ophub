@@ -11,7 +11,7 @@ import time
 import urllib.request
 import urllib.error
 
-BASE = "http://127.0.0.1:8088/api"
+BASE = "http://127.0.0.1:10001/api"
 
 
 def req(path, method="GET", body=None, token=None):

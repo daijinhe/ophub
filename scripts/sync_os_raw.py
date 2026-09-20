@@ -20,7 +20,7 @@ import os
 import urllib.error
 import urllib.request
 
-BASE = "http://localhost:8088/api"
+BASE = "http://localhost:10001/api"
 DRY = os.environ.get("DRY", "") not in ("", "0", "false")
 
 

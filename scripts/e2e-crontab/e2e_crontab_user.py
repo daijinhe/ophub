@@ -58,7 +58,7 @@ import sys
 import urllib.error
 import urllib.request
 
-BASE = "http://localhost:8088/api"
+BASE = "http://localhost:10001/api"
 PROBE = "crontab-probe"
 HOST = PROBE  # 用容器名当 IP：容器重建后 IP 会变，名字不变
 

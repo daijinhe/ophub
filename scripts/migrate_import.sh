@@ -100,7 +100,7 @@ else
 fi
 
 WEB_PORT="$(sed -n 's/^WEB_PORT=//p' .env | head -1 | tr -d '\r')"
-: "${WEB_PORT:=8088}"
+: "${WEB_PORT:=10001}"
 ok ".env 就绪（WEB_PORT=$WEB_PORT）"
 
 cp -f compose/docker-compose.yml ./docker-compose.yml

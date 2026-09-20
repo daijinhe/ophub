@@ -6,7 +6,7 @@
 ====================
 v1.7.0 安全加固给 WebSocket 加上了 Origin 白名单（wsCheckOrigin），但白名单在
 ALLOW_WS_ORIGINS 为空时会回落到 CORS 的 ALLOW_ORIGINS（.env 默认 `*`），而当时是
-**字面量**比较 —— `*` 永远不等于 `http://localhost:8088`。浏览器升级 WebSocket
+**字面量**比较 —— `*` 永远不等于 `http://localhost:10001`。浏览器升级 WebSocket
 必定携带 Origin，于是 100% 被 403 拒绝，表现为终端里
 「[连接错误，请检查服务器连通性与资产凭证] + [连接已断开]」。
 
@@ -27,9 +27,9 @@ ALLOW_WS_ORIGINS 为空时会回落到 CORS 的 ALLOW_ORIGINS（.env 默认 `*`�
 
 用法
 ====
-  python scripts/ws_terminal_e2e.py                      # 默认 assetId=81, localhost:8088
+  python scripts/ws_terminal_e2e.py                      # 默认 assetId=81, localhost:10001
   python scripts/ws_terminal_e2e.py --asset 183
-  python scripts/ws_terminal_e2e.py --base http://asset-01.internal.example:8088
+  python scripts/ws_terminal_e2e.py --base http://asset-01.internal.example:10001
   python scripts/ws_terminal_e2e.py --skip-tty           # 只验握手，不跑命令
 
 注意：Windows 下建议 `PYTHONIOENCODING=utf-8`。
@@ -232,7 +232,7 @@ def try_handshake(base_url, path, origin, timeout=12):
 # --------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base", default="http://localhost:8088", help="平台地址（默认 http://localhost:8088）")
+    ap.add_argument("--base", default="http://localhost:10001", help="平台地址（默认 http://localhost:10001）")
     ap.add_argument("--asset", type=int, default=81, help="资产 ID（默认 81）")
     ap.add_argument("--user", default="admin")
     ap.add_argument("--password", default="admin123")
