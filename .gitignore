@@ -17,6 +17,11 @@ backend/fields.go.bak
 .env
 .env.local
 .env.*.local
+# 内网 Harbor 地址/账号
+.env.harbor
+
+# ===================== 迁移包 / 镜像导出产物 =====================
+dist/
 
 # ===================== WorkBuddy 本地工作区（工具/截图/E2E 产物）=====================
 .workbuddy/

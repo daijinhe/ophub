@@ -1,12 +1,29 @@
 # 云枢 OpsHub · 智能运维平台 —— docker-compose 一键部署
-# 用法：
-#   cp .env.example .env   # 按需修改
-#   docker compose up -d --build
-# 访问： http://localhost:8088  （前端）   后端 API: http://localhost:8088/api
+#
+# ── 本地开发（默认）──────────────────────────────────────────────────────────
+#   cp .env.example .env
+#   docker compose up -d --build backend frontend
+#   访问：http://localhost:8088（前端）   后端 API：http://localhost:8088/api
+#
+# ── 内网生产（镜像来自 Harbor，内网不做构建）────────────────────────────────
+#   在 .env 里把下面 4 个变量指向内网 Harbor：
+#     POSTGRES_IMAGE=<harbor>/<项目>/postgres:16
+#     REDIS_IMAGE=<harbor>/<项目>/redis:7.4.10
+#     BACKEND_IMAGE=<harbor>/<项目>/ophub-backend:<版本>
+#     FRONTEND_IMAGE=<harbor>/<项目>/ophub-frontend:<版本>
+#   然后：docker compose pull && docker compose up -d
+#   镜像已存在本地时 compose 不会触发 build，因此内网不需要源码目录。
+#   详见 docs/内网迁移指南.md
+
+# 固定 compose 项目名（不写则默认取当前目录名）—— 卷名、网络名都由它派生。
+# 不固定的话，内网部署目录一旦改名（如 ophub-migrate → ophub），compose 就会去找
+# 另一套卷（ophub_pgdata ≠ ophub-migrate_pgdata），表现出来就是「数据凭空消失」。
+# 固定成 ophub 后，目录怎么改、从哪里解包，都认同一套数据卷。
+name: ophub
 
 services:
   postgres:
-    image: postgres:16
+    image: ${POSTGRES_IMAGE:-postgres:16}
     container_name: ophub-postgres
     restart: unless-stopped
     environment:
@@ -24,7 +41,7 @@ services:
       - ophub
 
   redis:
-    image: redis:7.4.10
+    image: ${REDIS_IMAGE:-redis:7.4.10}
     container_name: ophub-redis
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
@@ -39,6 +56,7 @@ services:
       - ophub
 
   backend:
+    image: ${BACKEND_IMAGE:-ophub-backend:latest}
     build:
       context: ./backend
     container_name: ophub-backend
@@ -66,8 +84,8 @@ services:
       ALLOW_TEMP_TRUST: ${ALLOW_TEMP_TRUST:-false}
       ENV: ${ENV:-dev}
       UPLOAD_DIR: "/app/uploads"
-      DEPLOY_BASE: "/data/jenkins_home/scripts/V2_Project_App_Init_Install/main/app_choice"
-      SYSTEM_INIT_DIR: "/data/jenkins_home/scripts/V2_Project_App_Init_Install/main/system_init"
+      DEPLOY_BASE: "${DEPLOY_BASE:-/data/jenkins_home/scripts/V2_Project_App_Init_Install/main/app_choice}"
+      SYSTEM_INIT_DIR: "${SYSTEM_INIT_DIR:-/data/jenkins_home/scripts/V2_Project_App_Init_Install/main/system_init}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -77,6 +95,11 @@ services:
       - "8080"
     volumes:
       - ansible-data:/etc/ansible
+      # SSH 主机公钥指纹库（v1.7.1+ P0-4）。不挂卷的话容器一重建就丢，
+      # 每次都要重新 PIN，等于把 MITM 防护退化成「每次都信」。
+      - backend-data:/data
+      # 上传的 Excel 等临时文件
+      - backend-uploads:/app/uploads
       # 脚本管理「平台本机」模式：把宿主机的 Java 启停脚本目录挂进容器。
       # 不挂的话后端 os.ReadDir 读到的是**容器自己的空目录**，永远列不出脚本。
       # 路径可用 .env 里的 SCRIPT_HOST_ROOT 覆盖（默认与页面上的根路径一致）。
@@ -85,6 +108,7 @@ services:
       - ophub
 
   frontend:
+    image: ${FRONTEND_IMAGE:-ophub-frontend:latest}
     build:
       context: ./frontend
     container_name: ophub-frontend
@@ -93,6 +117,12 @@ services:
       - backend
     ports:
       - "${WEB_PORT}:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     networks:
       - ophub
 
@@ -100,6 +130,9 @@ volumes:
   pgdata:
   redisdata:
   ansible-data:
+  # 新增（v1.7.5+）：下面两个原先是容器内路径，重建即丢，迁移到内网前必须持久化
+  backend-data:
+  backend-uploads:
 
 networks:
   ophub:
