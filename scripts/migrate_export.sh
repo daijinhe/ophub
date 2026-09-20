@@ -111,14 +111,35 @@ done
 [ -f scripts/migrate_export.sh ] && cp scripts/migrate_export.sh "$WORK/scripts/"  # 便于内网再导出
 
 # ---------- 3. 镜像（可选）----------
+# 先读 Harbor 配置：离线包要优先打包「Harbor 命名 + 版本号」的镜像，
+# 这样内网 docker load 出来的名字就和 Harbor 通道下的完全一致，
+# 两种通道的 .env / compose 不需要任何差异。
+HARBOR_REGISTRY_V=""; HARBOR_PROJECT_V="ophub"
+if [ -f .env.harbor ]; then
+  HARBOR_REGISTRY_V="$(sed -n 's/^HARBOR_REGISTRY=//p' .env.harbor | head -1 | tr -d '\r')"
+  HARBOR_PROJECT_V="$(sed -n 's/^HARBOR_PROJECT=//p' .env.harbor | head -1 | tr -d '\r')"
+  : "${HARBOR_PROJECT_V:=ophub}"
+fi
+
 HAS_IMAGES=0
 if [ "$WITH_IMAGES" -eq 1 ]; then
   info "导出镜像（体积较大，请耐心等待）…"
   SWR_SRC="swr.cn-north-4.myhuaweicloud.com/pixiu-public/your-project"
   IMGS=()
-  for i in ophub-backend:latest ophub-frontend:latest; do
-    docker image inspect "$i" >/dev/null 2>&1 && IMGS+=("$i") || warn "缺少本地镜像 $i（先跑 harbor_release.sh）"
-  done
+  # 优先用 Harbor 命名的版本 tag；没有（还没跑过 harbor_release.sh / 没配 .env.harbor）
+  # 就退回本地 build 出来的 ophub-*:latest —— 两者层内容相同，只是名字不同。
+  add_app_img() {  # $1=ophub-backend|ophub-frontend
+    local cand="$HARBOR_REGISTRY_V/$HARBOR_PROJECT_V/$1:$VER"
+    if [ -n "$HARBOR_REGISTRY_V" ] && docker image inspect "$cand" >/dev/null 2>&1; then
+      IMGS+=("$cand")
+    elif docker image inspect "$1:latest" >/dev/null 2>&1; then
+      IMGS+=("$1:latest")
+    else
+      warn "缺少本地镜像 $1（先跑 scripts/harbor_release.sh）"
+    fi
+  }
+  add_app_img ophub-backend
+  add_app_img ophub-frontend
   for i in "$SWR_SRC/postgres:16" "$SWR_SRC/redis:7.4.10"; do
     docker image inspect "$i" >/dev/null 2>&1 && IMGS+=("$i") || warn "缺少基础镜像 $i"
   done
@@ -127,16 +148,11 @@ if [ "$WITH_IMAGES" -eq 1 ]; then
     docker save "${IMGS[@]}" | gzip -9 > "$WORK/images/ophub-images.tar.gz"
     HAS_IMAGES=1
     ok "镜像已打包（$(du -h "$WORK/images/ophub-images.tar.gz" | cut -f1)）"
+    for i in "${IMGS[@]}"; do echo "      $i"; done
   fi
 fi
 
 # ---------- 4. 清单 ----------
-HARBOR_REGISTRY_V=""; HARBOR_PROJECT_V="ophub"
-if [ -f .env.harbor ]; then
-  HARBOR_REGISTRY_V="$(sed -n 's/^HARBOR_REGISTRY=//p' .env.harbor | head -1 | tr -d '\r')"
-  HARBOR_PROJECT_V="$(sed -n 's/^HARBOR_PROJECT=//p' .env.harbor | head -1 | tr -d '\r')"
-  : "${HARBOR_PROJECT_V:=ophub}"
-fi
 
 GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 GIT_TAG="$(git describe --tags --exact-match 2>/dev/null || echo '')"
