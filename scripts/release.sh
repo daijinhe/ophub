@@ -27,17 +27,29 @@ die()  { printf "${C_ERR}[fail]${C_RESET} %s\n" "$*" >&2; exit "${2:-1}"; }
 
 # ---------- 状态查看（--status）----------
 show_status() {
-  local ver cur remote_tags
+  local ver br remote merge upstream_ref remote_tags
   ver="$(tr -d '[:space:]' < VERSION 2>/dev/null || echo '?')"
-  cur="$(git rev-parse --short HEAD)"
-  echo "  当前版本 : $ver    HEAD: $cur   分支: $(git rev-parse --abbrev-ref HEAD)"
+  br="$(git rev-parse --abbrev-ref HEAD)"
+  echo "  当前版本 : $ver    HEAD: $(git rev-parse --short HEAD)   分支: $br"
 
-  if git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
-    local counts
-    counts="$(git rev-list --left-right --count '@{u}...HEAD')"
-    echo "  与远端   : 落后 ${counts%%$'\t'*} 个 / 领先 ${counts##*$'\t'} 个提交"
-  else
+  # 上游以 config 的 branch.<name>.remote / .merge 为准（这才是 push/pull 真正读的），
+  # 不要用 @{u}：它依赖 refs/remotes/* 存在，而该引用缺失时 @{u} 会直接报错，
+  # 让人误以为「没配上游」。两者是两个独立的东西。
+  remote="$(git config --get "branch.$br.remote" || echo origin)"
+  merge="$(git config --get "branch.$br.merge" || true)"
+  if [ -z "$merge" ]; then
     warn "当前分支没有设置上游（upstream），push 需要显式指定远端"
+  else
+    upstream_ref="refs/remotes/$remote/${merge#refs/heads/}"
+    echo "  上游分支 : $remote/${merge#refs/heads/}"
+    if git rev-parse -q --verify "$upstream_ref" >/dev/null 2>&1; then
+      local counts
+      counts="$(git rev-list --left-right --count "$remote/${merge#refs/heads/}...HEAD")"
+      echo "  与远端   : 落后 ${counts%%$'\t'*} 个 / 领先 ${counts##*$'\t'} 个提交"
+    else
+      warn "本地缺少远端跟踪引用 $upstream_ref（受管沙箱会拦截 refs/remotes/ 写入）"
+      echo "        补上：git fetch $remote     —— 不影响 push/pull，只是 ahead/behind 显示不出来"
+    fi
   fi
 
   # 未推送的本地 tag —— 这正是「远端回滚不了」的根因，必须显式暴露
