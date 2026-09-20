@@ -95,7 +95,11 @@ export default function MainLayout() {
       label: '资源配置',
       children: [
         { key: '/cmdb', icon: <DatabaseOutlined />, label: '资产管理', perm: 'cmdb:view' },
-        { key: '/ansible', icon: <CloudServerOutlined />, label: '主机清单', perm: 'ansible:manage' },
+        // 主机清单（v1.7.10 起拆分）：「远端 Ansible 管理」+「本机 Ansible 管理」并列。
+        // 远端 = 多台 ansible 控制节点（走 SSH）；本机 = backend 容器内 ansible（直 exec）。
+        // 两者共用 ansible:manage 权限码（同一类功能的不同入口）。
+        { key: '/ansible/remote', icon: <CloudServerOutlined />, label: '远端 Ansible 管理', perm: 'ansible:manage' },
+        { key: '/ansible/local', icon: <CodeOutlined />, label: '本机 Ansible 管理', perm: 'ansible:manage' },
       ],
     },
 

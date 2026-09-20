@@ -2,13 +2,17 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
+	"os"
+	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -39,36 +43,93 @@ import (
 //   - **超阈脚本走 -m script**：> 2KB base64 整串直接灌 -m shell -a 会
 //     撞 sshd argv 限制，统一走 Script() 路径：先 SCP 到控制节点，再 -m script
 //
+// 2026-09-20 v1.7.10 扩展：新增 `Mode = "local"` 走本机 ansible。
+// 背景：内网部署的服务器本身装了 ansible（/usr/bin/ansible + /etc/ansible/hosts），
+// 没必要再 SSH 到远端控制节点 —— 反而多一跳 SSH 鉴权。Local 模式：
+// Adhoc/Script/Reachable 直接 exec 容器内的 ansible 二进制（要求镜像装 ansible，
+// 见 backend/Dockerfile），不走 SSHClient。Mode 是策略，调用方拿到 *AnsibleRunner 后
+// 无感。ResolveAnsibleRunner 优先尝试 Local（如果本机 ansible 可用），否则按 zone 匹配 Remote。
+//
 // 与现有 SSHClient 的关系：SSHClient 仍负责「到控制节点」的连接；
 // SSHClient 不能再被业务层直接用于「采集」目的——所有采集入口
 // （crontab / calibrate / mwCapture / nginx / mwOps）都通过 AnsibleRunner
 // 间接使用 SSHClient 跑 ansible 命令。
 // ============================================================================
 
-// AnsibleRunner 单一职责：在 ansible 控制节点上为指定目标机跑命令/脚本。
+// ansibleRunnerMode runner 执行模式
+const (
+	runnerModeLocal  = "local"  // 本机模式：直接在 backend 容器内 exec ansible
+	runnerModeRemote = "remote" // 远端模式：SSH 到 ansible_remotes 控制节点上跑 ansible
+)
+
+// AnsibleRunner 单一职责：在 ansible 控制节点（或本机）上为指定目标机跑命令/脚本。
 //
-// Node 必须非 nil；调用前由 ResolveAnsibleRunner 按资产所属网络区域匹配。
+// Mode=remote 时 Node 非 nil；Mode=local 时 Node 为 nil。Adhoc/Script/Reachable
+// 根据 Mode 分发。调用方拿到 runner 后照旧调三个方法，无需关心模式。
 type AnsibleRunner struct {
-	Node *AnsibleRemote
+	Mode string         // "local" / "remote"
+	Node *AnsibleRemote // 仅 remote 模式使用
 }
 
-// ErrNoAnsibleNode 没有匹配 ansible 控制节点时返回（业务层据此明确报错）
-var ErrNoAnsibleNode = errors.New("未匹配到 ansible 控制节点")
+// ErrNoAnsibleNode 没有匹配 ansible 控制节点且本机 ansible 也不可用时返回
+var ErrNoAnsibleNode = errors.New("未匹配到 ansible 控制节点（本机 ansible 也不可用）")
 
-// ResolveAnsibleRunner 按「所属网络区域」从 AnsibleRemote 表选控制节点。
-//   - zone == "" 时按 id asc 取第一条（兜底，便于 ansible 节点未分区也能用）
-//   - 全无节点时返回 ErrNoAnsibleNode
+// localRunnerProbe 本机 ansible 可用性探测缓存：30s 内复用同一结果，避免每次采集都 exec。
+var (
+	localRunnerProbeMu  sync.Mutex
+	localRunnerProbeOK  bool
+	localRunnerProbeErr error
+	localRunnerProbeAt  time.Time
+)
+
+// probeLocalAnsible 检查容器内 ansible 是否可用：
+//   1) `ansible --version` 能跑（说明二进制装了）
+//   2) ANSIBLE_HOSTS 路径下文件可读（不必非空，用户可以自己填）
+func probeLocalAnsible() (bool, error) {
+	localRunnerProbeMu.Lock()
+	defer localRunnerProbeMu.Unlock()
+	if !localRunnerProbeAt.IsZero() && time.Since(localRunnerProbeAt) < 30*time.Second {
+		return localRunnerProbeOK, localRunnerProbeErr
+	}
+	localRunnerProbeAt = time.Now()
+	localRunnerProbeErr = nil
+	cmd := exec.Command("ansible", "--version")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		localRunnerProbeErr = fmt.Errorf("ansible --version 失败：%v（输出：%s）", err, trimTail(string(out), 200))
+		localRunnerProbeOK = false
+		return false, localRunnerProbeErr
+	}
+	hostsPath := Cfg.AnsibleHosts
+	if _, statErr := os.Stat(hostsPath); statErr != nil && !os.IsNotExist(statErr) {
+		localRunnerProbeErr = fmt.Errorf("ansible hosts 路径不可访问：%v", statErr)
+		localRunnerProbeOK = false
+		return false, localRunnerProbeErr
+	}
+	localRunnerProbeOK = true
+	return localRunnerProbeOK, nil
+}
+
+// ResolveAnsibleRunner 按以下顺序解析：
+//   1. 本机 ansible 可用 → 返回 Local 模式（不要求任何 zone 匹配，零 SSH 跳数）
+//   2. zone 非空时优先按 zone 匹配 ansible_remotes；没有则 fallback 到 id asc 第一条
+//   3. 全无 → ErrNoAnsibleNode
 //
-// 与 resolveDeployRemotes（handler_deploy.go）一致的语义，但不分 zone 报错：
-// 因为 calibrate / crontab 这类采集没有强 zone 概念，单机允许 fallback。
+// 与之前行为兼容：zone=="" 时优先 local，没 local 才退到 id asc 第一条；
+// zone 非空时优先 local，没 local 才按 zone 匹配；保持「最低惊讶」。
+//
+// 调用方拿到 runner 后照旧调 Adhoc/Script/Reachable，无需关心 Mode。
 func ResolveAnsibleRunner(zone string) (*AnsibleRunner, error) {
+	if ok, _ := probeLocalAnsible(); ok {
+		return &AnsibleRunner{Mode: runnerModeLocal}, nil
+	}
 	var list []AnsibleRemote
 	q := DB.Order("id asc")
 	if zone = strings.TrimSpace(zone); zone != "" {
 		// 先找同 zone，没有则 fallback 到任意一台（最低惊讶原则）
 		var same []AnsibleRemote
 		if err := q.Where("network_zone = ?", zone).Find(&same).Error; err == nil && len(same) > 0 {
-			return &AnsibleRunner{Node: &same[0]}, nil
+			return &AnsibleRunner{Mode: runnerModeRemote, Node: &same[0]}, nil
 		}
 	}
 	if err := q.Find(&list).Error; err != nil {
@@ -77,7 +138,7 @@ func ResolveAnsibleRunner(zone string) (*AnsibleRunner, error) {
 	if len(list) == 0 {
 		return nil, ErrNoAnsibleNode
 	}
-	return &AnsibleRunner{Node: &list[0]}, nil
+	return &AnsibleRunner{Mode: runnerModeRemote, Node: &list[0]}, nil
 }
 
 // adHocCmdBytes ad-hoc 命令总长度阈值（控制节点 → 目标机的 ansible 命令本身走
@@ -139,9 +200,18 @@ func (r *AnsibleRunner) Adhoc(ip, sshUser, sshPass string, sshPort int, shellCmd
 // 与 Adhoc 的差异：直接把本地脚本 bytes 推到控制节点 /tmp/.ophub_collect_<rand>.sh，
 // 再 ansible -m script 跑。ansi script module 内部走 SCP 把该路径的文件再传到
 // 目标机执行。
+//
+// Mode=local 时：直接把脚本写到容器内 /tmp/.ophub_collect_<rand>.sh，ansible -m script
+// 把它 SCP 到目标机（远端），不需要走 SSH 到控制节点。
 func (r *AnsibleRunner) Script(ip, sshUser, sshPass string, sshPort int, script []byte,
 	become bool, becomePass string, timeout time.Duration) (string, error) {
-	if r == nil || r.Node == nil {
+	if r == nil {
+		return "", ErrNoAnsibleNode
+	}
+	if r.Mode == runnerModeLocal {
+		return r.localScript(ip, sshUser, sshPass, sshPort, script, become, becomePass, timeout)
+	}
+	if r.Node == nil {
 		return "", ErrNoAnsibleNode
 	}
 	return r.pushAndScript(ip, sshUser, sshPass, sshPort, script, become, becomePass, timeout)
@@ -403,8 +473,10 @@ func ensureShebang(b []byte) []byte {
 // 为什么不在平台侧探：平台到目标机的网络路由未必存在（典型场景：只有政务外网
 // 控制节点能到该网段资产），平台直探会误报「不可达」。既然采集统一走 ansible，
 // 可达性判断也必须以控制节点的视角为准。
+//
+// Mode=local 时直接从容器内探测（不再绕一道 SSH 到控制节点再探）。
 func (r *AnsibleRunner) Reachable(ip string, port int, d time.Duration) bool {
-	if r == nil || r.Node == nil {
+	if r == nil {
 		return false
 	}
 	ip = strings.TrimSpace(ip)
@@ -418,9 +490,18 @@ func (r *AnsibleRunner) Reachable(ip string, port int, d time.Duration) bool {
 	if secs < 1 {
 		secs = 1
 	}
-	// /dev/tcp 是 bash 内建，控制节点（CentOS/EulerOS 系）都有 bash
+	// /dev/tcp 是 bash 内建；本机/控制节点都用 bash 探测
 	cmd := fmt.Sprintf(`timeout %d bash -c "cat < /dev/null > /dev/tcp/%s/%d" >/dev/null 2>&1 && echo __OPHUB_REACHABLE__`,
 		secs, ip, port)
+	if r.Mode == runnerModeLocal {
+		ctx, cancel := newDeadlineContext(d + 5*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "bash", "-c", cmd).CombinedOutput()
+		return err == nil && strings.Contains(string(out), "__OPHUB_REACHABLE__")
+	}
+	if r.Node == nil {
+		return false
+	}
 	out, err := r.Node.ToSSHClient().RunWithTimeout(cmd, d+5*time.Second)
 	return err == nil && strings.Contains(out, "__OPHUB_REACHABLE__")
 }
@@ -551,3 +632,113 @@ func writeRemoteScript(c SSHClient, tmpName string, content []byte, timeout time
 
 // adHocCmdBytesExport 让测试能看到阈值（不要改值！）
 func adHocCmdBytesExport() int { return adHocCmdBytes }
+
+// ============================================================================
+// 本机模式（Mode=local）专用实现：直接 exec backend 容器内的 ansible 命令。
+//
+// 与远端模式的差异：
+//   - 不走 SSHClient（没有控制节点那一跳）
+//   - 凭证通过 -e ansible_ssh_* 注入到单次 ansible 调用
+//   - 提权密码走 ansible_become_pass（与远端一致）
+//
+// 协议兼容：远端模式的 buildAdhocWrapper 三段式（rc + stdout b64 + stderr b64）
+// 也照样能用，因为「目标机侧」与「本地 shell」只是执行位置不同，shell 语法一致。
+// 这意味着 finishAdhoc 完全复用——Local 模式下业务层拿到的 stdout 也是
+// 「目标机原始 stdout」，没有任何包装污染。
+// ============================================================================
+
+// localAdhoc 在容器内直接 exec `ansible <ip> -i <ip>, -m shell -a '<wrapped>' -o`，
+// 复用远端模式的 buildAdhocWrapper + finishAdhoc，输出协议 100% 一致。
+//
+// 实现：把命令拼成 []string 用 exec.CommandContext 跑，bash -c 包一层以解析
+// shell 语法（单引号 / 环境变量）。输出截断 64KB 同远端 runRemote 风格。
+func (r *AnsibleRunner) localAdhoc(ip, sshUser, sshPass string, sshPort int, shellCmd string,
+	become bool, becomePass string, timeout time.Duration) (string, error) {
+
+	wrapped := buildAdhocWrapper(shellCmd)
+	args := []string{
+		"ansible", ip,
+		"-i", ip + ",",
+		"-m", "shell",
+		"-a", wrapped,
+		"-u", sshUser,
+		"-e", "ansible_ssh_pass=" + sshPass,
+		"-e", "ansible_ssh_port=" + strconv.Itoa(sshPort),
+		"-e", "ansible_become=false",
+		"--ssh-extra-args=-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+		"-o",
+	}
+	if become {
+		args = append(args, "--become", "--become-method=sudo")
+		if becomePass != "" {
+			args = append(args, "-e", "ansible_become_pass="+becomePass)
+		}
+	}
+	// local 模式下用容器内 bash 跑（alpine 默认 bash）；这等价于远端控制节点的 bash 通道
+	cmdLine := joinArgsForShell(args)
+	ctx, cancel := newDeadlineContext(timeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "bash", "-c", cmdLine).CombinedOutput()
+	if len(out) > 64*1024 {
+		out = append(out[:64*1024], []byte("\n...(已截断)")...)
+	}
+	return r.finishAdhoc(string(out), err)
+}
+
+// localScript 在容器内写脚本到 /tmp/.ophub_collect_*.sh，再 ansible -m script 跑。
+//
+// 与远端 pushAndScript 的差异：远端先 SSH 到控制节点写文件再 ansible，本机直接写
+// 容器本地文件（容器内 ansible 是同一个进程，能直接读到）。ansible -m script
+// 内部仍然会走 SCP 把该文件推到目标机执行，所以「目标机」那侧逻辑不变。
+func (r *AnsibleRunner) localScript(ip, sshUser, sshPass string, sshPort int, script []byte,
+	become bool, becomePass string, timeout time.Duration) (string, error) {
+
+	tmpName := fmt.Sprintf("/tmp/.ophub_collect_%d_%d.sh", time.Now().UnixNano(), rand.Intn(99999))
+	if err := os.WriteFile(tmpName, ensureShebang(script), 0o755); err != nil {
+		return "", fmt.Errorf("写入本地脚本失败：%w", err)
+	}
+	defer os.Remove(tmpName)
+
+	args := []string{
+		"ansible", ip,
+		"-i", ip + ",",
+		"-m", "script",
+		"-a", tmpName,
+		"-u", sshUser,
+		"-e", "ansible_ssh_pass=" + sshPass,
+		"-e", "ansible_ssh_port=" + strconv.Itoa(sshPort),
+		"-e", "ansible_become=false",
+		"--ssh-extra-args=-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+		"-o",
+	}
+	if become {
+		args = append(args, "--become", "--become-method=sudo")
+		if becomePass != "" {
+			args = append(args, "-e", "ansible_become_pass="+becomePass)
+		}
+	}
+	cmdLine := joinArgsForShell(args)
+	ctx, cancel := newDeadlineContext(timeout)
+	defer cancel()
+	raw, err := exec.CommandContext(ctx, "bash", "-c", cmdLine).CombinedOutput()
+	if len(raw) > 64*1024 {
+		raw = append(raw[:64*1024], []byte("\n...(已截断)")...)
+	}
+	return finishAnsiScript(string(raw), err)
+}
+
+// joinArgsForShell 把 []string 用空格拼接，每个元素单独 shq 转义（包单引号 + 转义内部单引号）。
+// 给 bash -c 用，与远端模式 shq() 行为一致。
+func joinArgsForShell(args []string) string {
+	parts := make([]string, len(args))
+	for i, a := range args {
+		parts[i] = shq(a)
+	}
+	return strings.Join(parts, " ")
+}
+
+// newDeadlineContext 返回一个到 d 后自动取消的 context.Context。
+// exec.CommandContext 需要真正的 context.Context，这里直接走 context.WithDeadline。
+func newDeadlineContext(d time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithDeadline(context.Background(), time.Now().Add(d))
+}

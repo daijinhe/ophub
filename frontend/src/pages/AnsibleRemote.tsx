@@ -103,9 +103,6 @@ const hostMatches = (h: AnsibleHost, kw: string) => {
   )
 }
 
-// 本地节点的虚拟 ID
-const LOCAL_ID = 'local'
-
 // replaceTpl 用资产字段替换备注模板占位符 {字段名}
 const replaceTpl = (tpl: string, fields: Record<string, any>): string => {
   if (!tpl) return ''
@@ -117,13 +114,9 @@ const replaceTpl = (tpl: string, fields: Record<string, any>): string => {
 }
 
 // 根据当前选中节点生成 API 路径
-// 本地节点的 API 不带后缀（/hosts → /ansible，/hosts/raw → /ansible/raw，/import-cmdb → /ansible/import-cmdb）
+// 本页面只管远端节点 —— 本机 ansible 管理走独立的 /ansible/local 页（见 AnsibleLocal.tsx），
+// 后端对应端点 /ansible/remotes/:id/* 与 /ansible/local/* 是完全分开的。
 function ep(nodeId: string, sub: string) {
-  if (nodeId === LOCAL_ID) {
-    if (sub === '/hosts') return '/ansible'
-    if (sub === '/hosts/raw') return '/ansible/raw'
-    return `/ansible${sub}`
-  }
   return `/ansible/remotes/${nodeId}${sub}`
 }
 
@@ -592,7 +585,7 @@ export default function Ansible() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
         <div>
           <Typography.Title level={3} style={{ margin: 0 }}>
-            主机清单管理
+            远端 Ansible 管理
           </Typography.Title>
           <Space size={6} wrap style={{ marginTop: 4 }}>
             <Text type="secondary">当前节点：</Text>

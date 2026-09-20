@@ -1,0 +1,138 @@
+# 云枢 OpsHub · 智能运维平台 —— docker-compose 一键部署
+#
+# ── 本地开发（默认）──────────────────────────────────────────────────────────
+#   cp .env.example .env
+#   docker compose up -d --build backend frontend
+#   访问：http://localhost:10001（前端）   后端 API：http://localhost:10001/api
+#
+# ── 内网生产（镜像来自 Harbor，内网不做构建）────────────────────────────────
+#   在 .env 里把下面 4 个变量指向内网 Harbor：
+#     POSTGRES_IMAGE=<harbor>/<项目>/postgres:16
+#     REDIS_IMAGE=<harbor>/<项目>/redis:7.4.10
+#     BACKEND_IMAGE=<harbor>/<项目>/ophub-backend:<版本>
+#     FRONTEND_IMAGE=<harbor>/<项目>/ophub-frontend:<版本>
+#   然后：docker compose pull && docker compose up -d
+#   镜像已存在本地时 compose 不会触发 build，因此内网不需要源码目录。
+#   详见 docs/内网迁移指南.md
+
+# 固定 compose 项目名（不写则默认取当前目录名）—— 卷名、网络名都由它派生。
+# 不固定的话，内网部署目录一旦改名（如 ophub-migrate → ophub），compose 就会去找
+# 另一套卷（ophub_pgdata ≠ ophub-migrate_pgdata），表现出来就是「数据凭空消失」。
+# 固定成 ophub 后，目录怎么改、从哪里解包，都认同一套数据卷。
+name: ophub
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-harbor.internal.example/your-project/postgres:16}
+    container_name: ophub-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    volumes:
+      # 主机目录挂载（让数据看得见摸得着、好备份）。
+      # 用 PGDATA_HOST 覆盖路径；默认 /data/your-project/ophub/data/postgresql。
+      # 首次部署走 scripts/move-pgdata-to-host.sh 把旧 docker volume 数据搬过来。
+      - ${PGDATA_HOST:-/data/your-project/ophub/data/postgresql}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ophub
+
+  redis:
+    image: ${REDIS_IMAGE:-harbor.internal.example/your-project/redis:7.4.10}
+    container_name: ophub-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - ophub
+
+  backend:
+    image: ${BACKEND_IMAGE:-harbor.internal.example/your-project/ophub-backend:v1.7.8}
+    container_name: ophub-backend
+    restart: unless-stopped
+    environment:
+      SERVER_PORT: "8080"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ""
+      REDIS_DB: "0"
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_TTL: "720"
+      PWD_ENC_KEY: ${PWD_ENC_KEY}
+      ALLOW_ORIGINS: ${ALLOW_ORIGINS:-*}
+      # v1.7.0+ 安全开关
+      ALLOW_PUBLIC_REGISTER: ${ALLOW_PUBLIC_REGISTER:-false}
+      ALLOW_WS_TOKEN_URL: ${ALLOW_WS_TOKEN_URL:-true}
+      ALLOW_WS_ORIGINS: ${ALLOW_WS_ORIGINS:-}
+      ALLOW_WS_ANY_ORIGIN: ${ALLOW_WS_ANY_ORIGIN:-false}
+      KNOWN_HOSTS_FILE: ${KNOWN_HOSTS_FILE:-/data/known_hosts.json}
+      ALLOW_TEMP_TRUST: ${ALLOW_TEMP_TRUST:-false}
+      ENV: ${ENV:-dev}
+      UPLOAD_DIR: "/app/uploads"
+      DEPLOY_BASE: "${DEPLOY_BASE:-/data/jenkins_home/scripts/V2_Project_App_Init_Install/main/app_choice}"
+      SYSTEM_INIT_DIR: "${SYSTEM_INIT_DIR:-/data/jenkins_home/scripts/V2_Project_App_Init_Install/main/system_init}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    expose:
+      - "8080"
+    volumes:
+      - ansible-data:/etc/ansible
+      # SSH 主机公钥指纹库（v1.7.1+ P0-4）。不挂卷的话容器一重建就丢，
+      # 每次都要重新 PIN，等于把 MITM 防护退化成「每次都信」。
+      - backend-data:/data
+      # 上传的 Excel 等临时文件
+      - backend-uploads:/app/uploads
+      # 脚本管理「平台本机」模式：把宿主机的 Java 启停脚本目录挂进容器。
+      # 不挂的话后端 os.ReadDir 读到的是**容器自己的空目录**，永远列不出脚本。
+      # 路径可用 .env 里的 SCRIPT_HOST_ROOT 覆盖（默认与页面上的根路径一致）。
+      - ${SCRIPT_HOST_ROOT:-/data/jenkins_home/scripts/Java_Start_Stop_SH}:${SCRIPT_HOST_ROOT:-/data/jenkins_home/scripts/Java_Start_Stop_SH}:rw
+    networks:
+      - ophub
+
+  frontend:
+    image: ${FRONTEND_IMAGE:-harbor.internal.example/your-project/ophub-frontend:v1.7.8}
+    container_name: ophub-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${WEB_PORT}:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - ophub
+
+volumes:
+  pgdata:
+  redisdata:
+  ansible-data:
+  # 新增（v1.7.5+）：下面两个原先是容器内路径，重建即丢，迁移到内网前必须持久化
+  backend-data:
+  backend-uploads:
+
+networks:
+  ophub:
+    driver: bridge

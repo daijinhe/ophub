@@ -133,6 +133,12 @@ func main() {
 			auth.POST("/ansible/remotes/:id/import-cmdb", RequireAnyPermission("ansible:manage", "ansible:create"), ImportCMDBToRemote)
 			auth.POST("/ansible/remotes/:id/exec", RequireAdminRole(), ExecRemoteCommand)
 
+			// 本机 Ansible 管理（v1.7.10 起新增）：管理 backend 容器内的 /etc/ansible/ + 在容器内 exec ansible。
+			// 旧路由 /ansible（裸）保持不动以兼容老客户端；新菜单用 /ansible/local/*。
+			auth.GET("/ansible/local/info", RequireAnyPermission("ansible:manage", "ansible:view"), GetLocalAnsibleInfo)
+			auth.POST("/ansible/local/test", RequireAnyPermission("ansible:manage", "ansible:exec"), TestLocalAnsible)
+			auth.POST("/ansible/local/exec", RequireAdminRole(), execLocalCommand)
+
 			// 应用中间件安装（离线 ansible 部署）
 			auth.GET("/deploy/catalog", RequireAnyPermission("deploy:manage", "deploy:view"), ListDeployCatalog)
 			auth.POST("/deploy/detect", RequireAnyPermission("deploy:manage", "deploy:view"), DetectTargets)

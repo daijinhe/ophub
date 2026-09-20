@@ -17,7 +17,12 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/app .
 
 # ---- 运行时镜像 ----
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata
+# ca-certificates：HTTPS / SSH 主机名校验依赖
+# tzdata：日志时区
+# ansible：v1.7.10 起 backend 容器内直接跑 ansible 命令（Adhoc/Script/ping），
+#          不再 SSH 到远端控制节点。alpine:3.20 主线仓库有 ansible-core，
+#          体积可控；openssh-client / bash 是 ansible -m script / 协议脚本的依赖
+RUN apk add --no-cache ca-certificates tzdata ansible openssh-client bash
 WORKDIR /app
 COPY --from=build /out/app .
 EXPOSE 8080
