@@ -155,6 +155,21 @@ export default function AnsibleLocal() {
         setFile(d.file)
         setPath(d.path)
         if (d.error) setReadErr(d.error)
+        // v1.7.11+ 调试字段：把读到的字节数/行数/解析到的统计打到 console
+        // 排查「前端 0 分组但容器内手动 ansible 能列出 403 台」时直接看这里
+        if (typeof d._fileBytes === 'number') {
+          // eslint-disable-next-line no-console
+          console.log('[本机Ansible] hosts 读:', {
+            _fileBytes: d._fileBytes,
+            _fileLines: d._fileLines,
+            _groupCount: d._groupCount,
+            _hostCount: d._hostCount,
+            path: d.path,
+            exists: d.exists,
+          })
+          // 同时存到一个全局临时变量，方便用户从浏览器开发者工具「Elements → React state」看不到时也能取
+          ;(window as any).__localAnsibleDebug__ = d
+        }
       })
       .catch((e) => {
         message.error(e.response?.data?.msg || '加载失败')
@@ -203,6 +218,14 @@ export default function AnsibleLocal() {
                 </pre>
               </Paragraph>
               {d.error && <Text type="danger">错误：{d.error}</Text>}
+              {d._debug && (
+                <Paragraph>
+                  <Text strong>调试信息（v1.7.11+）：</Text>
+                  <pre style={{ background: '#1a1a1a', color: '#bdbdbd', padding: 10, borderRadius: 6, maxHeight: 200, overflow: 'auto', fontSize: 12 }}>
+                    {d._debug}
+                  </pre>
+                </Paragraph>
+              )}
             </div>
           ),
         })

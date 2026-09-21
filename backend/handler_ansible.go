@@ -179,11 +179,30 @@ func GetAnsibleHosts(c *gin.Context) {
 		})
 		return
 	}
-	file := parseAnsibleHosts(string(content))
+	strContent := string(content)
+	// 去 BOM（v1.7.11+）：某些 ansible 主机清单工具导出的 UTF-8 文件带 BOM，
+	// 第一行 `[xxx]` 实际是 \ufeff[xxx]，TrimSpace 会吞 \ufeff 之后的方括号还在，
+	// 但更安全的做法是一开头就剥掉。
+	if strings.HasPrefix(strContent, "\ufeff") {
+		strContent = strings.TrimPrefix(strContent, "\ufeff")
+	}
+	file := parseAnsibleHosts(strContent)
+	// 调试字段 v1.7.11+：返回 Go 实际读到的字节数 / 行数 / 解析出的统计，
+	// 排查「前端显示 0 分组但容器内手动能列出 403 台」类的差异。
+	groupCount := 0
+	hostCount := 0
+	for _, g := range file.Groups {
+		groupCount++
+		hostCount += len(g.Hosts)
+	}
 	OK(c, gin.H{
-		"path":   path,
-		"file":   file,
-		"exists": true,
+		"path":        path,
+		"file":        file,
+		"exists":      true,
+		"_fileBytes":  len(content),
+		"_fileLines":  strings.Count(strContent, "\n"),
+		"_groupCount": groupCount,
+		"_hostCount":  hostCount,
 	})
 }
 

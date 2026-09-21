@@ -103,34 +103,67 @@ func readDirNames(dir string) ([]string, error) {
 
 // TestLocalAnsible 执行 `ansible all -m ping` 并回传输出。
 // 前端用这个确认 ansible 实际可用（不只是二进制存在）。
+//
+// v1.7.11 之前的实现走 `bash -c 'ansible ...'`，发现服务器上某些版本/manual 之间
+// 会回 0 hosts（容器内手动 bash 同样命令能列出 403 台，差异在 Go exec 视角下某种 env
+// 或 stdin 行为）。改为直接 `exec.CommandContext("ansible", ...)`，绕开 bash 这一层，
+// 同时显式注入最小 env，避免 PID 1 进程的 env 影响 ansible 解析 inventory。
 func TestLocalAnsible(c *gin.Context) {
 	if _, err := exec.LookPath("ansible"); err != nil {
 		Fail(c, http.StatusServiceUnavailable, 503, "ansible 不在 PATH 中")
 		return
 	}
 	hostsPath := Cfg.AnsibleHosts
-	// 拼装 ansible all -i <hosts> --list-hosts -m ping -o
-	// 用 list-hosts 是为了即便 hosts 为空也能快速给出可读输出
-	cmd := fmt.Sprintf(`ansible all -i %s --list-hosts 2>&1; echo __SEP__; ansible all -i %s -m ping -o 2>&1`,
-		shq(hostsPath), shq(hostsPath))
-	ctx, cancel := newDeadlineContext(30 * time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "bash", "-c", cmd).CombinedOutput()
-	parts := strings.Split(string(out), "__SEP__")
-	listOut := ""
-	pingOut := ""
-	if len(parts) >= 1 {
-		listOut = strings.TrimSpace(parts[0])
+	// 显式最小 env：PATH 必含 ansible 所在；HOME 让 ansible 的 ~/.ansible/ 路径可定位；
+	// LANG/LC_ALL=C.UTF-8 保 hosts 文件里的中文组名能正确解析（避免 CPython 默认 ASCII
+	// 在某些 alpine 镜像里把 inventory 文件当二进制跳过）。
+	execEnv := []string{
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"HOME=/root",
+		"LANG=C.UTF-8",
+		"LC_ALL=C.UTF-8",
 	}
-	if len(parts) >= 2 {
-		pingOut = strings.TrimSpace(parts[1])
+	runAnsible := func(args ...string) ([]byte, error) {
+		ctx, cancel := newDeadlineContext(30 * time.Second)
+		defer cancel()
+		c := exec.CommandContext(ctx, "ansible", args...)
+		c.Env = execEnv
+		return c.CombinedOutput()
 	}
+	listOut, err1 := runAnsible("all", "-i", hostsPath, "--list-hosts")
+	pingOut, err2 := runAnsible("all", "-i", hostsPath, "-m", "ping", "-o")
+	// 调试用：回传实际跑了什么 + 容器视角，便于排障
+	debugInfo := fmt.Sprintf(
+		"hostsPath=%s\nhostsFileExists=%v\nhostsFileBytes=%d\ngoCmd=ansible %s\ngoEnv=%v\nerrList=%v\nerrPing=%v\n",
+		hostsPath,
+		fileExists(hostsPath),
+		fileSize(hostsPath),
+		strings.Join([]string{"all", "-i", hostsPath, "--list-hosts"}, " "),
+		execEnv,
+		err1, err2,
+	)
 	OK(c, gin.H{
-		"hosts":     listOut,
-		"ping":      pingOut,
-		"error":     errMsgOf(err),
+		"hosts":     string(listOut),
+		"ping":      string(pingOut),
+		"error":     errMsgOf(err1) + " / " + errMsgOf(err2),
 		"hostsPath": hostsPath,
+		"_debug":    debugInfo,
 	})
+}
+
+// fileExists 仅用于 TestLocalAnsible 的 _debug 输出，错误一律返回 false
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+// fileSize 返回文件字节数（错误时返 0）
+func fileSize(p string) int {
+	st, err := os.Stat(p)
+	if err != nil {
+		return 0
+	}
+	return int(st.Size())
 }
 
 // ExecLocalCommand 在本机 backend 容器内执行任意 ansible* 命令。
