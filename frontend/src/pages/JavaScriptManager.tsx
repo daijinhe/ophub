@@ -75,6 +75,11 @@ function errMsg(e: any, fallback = '操作失败'): string {
  *       edit:       TextArea 可编辑,「保存」「取消」按钮。切文件时若有
  *                   dirty(未保存改动)弹确认。
  *
+ * v1.7.25 改造:
+ *   - 左侧目录树去掉 [+]/[-] 按钮(用户反馈"太丑了"),改成「双击文件夹展开」,
+ *     单击只选中文件(进入编辑器);Tree 的 expandAction="doubleClick" + CSS
+ *     隐藏 .ant-tree-switcher。
+ *
  * 平台获取虚拟机信息一律经 ansible 控制节点 —— 但脚本管理的典型场景是
  * 「Jenkins 与平台同机、脚本就在这台机器上」(v1.7.9 起只支持本机模式)。
  * 「容器能看到的文件系统」由 docker-compose.yml 通过 SCRIPT_HOST_ROOT
@@ -351,7 +356,7 @@ export default function JavaScriptManager() {
           <CodeOutlined style={{ marginRight: 8 }} />
           Java 启停脚本管理
         </Title>
-        <Tag color="purple">v1.7.24</Tag>
+        <Tag color="purple">v1.7.25</Tag>
         <div style={{ flex: 1 }} />
         <Tooltip title="查看使用说明">
           <Button icon={<QuestionCircleOutlined />} onClick={() => setHelpOpen(true)}>
@@ -568,9 +573,9 @@ export default function JavaScriptManager() {
           </pre>
         </Paragraph>
         <Paragraph>
-          <strong>使用流程(v1.7.24+):</strong>
+          <strong>使用流程(v1.7.25+):</strong>
           <ol>
-            <li>左侧目录树点 <strong>文件</strong>(最底层)→ 右侧只读预览内容</li>
+            <li>左侧目录树 <strong>双击文件夹</strong>展开子目录,单击文件名进入只读预览</li>
             <li>点顶部「<strong>编辑</strong>」按钮 → 进入编辑态</li>
             <li>改完点「保存」回到只读态;不想改了点「取消」回退</li>
             <li>顶部「刷新」或新建/删除会自动同步目录树</li>
@@ -684,7 +689,13 @@ function countTreeNodes(nodes: DataNode[]): number {
   return n
 }
 
-/** 目录树 + 右键菜单(新建子目录 / 新建脚本 / 删除) */
+/** 目录树
+ *
+ * v1.7.25 改造(用户反馈"双击文件夹展开,不要 [+] 按钮"):
+ *   - expandAction="doubleClick"  →  双击节点才展开,单击只选中
+ *   - CSS 隐藏 .ant-tree-switcher  →  彻底去掉左侧 [+]/[-] 三角
+ *   - showLine 保留连线(展示层级),只把开关按钮本身抹掉
+ */
 function ScriptTreeView(props: {
   treeData: DataNode[]
   onLoadData: (node: any) => Promise<void>
@@ -695,15 +706,35 @@ function ScriptTreeView(props: {
   canManage: boolean
 }) {
   return (
-    <Tree
-      treeData={props.treeData}
-      loadData={props.onLoadData}
-      onSelect={props.onSelect}
-      showLine={{ showLeafIcon: false }}
-      blockNode
-      defaultExpandAll={false}
-      style={{ padding: 6 }}
-    />
+    <>
+      {/* 用 className 精准定位到本组件的 Tree,
+          * 把开关按钮折叠掉(只显示文字 + 连线)。 */}
+      <style>{`
+        .script-tree-no-switcher .ant-tree-switcher {
+          width: 0 !important;
+          min-width: 0 !important;
+          padding: 0 !important;
+          visibility: hidden !important;
+        }
+        .script-tree-no-switcher .ant-tree-switcher__noop {
+          display: none !important;
+        }
+        .script-tree-no-switcher .ant-tree-node-content-wrapper {
+          flex: 1;
+        }
+      `}</style>
+      <Tree
+        className="script-tree-no-switcher"
+        treeData={props.treeData}
+        loadData={props.onLoadData}
+        onSelect={props.onSelect}
+        expandAction="doubleClick"
+        showLine={{ showLeafIcon: false }}
+        blockNode
+        defaultExpandAll={false}
+        style={{ padding: 6 }}
+      />
+    </>
   )
 }
 
