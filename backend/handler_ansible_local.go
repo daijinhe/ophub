@@ -101,6 +101,103 @@ func readDirNames(dir string) ([]string, error) {
 	return names, nil
 }
 
+// ---------- 平台采集通道模式（v1.7.15）----------
+//
+// 需求：Linux 内网部署往往只用服务器本机的 ansible，远端控制节点形同虚设。
+// 之前 ResolveAnsibleRunner 是「容器里装了 ansible 就走本机」的隐式行为，
+// 用户既看不到、也控不住。这里把选择权显式化：一个开关决定全平台走哪条通道。
+
+// ansibleModeResp 采集通道模式响应：配置值 + 本机/远端实际情况 + 当前生效通道
+type ansibleModeResp struct {
+	Mode           string `json:"mode"`           // 配置值：local / remote / auto
+	Effective      string `json:"effective"`       // 实际生效：local / remote / none
+	LocalAvailable bool   `json:"localAvailable"`  // 本机 ansible 是否可用
+	LocalError     string `json:"localError"`      // 本机不可用的原因
+	RemoteCount    int    `json:"remoteCount"`     // ansible_remotes 里的控制节点数
+	RemoteNames    string `json:"remoteNames"`     // 控制节点名（前若干个，展示用）
+	FromEnv        bool   `json:"fromEnv"`         // 是否来自环境变量（DB 未配置时）
+}
+
+// buildAnsibleModeResp 组装当前通道状态（GET/PUT 共用）
+func buildAnsibleModeResp(mode string) ansibleModeResp {
+	ok, perr := probeLocalAnsible()
+	var names []string
+	var cnt int64
+	type row struct {
+		Name string
+	}
+	var rows []row
+	if DB != nil {
+		DB.Model(&AnsibleRemote{}).Count(&cnt)
+		DB.Model(&AnsibleRemote{}).Order("id asc").Limit(5).Find(&rows)
+	}
+	for _, r := range rows {
+		names = append(names, r.Name)
+	}
+	eff := "none"
+	if mode == runnerModeLocal && ok {
+		eff = runnerModeLocal
+	} else if mode != runnerModeLocal && cnt > 0 {
+		eff = runnerModeRemote
+	} else if mode == runnerModeAuto && ok {
+		eff = runnerModeLocal
+	}
+	return ansibleModeResp{
+		Mode:           mode,
+		Effective:      eff,
+		LocalAvailable: ok,
+		LocalError:     errMsgOf(perr),
+		RemoteCount:    int(cnt),
+		RemoteNames:    strings.Join(names, "、"),
+		FromEnv:        strings.TrimSpace(getSetting(ansibleModeKey, "")) == "",
+	}
+}
+
+// GetAnsibleRunnerMode 查询当前平台采集通道模式
+// GET /api/ansible/mode
+func GetAnsibleRunnerMode(c *gin.Context) {
+	OK(c, buildAnsibleModeResp(ansibleRunnerModeConf()))
+}
+
+// SetAnsibleRunnerMode 设置平台采集通道模式
+// PUT /api/ansible/mode   body: {"mode":"local"|"remote"|"auto"}
+func SetAnsibleRunnerMode(c *gin.Context) {
+	var req struct {
+		Mode string `json:"mode"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Fail(c, http.StatusBadRequest, 400, "请求体格式错误")
+		return
+	}
+	mode := strings.TrimSpace(strings.ToLower(req.Mode))
+	switch mode {
+	case runnerModeLocal, runnerModeRemote, runnerModeAuto:
+	default:
+		Fail(c, http.StatusBadRequest, 400, "模式只能是 local / remote / auto")
+		return
+	}
+	if mode == runnerModeLocal {
+		// 强制本机但本机不可用：直接拒绝，避免用户设完才发现全平台采不了
+		if ok, perr := probeLocalAnsible(); !ok {
+			Fail(c, http.StatusBadRequest, 400, "本机 ansible 不可用，不能切换为强制本机模式："+errMsgOf(perr))
+			return
+		}
+	}
+	if mode == runnerModeRemote {
+		var cnt int64
+		DB.Model(&AnsibleRemote{}).Count(&cnt)
+		if cnt == 0 {
+			Fail(c, http.StatusBadRequest, 400, "尚未配置任何远端控制节点，不能切换为强制远端模式")
+			return
+		}
+	}
+	if err := setSetting(ansibleModeKey, mode); err != nil {
+		Fail(c, http.StatusInternalServerError, 500, "保存失败："+err.Error())
+		return
+	}
+	OK(c, buildAnsibleModeResp(mode))
+}
+
 // TestLocalAnsible 执行 `ansible all -m ping` 并回传输出。
 // 前端用这个确认 ansible 实际可用（不只是二进制存在）。
 //

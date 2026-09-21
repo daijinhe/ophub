@@ -139,6 +139,10 @@ func main() {
 			auth.POST("/ansible/local/test", RequireAnyPermission("ansible:manage", "ansible:exec"), TestLocalAnsible)
 			auth.POST("/ansible/local/exec", RequireAdminRole(), execLocalCommand)
 
+			// 平台采集通道模式（v1.7.15）：一个开关决定全平台调 ansible 走本机还是远端控制节点
+			auth.GET("/ansible/mode", RequireAnyPermission("ansible:manage", "ansible:view"), GetAnsibleRunnerMode)
+			auth.PUT("/ansible/mode", RequireAnyPermission("ansible:manage", "ansible:update"), SetAnsibleRunnerMode)
+
 			// 应用中间件安装（离线 ansible 部署）
 			auth.GET("/deploy/catalog", RequireAnyPermission("deploy:manage", "deploy:view"), ListDeployCatalog)
 			auth.POST("/deploy/detect", RequireAnyPermission("deploy:manage", "deploy:view"), DetectTargets)

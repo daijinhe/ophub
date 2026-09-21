@@ -119,23 +119,38 @@ func probeLocalAnsible() (bool, error) {
 	return localRunnerProbeOK, nil
 }
 
-// ResolveAnsibleRunner 按以下顺序解析：
-//   1. 本机 ansible 可用 → 返回 Local 模式（不要求任何 zone 匹配，零 SSH 跳数）
-//   2. zone 非空时优先按 zone 匹配 ansible_remotes；没有则 fallback 到 id asc 第一条
-//   3. 全无 → ErrNoAnsibleNode
+// ansibleModeKey 平台级「ansible 采集通道模式」配置项 key（存 SystemSetting）
+const ansibleModeKey = "ansible.runner.mode"
+
+// runnerModeAuto 自动模式：本机可用走本机，否则走远端控制节点（历史默认行为）
+const runnerModeAuto = "auto"
+
+// ansibleRunnerModeConf 读取用户配置的采集通道模式，取值 local / remote / auto。
 //
-// 与之前行为兼容：zone=="" 时优先 local，没 local 才退到 id asc 第一条；
-// zone 非空时优先 local，没 local 才按 zone 匹配；保持「最低惊讶」。
-//
-// 调用方拿到 runner 后照旧调 Adhoc/Script/Reachable，无需关心 Mode。
-func ResolveAnsibleRunner(zone string) (*AnsibleRunner, error) {
-	if ok, _ := probeLocalAnsible(); ok {
-		return &AnsibleRunner{Mode: runnerModeLocal}, nil
+// 优先级：DB 配置（页面可改）> 环境变量 ANSIBLE_RUNNER_MODE > auto。
+// 非法值一律降级为 auto，避免手改数据库把采集搞挂。
+func ansibleRunnerModeConf() string {
+	if v := strings.TrimSpace(strings.ToLower(getSetting(ansibleModeKey, ""))); v != "" {
+		switch v {
+		case runnerModeLocal, runnerModeRemote, runnerModeAuto:
+			return v
+		}
 	}
+	if v := strings.TrimSpace(strings.ToLower(os.Getenv("ANSIBLE_RUNNER_MODE"))); v != "" {
+		switch v {
+		case runnerModeLocal, runnerModeRemote, runnerModeAuto:
+			return v
+		}
+	}
+	return runnerModeAuto
+}
+
+// resolveRemoteRunner 在 ansible_remotes 里挑一台控制节点：
+// zone 非空先按 zone 匹配，匹配不到再 fallback 到 id asc 第一条（最低惊讶）。
+func resolveRemoteRunner(zone string) (*AnsibleRunner, error) {
 	var list []AnsibleRemote
 	q := DB.Order("id asc")
 	if zone = strings.TrimSpace(zone); zone != "" {
-		// 先找同 zone，没有则 fallback 到任意一台（最低惊讶原则）
 		var same []AnsibleRemote
 		if err := q.Where("network_zone = ?", zone).Find(&same).Error; err == nil && len(same) > 0 {
 			return &AnsibleRunner{Mode: runnerModeRemote, Node: &same[0]}, nil
@@ -148,6 +163,37 @@ func ResolveAnsibleRunner(zone string) (*AnsibleRunner, error) {
 		return nil, ErrNoAnsibleNode
 	}
 	return &AnsibleRunner{Mode: runnerModeRemote, Node: &list[0]}, nil
+}
+
+// ResolveAnsibleRunner 按「平台采集通道模式」解析本次采集用哪条 ansible 通道。
+//
+// 模式来源 ansibleRunnerModeConf()（页面「本机 Ansible 管理」可改，全平台生效）：
+//   - local  ：强制本机 ansible（backend 容器内 exec）。本机不可用时**明确报错**，
+//              不静默回退远端 —— 内网服务器只有本机 ansible 时，静默回退会让人
+//              以为在走本机，实际数据来自别处（踩过：v1.7.10~14 的隐式行为）。
+//   - remote ：强制远端控制节点（zone 匹配 → id asc fallback），本机 ansible 再好也不用。
+//   - auto   ：本机可用则本机，否则远端（历史默认行为）。
+//
+// 所有采集入口（资源校准 / 定时任务 / 中间件运维 / 提权探测）都经本函数，
+// 因此改这一个开关就能让全平台统一切换通道。
+//
+// 调用方拿到 runner 后照旧调 Adhoc/Script/Reachable，无需关心 Mode。
+func ResolveAnsibleRunner(zone string) (*AnsibleRunner, error) {
+	switch ansibleRunnerModeConf() {
+	case runnerModeLocal:
+		if ok, perr := probeLocalAnsible(); ok {
+			return &AnsibleRunner{Mode: runnerModeLocal}, nil
+		} else {
+			return nil, fmt.Errorf("当前设置为「强制本机 ansible」，但本机 ansible 不可用：%v", perr)
+		}
+	case runnerModeRemote:
+		return resolveRemoteRunner(zone)
+	}
+	// auto
+	if ok, _ := probeLocalAnsible(); ok {
+		return &AnsibleRunner{Mode: runnerModeLocal}, nil
+	}
+	return resolveRemoteRunner(zone)
 }
 
 // adHocCmdBytes ad-hoc 命令总长度阈值（控制节点 → 目标机的 ansible 命令本身走

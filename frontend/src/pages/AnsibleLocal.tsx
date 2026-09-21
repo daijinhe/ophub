@@ -12,6 +12,7 @@ import {
   Modal,
   Pagination,
   Popconfirm,
+  Segmented,
   Select,
   Space,
   Table,
@@ -67,6 +68,23 @@ interface CmdbAssetItem {
   name: string
   ip: string
   fields: Record<string, any>
+}
+
+// 平台采集通道模式（v1.7.15）：一个开关决定全平台调 ansible 走哪条通道
+interface AnsibleModeInfo {
+  mode: string // local / remote / auto
+  effective: string // local / remote / none
+  localAvailable: boolean
+  localError?: string
+  remoteCount: number
+  remoteNames?: string
+  fromEnv?: boolean
+}
+
+const MODE_LABEL: Record<string, string> = {
+  local: '本机 ansible（强制）',
+  remote: '远端控制节点（强制）',
+  auto: '自动（本机优先，不可用则远端）',
 }
 
 const hostMatches = (h: AnsibleHostEntry, kw: string) => {
@@ -136,6 +154,29 @@ export default function AnsibleLocal() {
   const [execOutput, setExecOutput] = useState('')
   const [execRunning, setExecRunning] = useState(false)
 
+  // 平台采集通道模式
+  const [modeInfo, setModeInfo] = useState<AnsibleModeInfo | null>(null)
+  const [modeSaving, setModeSaving] = useState(false)
+
+  const loadMode = useCallback(() => {
+    api
+      .get('/ansible/mode')
+      .then((r) => setModeInfo(r.data.data))
+      .catch(() => setModeInfo(null))
+  }, [])
+
+  const saveMode = (m: string) => {
+    setModeSaving(true)
+    api
+      .put('/ansible/mode', { mode: m })
+      .then((r) => {
+        setModeInfo(r.data.data)
+        message.success(`已切换采集通道：${MODE_LABEL[m] || m}`)
+      })
+      .catch((e) => message.error(e.response?.data?.msg || '切换失败'))
+      .finally(() => setModeSaving(false))
+  }
+
   const loadInfo = () => {
     setInfoLoading(true)
     api
@@ -182,7 +223,8 @@ export default function AnsibleLocal() {
   useEffect(() => {
     loadInfo()
     load()
-  }, [load])
+    loadMode()
+  }, [load, loadMode])
 
   const onSave = (f: AnsibleFile) => {
     api
@@ -473,7 +515,7 @@ export default function AnsibleLocal() {
           message="本机 ansible 不可用"
           description={
             info?.error ||
-            'backend 容器内未安装 ansible 二进制，或 ANSIBLE_HOSTS 路径不可访问。所有 ansible 调用（巡检/中间件/定时任务）将自动 fallback 到远端控制节点。'
+            'backend 容器内未安装 ansible 二进制，或 ANSIBLE_HOSTS 路径不可访问。此时请把下方「平台采集通道」设为「远端控制节点」，否则所有 ansible 调用（巡检/中间件/定时任务）都会失败。'
           }
         />
       )}
@@ -495,6 +537,83 @@ export default function AnsibleLocal() {
           </Space>
         }
       />
+
+      <Card
+        size="small"
+        title={
+          <Space>
+            <ApiOutlined />
+            <span>平台采集通道</span>
+            <Tooltip title="决定资源校准、中间件捕捉、智能巡检、定时任务等所有调用 ansible 的场景走哪条通道。改这里全平台立即生效，无需重启。">
+              <InfoCircleOutlined style={{ color: '#999' }} />
+            </Tooltip>
+          </Space>
+        }
+        style={{ marginBottom: 16 }}
+        extra={
+          modeInfo && (
+            <Space wrap size={8}>
+              <Text type="secondary">当前生效：</Text>
+              {modeInfo.effective === 'local' && <Tag color="green">本机 ansible</Tag>}
+              {modeInfo.effective === 'remote' && <Tag color="blue">远端控制节点</Tag>}
+              {modeInfo.effective === 'none' && <Tag color="red">无可用通道</Tag>}
+            </Space>
+          )
+        }
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size={12}>
+          <Space wrap>
+            <Text>采集通道：</Text>
+            <Segmented
+              value={modeInfo?.mode || 'auto'}
+              disabled={!modeInfo || modeSaving}
+              onChange={(v) => saveMode(String(v))}
+              options={[
+                { label: '本机 ansible', value: 'local' },
+                { label: '远端控制节点', value: 'remote' },
+                { label: '自动', value: 'auto' },
+              ]}
+            />
+          </Space>
+          <Descriptions size="small" column={1} bordered>
+            <Descriptions.Item label="本机 ansible">
+              {modeInfo?.localAvailable ? (
+                <Tag color="green">可用</Tag>
+              ) : (
+                <Tooltip title={modeInfo?.localError || '不可用'}>
+                  <Tag color="red">不可用</Tag>
+                </Tooltip>
+              )}
+            </Descriptions.Item>
+            <Descriptions.Item label="远端控制节点">
+              {modeInfo && modeInfo.remoteCount > 0 ? (
+                <span>
+                  <Tag color="blue">{modeInfo.remoteCount} 台</Tag>
+                  <Text type="secondary">{modeInfo.remoteNames}</Text>
+                </span>
+              ) : (
+                <Tag>未配置</Tag>
+              )}
+            </Descriptions.Item>
+          </Descriptions>
+          {modeInfo?.mode === 'local' && !modeInfo.localAvailable && (
+            <Alert
+              type="error"
+              showIcon
+              message="已设为强制本机，但本机 ansible 不可用——所有采集会直接失败（不会静默回退远端）"
+              description={modeInfo.localError}
+            />
+          )}
+          {modeInfo?.mode === 'remote' && modeInfo.remoteCount === 0 && (
+            <Alert
+              type="warning"
+              showIcon
+              message="已设为强制远端，但没有配置任何控制节点"
+              description="请在「远端 Ansible 管理」添加控制节点，或把通道切回「本机 ansible」。"
+            />
+          )}
+        </Space>
+      </Card>
 
       <Tabs
         defaultActiveKey="groups"
