@@ -116,3 +116,56 @@ func TestResolveAnsibleRunner_空DB(t *testing.T) {
 		t.Error("应返回 fallback 节点")
 	}
 }
+
+// v1.7.18：目标机没有 python 时 `-m shell` 会失败，且 ansible 只给一句笼统的
+// "MODULE FAILURE / See stdout…"。真因在 module_stderr 里，必须一起取出来，
+// 否则用户拿到的是无法自查的错误信息（实测 198.51.100.2 就卡在这里）。
+func TestAnsiPayload_带出moduleStderr(t *testing.T) {
+	raw := `198.51.100.2 | FAILED! => {"changed": false,` +
+		`"module_stderr": "/bin/sh: /usr/bin/python: not found\n",` +
+		`"module_stdout": "","msg": "MODULE FAILURE\nSee stdout/stderr for the exact error","rc": 127}`
+	_, detail, _ := ansiPayload(raw)
+	if !strings.Contains(detail, "/usr/bin/python: not found") {
+		t.Errorf("detail 里应带上 module_stderr 的真因，实际：%q", detail)
+	}
+	if !strings.Contains(detail, "MODULE FAILURE") {
+		t.Errorf("detail 里应保留 msg，实际：%q", detail)
+	}
+	if !isAnsiModuleFailure(raw) {
+		t.Error("该输出应被识别为「模块没跑起来」（需换 raw 重试）")
+	}
+}
+
+// UNREACHABLE（网络不通）不能误判成「模块失败」，否则会白白多跑一次 raw 并等超时。
+func TestIsAnsiModuleFailure_不可达不算(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"不可达", `192.0.2.9 | UNREACHABLE! => {"msg": "Failed to connect to the host via ssh: timed out"}`, false},
+		{"正常输出", `192.0.2.9 | CHANGED | rc=0 | (stdout) __OPHUB_DI__0__OPHUB_DI__`, false},
+		{"空", "", false},
+		{"老版本 MODULE FAILURE", `192.0.2.9 | FAILED! => {"msg": "MODULE FAILURE"}`, true},
+		{"新版文案", `192.0.2.9 | FAILED! => {"msg": "The module failed to execute correctly"}`, true},
+	}
+	for _, c := range cases {
+		if got := isAnsiModuleFailure(c.raw); got != c.want {
+			t.Errorf("%s: isAnsiModuleFailure=%v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// raw 模块的输出形态（| CHANGED | rc=0 | (stdout) …）必须与 shell 模块一样能解出协议内容，
+// 否则「缺 python 自动换 raw」的兜底就是空的。
+func TestFinishAdhoc_Raw形态可解析(t *testing.T) {
+	// stdout 的 base64 = "ARCH=x86_64\n"
+	raw := "192.0.2.9 | CHANGED | rc=0 | (stdout) __OPHUB_DI__0__OPHUB_DI__QVJDSD14ODZfNjQK__OPHUB_DI____OPHUB_DI__\\n"
+	out, err := (&AnsibleRunner{}).finishAdhoc(raw, nil)
+	if err != nil {
+		t.Fatalf("raw 形态应能正常解析：%v", err)
+	}
+	if strings.TrimSpace(out) != "ARCH=x86_64" {
+		t.Errorf("解析出的 stdout=%q", out)
+	}
+}

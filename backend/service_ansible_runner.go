@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -256,9 +257,21 @@ func (r *AnsibleRunner) Adhoc(ip, sshUser, sshPass string, sshPort int, shellCmd
 	pre := r.ansiblePrefix(ip, sshUser, sshPass, sshPort, become, becomePass, false)
 	total := len(pre) + len(shq(wrapped)) + 4 // +4 for ' -o'
 	if total <= adHocCmdBytes {
-		cmd := pre + shq(wrapped) + " -o"
-		raw, err := r.Node.ToSSHClient().RunWithTimeout(cmd, timeout)
-		return r.finishAdhoc(raw, err)
+		raw, err := r.Node.ToSSHClient().RunWithTimeout(pre+shq(wrapped)+" -o", timeout)
+		out, ferr := r.finishAdhoc(raw, err)
+		if ferr == nil || !isAnsiModuleFailure(raw) {
+			return out, ferr
+		}
+		// 目标机缺 python（shell 模块跑不起来）→ 换 raw 模块重试，协议不变
+		log.Printf("[ansible] %s：shell 模块执行失败（%v），改用 raw 模块重试", ip, ferr)
+		preRaw := r.ansibleAdhocPrefix(ip, sshUser, sshPass, sshPort, become, becomePass, "raw")
+		raw2, err2 := r.Node.ToSSHClient().RunWithTimeout(preRaw+shq(wrapped)+" -o", timeout)
+		out2, ferr2 := r.finishAdhoc(raw2, err2)
+		if ferr2 == nil {
+			log.Printf("[ansible] %s：raw 模块重试成功（该机大概率没有可用的 python 解释器）", ip)
+			return out2, nil
+		}
+		return "", fmt.Errorf("%v（raw 模块重试同样失败：%v）", ferr, ferr2)
 	}
 	// 太长：退化为 Script 路径
 	return r.pushAndScript(ip, sshUser, sshPass, sshPort, []byte(shellCmd),
@@ -438,7 +451,16 @@ func ansiPayload(raw string) (payload, detail string, escaped bool) {
 		var m map[string]interface{}
 		if derr := json.NewDecoder(strings.NewReader(s[i+3:])).Decode(&m); derr == nil {
 			stdout, _ := m["stdout"].(string)
-			d := firstNonEmptyStr(toStr(m["msg"]), toStr(m["stderr"]))
+			// v1.7.18：module_stderr 才是「目标机为什么跑不起来」的真因 ——
+			// 典型如 `/bin/sh: /usr/bin/python: not found`（shell/script 模块依赖 python）。
+			// 此前只取 msg，用户看到的永远是 ansible 那句笼统的
+			// "MODULE FAILURE / See stdout/stderr for the exact error"，没法自查。
+			d := strings.Join(nonEmptyStrings(
+				toStr(m["msg"]),
+				toStr(m["module_stderr"]),
+				toStr(m["stderr"]),
+				toStr(m["module_stdout"]),
+			), " | ")
 			return stdout, strings.TrimSpace(d), false
 		}
 		return "", s, false
@@ -512,6 +534,17 @@ func unescapeAnsiEscapes(s string) string {
 		b.WriteByte(s[i])
 	}
 	return b.String()
+}
+
+// nonEmptyStrings 过滤掉空串（去空白后），保持原有顺序
+func nonEmptyStrings(vals ...string) []string {
+	out := make([]string, 0, len(vals))
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			out = append(out, strings.TrimSpace(v))
+		}
+	}
+	return out
 }
 
 // firstNonEmptyStr 取第一个非空（去空白后）的字符串
@@ -624,6 +657,18 @@ func (r *AnsibleRunner) ansibleGlobals(ip, sshUser, sshPass string, sshPort int,
 	return localTmpPrefix + strings.Join(args, " ") + " "
 }
 
+// ansibleAdhocPrefix 生成 ad-hoc 命令前缀，模块可指定（"shell" / "raw"）。
+//
+// raw 用于「目标机没有可用 python」的兜底：shell/script 模块依赖目标机 python 解释器，
+// raw 只经 ssh 执行原始命令，而平台的三段式回传协议本身就是纯 shell，两者等价。
+func (r *AnsibleRunner) ansibleAdhocPrefix(ip, sshUser, sshPass string, sshPort int,
+	become bool, becomePass, module string) string {
+	if strings.TrimSpace(module) == "" {
+		module = "shell"
+	}
+	return r.ansibleGlobals(ip, sshUser, sshPass, sshPort, become, becomePass) + "-m " + module + " -a "
+}
+
 // ansiblePrefix 旧版（含 -a 后无 caller 占位的 bug）；保留以防外部调用，
 // 但 Adhoc/Script 已经改为基于 ansibleGlobals 直接拼 -m -a '...' -o。
 func (r *AnsibleRunner) ansiblePrefix(ip, sshUser, sshPass string, sshPort int,
@@ -718,19 +763,63 @@ func adHocCmdBytesExport() int { return adHocCmdBytes }
 // 「目标机原始 stdout」，没有任何包装污染。
 // ============================================================================
 
-// localAdhoc 在容器内直接 exec `ansible <ip> -i <ip>, -m shell -a '<wrapped>' -o`，
-// 复用远端模式的 buildAdhocWrapper + finishAdhoc，输出协议 100% 一致。
+// isAnsiModuleFailure 判断 ansible 原始输出是否为「模块没跑起来」类失败。
 //
-// 实现：把命令拼成 []string 用 exec.CommandContext 跑，bash -c 包一层以解析
-// shell 语法（单引号 / 环境变量）。输出截断 64KB 同远端 runRemote 风格。
+// 典型：目标机没有 python（或解释器路径不对）时，`-m shell` / `-m script`
+// 会在**连上 SSH 之后**失败，输出形如
+//
+//	10.x.x.x | FAILED! => {"msg": "MODULE FAILURE\nSee stdout/stderr for the exact error",
+//	                       "module_stderr": "/bin/sh: /usr/bin/python: not found"}
+//
+// 与「网络不通」的 UNREACHABLE 是两类问题：这一类换成 `-m raw` 就能跑通
+// （raw 不走 python，只经 ssh 执行原始命令）。
+func isAnsiModuleFailure(raw string) bool {
+	s := raw
+	if s == "" {
+		return false
+	}
+	up := strings.ToUpper(s)
+	if strings.Contains(up, "MODULE FAILURE") || strings.Contains(up, "MODULE_FAILED") {
+		return true
+	}
+	low := strings.ToLower(s)
+	return strings.Contains(low, "failed to execute correctly") ||
+		strings.Contains(low, "module_stderr")
+}
+
+// localAdhoc 在容器内执行 ad-hoc：先按 shell 模块走，模块执行失败时自动换 raw 重试。
+//
+// 为什么要回退：平台的回传协议（buildAdhocWrapper）是纯 shell，不需要 python；
+// 而 `-m shell` 强制要求目标机有 python —— 目标机没装 python 或解释器路径非标的
+// 机器上，采集会卡在 "MODULE FAILURE" 且没有任何有效输出（v1.7.18 修复）。
 func (r *AnsibleRunner) localAdhoc(ip, sshUser, sshPass string, sshPort int, shellCmd string,
+	become bool, becomePass string, timeout time.Duration) (string, error) {
+
+	raw, execErr := r.localAdhocOnce("shell", ip, sshUser, sshPass, sshPort, shellCmd, become, becomePass, timeout)
+	out, err := r.finishAdhoc(raw, execErr)
+	if err == nil || !isAnsiModuleFailure(raw) {
+		return out, err
+	}
+	log.Printf("[ansible] %s：shell 模块执行失败（%v），改用 raw 模块重试", ip, err)
+	raw2, execErr2 := r.localAdhocOnce("raw", ip, sshUser, sshPass, sshPort, shellCmd, become, becomePass, timeout)
+	out2, err2 := r.finishAdhoc(raw2, execErr2)
+	if err2 == nil {
+		log.Printf("[ansible] %s：raw 模块重试成功（该机大概率没有可用的 python 解释器）", ip)
+		return out2, nil
+	}
+	return "", fmt.Errorf("%v（raw 模块重试同样失败：%v）", err, err2)
+}
+
+// localAdhocOnce 单次本机 ad-hoc：module 传 "shell" 或 "raw"。
+// 返回 ansible 的**原始输出**（未剥包装）+ 进程退出错误，由调用方 finishAdhoc。
+func (r *AnsibleRunner) localAdhocOnce(module, ip, sshUser, sshPass string, sshPort int, shellCmd string,
 	become bool, becomePass string, timeout time.Duration) (string, error) {
 
 	wrapped := buildAdhocWrapper(shellCmd)
 	args := []string{
 		"ansible", ip,
 		"-i", ip + ",",
-		"-m", "shell",
+		"-m", module,
 		"-a", wrapped,
 		"-u", sshUser,
 		"-e", "ansible_ssh_pass=" + sshPass,
@@ -753,7 +842,7 @@ func (r *AnsibleRunner) localAdhoc(ip, sshUser, sshPass string, sshPort int, she
 	if len(out) > 64*1024 {
 		out = append(out[:64*1024], []byte("\n...(已截断)")...)
 	}
-	return r.finishAdhoc(string(out), err)
+	return string(out), err
 }
 
 // localScript 在容器内写脚本到 /tmp/.ophub_collect_*.sh，再 ansible -m script 跑。
@@ -795,7 +884,19 @@ func (r *AnsibleRunner) localScript(ip, sshUser, sshPass string, sshPort int, sc
 	if len(raw) > 64*1024 {
 		raw = append(raw[:64*1024], []byte("\n...(已截断)")...)
 	}
-	return finishAnsiScript(string(raw), err)
+	out, ferr := finishAnsiScript(string(raw), err)
+	if ferr == nil || !isAnsiModuleFailure(string(raw)) {
+		return out, ferr
+	}
+	// -m script 同样依赖目标机 python；脚本内容本来就是 shell，直接换 raw 跑
+	log.Printf("[ansible] %s：script 模块执行失败（%v），改用 raw 模块重试", ip, ferr)
+	raw2, execErr2 := r.localAdhocOnce("raw", ip, sshUser, sshPass, sshPort, string(script), become, becomePass, timeout)
+	out2, ferr2 := r.finishAdhoc(raw2, execErr2)
+	if ferr2 == nil {
+		log.Printf("[ansible] %s：raw 模块重试成功（该机大概率没有可用的 python 解释器）", ip)
+		return out2, nil
+	}
+	return "", fmt.Errorf("%v（raw 模块重试同样失败：%v）", ferr, ferr2)
 }
 
 // joinArgsForShell 把 []string 用空格拼接，每个元素单独 shq 转义（包单引号 + 转义内部单引号）。
