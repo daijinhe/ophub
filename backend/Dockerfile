@@ -22,7 +22,9 @@ FROM alpine:3.20
 # ansible：v1.7.10 起 backend 容器内直接跑 ansible 命令（Adhoc/Script/ping），
 #          不再 SSH 到远端控制节点。alpine:3.20 主线仓库有 ansible-core，
 #          体积可控；openssh-client / bash 是 ansible -m script / 协议脚本的依赖
-RUN apk add --no-cache ca-certificates tzdata ansible openssh-client bash
+# sshpass：ansible 密码认证（ansible_ssh_pass）强制依赖，缺了所有 Adhoc 全挂
+#          （实测 v1.7.11/v1.7.12 资源校准 500 就是它）
+RUN apk add --no-cache ca-certificates tzdata ansible openssh-client sshpass bash
 WORKDIR /app
 COPY --from=build /out/app .
 EXPOSE 8080

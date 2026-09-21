@@ -83,8 +83,9 @@ var (
 )
 
 // probeLocalAnsible 检查容器内 ansible 是否可用：
-//   1) `ansible --version` 能跑（说明二进制装了）
-//   2) ANSIBLE_HOSTS 路径下文件可读（不必非空，用户可以自己填）
+//   1) sshpass 在 PATH（密码认证硬依赖）
+//   2) `ansible --version` 能跑（说明二进制装了）
+//   3) ANSIBLE_HOSTS 路径下文件可读（不必非空，用户可以自己填）
 func probeLocalAnsible() (bool, error) {
 	localRunnerProbeMu.Lock()
 	defer localRunnerProbeMu.Unlock()
@@ -93,6 +94,14 @@ func probeLocalAnsible() (bool, error) {
 	}
 	localRunnerProbeAt = time.Now()
 	localRunnerProbeErr = nil
+	// sshpass 是 ansible 密码认证的硬依赖（采集通道 Adhoc 全部带 ansible_ssh_pass），
+	// 缺了它本机模式每条命令都会失败 —— 直接判本机不可用，回退远端控制节点。
+	// 实测踩坑：v1.7.11/12 镜像装了 ansible 却没装 sshpass，资源校准全量 500。
+	if _, lookErr := exec.LookPath("sshpass"); lookErr != nil {
+		localRunnerProbeErr = fmt.Errorf("容器内缺 sshpass（ansible 密码认证依赖）：%v", lookErr)
+		localRunnerProbeOK = false
+		return false, localRunnerProbeErr
+	}
 	cmd := exec.Command("ansible", "--version")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
