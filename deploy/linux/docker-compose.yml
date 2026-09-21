@@ -95,7 +95,12 @@ services:
     expose:
       - "8080"
     volumes:
-      - ansible-data:/etc/ansible
+      # v1.7.11+ bind-mount 宿主机 /etc/ansible（容器内 ansible 直接用宿主机配置）。
+      # 之前是命名卷 ansible-data:/etc/ansible，但命名卷是空的（v1.7.10 之前的版本
+      # 从没往里写过东西），所以「本机 Ansible 管理」页面读到的总是 0 个分组。
+      # 改 bind-mount 后，平台读写的就是服务器本身的 /etc/ansible/hosts，符合本机模式语义。
+      # 默认 /etc/ansible，要指到别的目录就在 .env 里覆盖 ANSIBLE_HOSTS_DIR。
+      - ${ANSIBLE_HOSTS_DIR:-/etc/ansible}:/etc/ansible
       # SSH 主机公钥指纹库（v1.7.1+ P0-4）。不挂卷的话容器一重建就丢，
       # 每次都要重新 PIN，等于把 MITM 防护退化成「每次都信」。
       - backend-data:/data
@@ -128,7 +133,8 @@ services:
 volumes:
   pgdata:
   redisdata:
-  ansible-data:
+  # ansible-data 已弃用（v1.7.11+）：原命名卷为空，挂不上宿主机真实的 hosts。
+  # 历史容器仍可能在用新卷，可用 `docker volume rm ophub_ansible-data` 清理（先确认无引用）。
   # 新增（v1.7.5+）：下面两个原先是容器内路径，重建即丢，迁移到内网前必须持久化
   backend-data:
   backend-uploads:
