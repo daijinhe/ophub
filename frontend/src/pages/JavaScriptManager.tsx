@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   App,
-  AutoComplete,
   Button,
   Card,
   Col,
@@ -26,13 +25,14 @@ import {
   CodeOutlined,
   DeleteOutlined,
   EditOutlined,
+  EyeOutlined,
   FileAddOutlined,
+  FileTextOutlined,
   FolderAddOutlined,
   FolderOutlined,
   QuestionCircleOutlined,
   ReloadOutlined,
   SaveOutlined,
-  SnippetsOutlined,
 } from '@ant-design/icons'
 import {
   createScriptDir,
@@ -50,7 +50,7 @@ const { TextArea } = Input
 
 const ROOT_DEFAULT = '/data/jenkins_home/scripts/Java_Start_Stop_SH'
 
-/** 友好的字节数显示（编辑器右上角 / 列表 size 列） */
+/** 友好的字节数显示 */
 function fmtBytes(n: number): string {
   if (!n || n <= 0) return '0 B'
   if (n < 1024) return `${n} B`
@@ -66,105 +66,195 @@ function errMsg(e: any, fallback = '操作失败'): string {
 /**
  * Java 启停脚本管理
  *
- * 平台获取虚拟机信息一律经 ansible 控制节点 —— 在 UI 上的体现是「先选资产」。
- * 选完资产 + 确认根路径（默认 /data/jenkins_home/scripts/Java_Start_Stop_SH），
- * 左侧列出所有「服务」（根路径下的子目录，每个目录 = 一个 Java 服务），
- * 中间是该服务下的脚本文件，右侧是文本编辑器。
+ * v1.7.24 改造:
+ *   - 左侧由「服务目录列表 + 文件列表」两张卡片 → 一棵完整的目录树(antd Tree),
+ *     支持任意层级(`高质量发展-测试环境-后端/java-auth-上传包/dits-auth.jar/java-start.sh`
+ *     这种 3 级嵌套也按真实结构展开)。
+ *   - 编辑器分两态:
+ *       view(默认): 文件点开只读展示,顶部「编辑」按钮才进入编辑态;
+ *       edit:       TextArea 可编辑,「保存」「取消」按钮。切文件时若有
+ *                   dirty(未保存改动)弹确认。
  *
- * 写路径强制落在「允许根」之下，由后端 normalizeScriptPath 兜底；
- * 客户端不做严格解析，只把"用户输入"原样下发 —— 后端验证失败会回 400 + 详细原因。
+ * 平台获取虚拟机信息一律经 ansible 控制节点 —— 但脚本管理的典型场景是
+ * 「Jenkins 与平台同机、脚本就在这台机器上」(v1.7.9 起只支持本机模式)。
+ * 「容器能看到的文件系统」由 docker-compose.yml 通过 SCRIPT_HOST_ROOT
+ * 把宿主机目录挂进来决定。
+ *
+ * 写路径强制落在「允许根」之下,由后端 normalizeScriptPath 兜底;
+ * 客户端不做严格解析,只把"用户输入"原样下发 —— 后端验证失败会回 400 + 详细原因。
  */
 export default function JavaScriptManager() {
   const { hasPerm } = useAuth()
   const canManage = hasPerm('script:manage')
 
-  // 自 v1.7.9 起只支持平台本机模式：直接操作后台容器能看到的文件系统。
-  // 「容器能看到的文件系统」由 docker-compose.yml 通过 SCRIPT_HOST_ROOT 把
-  // 宿主机目录挂进来决定，所以根路径必须与挂载配置一致。
+  // 自 v1.7.9 起只支持平台本机模式:直接操作后台容器能看到的文件系统。
   const [rootPath, setRootPath] = useState(ROOT_DEFAULT)
 
-  // 服务（子目录）树 + 当前选中节点
-  const [dirs, setDirs] = useState<ScriptDirEntry[]>([])
-  const [dirsLoading, setDirsLoading] = useState(false)
-  const [selectedDir, setSelectedDir] = useState<ScriptDirEntry | null>(null)
+  // 左侧目录树(antd Tree 的 DataNode 形态,children 按需加载)
+  const [treeData, setTreeData] = useState<DataNode[]>([])
+  const [treeLoading, setTreeLoading] = useState(false)
+  // 目录树刷新计数器 —— 删除/新建后 +1 让 root 重新加载
+  const [treeVersion, setTreeVersion] = useState(0)
 
-  // 当前服务下的脚本文件
-  const [files, setFiles] = useState<ScriptDirEntry[]>([])
-  const [filesLoading, setFilesLoading] = useState(false)
+  // 当前选中的文件(在 view/edit 模式之间共享)
   const [selectedFile, setSelectedFile] = useState<ScriptDirEntry | null>(null)
 
-  // 编辑器状态
-  const [editorOpen, setEditorContent] = useEditorState()
+  // 编辑器状态(view/edit + dirty + 内容)
+  const [editor, setEditor] = useEditorState()
 
-  // 抽屉配置：创建服务目录 / 新建脚本
+  // 新建子目录 / 新建脚本 的目标父目录(默认 = 根)
   const [createDirOpen, setCreateDirOpen] = useState(false)
+  const [createDirParent, setCreateDirParent] = useState<string | null>(null)
   const [createFileOpen, setCreateFileOpen] = useState(false)
+  const [createFileParent, setCreateFileParent] = useState<string | null>(null)
 
   // 帮助文档抽屉
   const [helpOpen, setHelpOpen] = useState(false)
 
-  /* ---------- 加载服务列表（根目录下子目录） ---------- */
-  const loadDirs = useCallback(async () => {
-    setDirsLoading(true)
+  /* ---------- 加载根目录下的顶层节点 ---------- */
+  const loadRoot = useCallback(async () => {
+    setTreeLoading(true)
     try {
       const r = await listScripts('local', undefined, rootPath)
-      setDirs((r.items || []).filter((it) => it.isDir))
+      const items = (r.items || []).filter((it) => !it.name.startsWith('.'))
+      setTreeData(items.map((it) => toDataNode(it, rootPath)))
     } catch (e) {
-      message.error('加载服务列表失败：' + errMsg(e))
-      setDirs([])
+      message.error('加载脚本目录失败:' + errMsg(e))
+      setTreeData([])
     } finally {
-      setDirsLoading(false)
+      setTreeLoading(false)
     }
   }, [rootPath])
 
   useEffect(() => {
-    loadDirs()
-  }, [loadDirs])
+    loadRoot()
+  }, [loadRoot, treeVersion])
 
-  /* ---------- 加载选中服务下的文件 ---------- */
-  const loadFiles = useCallback(
-    async (dir: ScriptDirEntry | null) => {
-      if (!dir) {
-        setFiles([])
-        return
-      }
-      setFilesLoading(true)
+  /* ---------- 节点展开时按需加载其子节点 ---------- */
+  const onLoadData = useCallback(
+    async (node: any) => {
+      const path: string = node.path
       try {
-        const r = await listScripts('local', undefined, dir.path, rootPath)
-        // 文件型条目（脚本文件们）
-        setFiles((r.items || []).filter((it) => !it.isDir))
+        const r = await listScripts('local', undefined, path, rootPath)
+        const items = (r.items || []).filter((it) => !it.name.startsWith('.'))
+        const children = items.map((it) => toDataNode(it, rootPath))
+        setTreeData((orig) => updateChildren(orig, node.key as string, children))
       } catch (e) {
-        message.error('加载文件列表失败：' + errMsg(e))
-        setFiles([])
-      } finally {
-        setFilesLoading(false)
+        message.error('加载子目录失败:' + errMsg(e))
+        // 即使失败也要把节点变成叶子,免得一直转圈
+        setTreeData((orig) =>
+          updateChildren(orig, node.key as string, []),
+        )
       }
     },
     [rootPath],
   )
 
-  useEffect(() => {
-    if (selectedDir) loadFiles(selectedDir)
-  }, [selectedDir, loadFiles])
+  /* ---------- 选中节点(目录:展开/折叠;文件:打开编辑器) ---------- */
+  const onTreeSelect = useCallback(
+    (_keys: React.Key[], info: any) => {
+      const node = info.node as DataNode & {
+        entry?: ScriptDirEntry
+      }
+      if (!node || !node.entry) return
+      if (node.entry.isDir) {
+        // 目录节点:不打开编辑器,仅展开/折叠(由 Tree 自己处理)
+        return
+      }
+      // 文件节点:打开(view 模式)
+      openFile(node.entry)
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rootPath],
+  )
 
-  /* ---------- 打开文件到编辑器 ---------- */
+  /* ---------- 打开文件到编辑器(view 模式) ---------- */
   const openFile = useCallback(
     async (f: ScriptDirEntry) => {
+      // dirty 检查:当前编辑器里有未保存改动 → 切文件前确认
+      if (editor.dirty && editor.filePath && editor.filePath !== f.path) {
+        Modal.confirm({
+          title: '当前编辑未保存',
+          content: `正在编辑「${editor.filePath}」有未保存改动,切换到「${f.path}」会丢失。继续?`,
+          okText: '切换并丢弃',
+          cancelText: '取消',
+          okButtonProps: { danger: true },
+          onOk: () => {
+            doOpenFile(f)
+          },
+        })
+        return
+      }
+      doOpenFile(f)
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [editor, rootPath],
+  )
+
+  const doOpenFile = useCallback(
+    async (f: ScriptDirEntry) => {
+      setEditor({
+        mode: 'view',
+        open: true,
+        dirty: false,
+        loading: true,
+        content: '',
+        baseline: '',
+        filePath: f.path,
+      })
       try {
         const r = await getScriptFile('local', undefined, f.path, rootPath)
         setSelectedFile(f)
-        setEditorContent({ open: true, dirty: false, loading: false, content: r.content })
+        setEditor({
+          mode: 'view',
+          open: true,
+          dirty: false,
+          loading: false,
+          content: r.content,
+          baseline: r.content,
+          filePath: f.path,
+        })
       } catch (e) {
-        message.error('打开文件失败：' + errMsg(e))
+        message.error('打开文件失败:' + errMsg(e))
+        setEditor({
+          mode: 'view',
+          open: false,
+          dirty: false,
+          loading: false,
+          content: '',
+          baseline: '',
+          filePath: undefined,
+        })
+        setSelectedFile(null)
       }
     },
-    [rootPath],
+    [rootPath, setEditor],
   )
+
+  /* ---------- 「编辑」按钮:view → edit ---------- */
+  const enterEdit = useCallback(() => {
+    if (!editor.open) return
+    setEditor({
+      ...editor,
+      mode: 'edit',
+      baseline: editor.content,
+    })
+  }, [editor, setEditor])
+
+  /* ---------- 「取消」按钮:edit → view(回退内容) ---------- */
+  const cancelEdit = useCallback(() => {
+    setEditor({
+      ...editor,
+      mode: 'view',
+      content: editor.baseline ?? editor.content,
+      dirty: false,
+    })
+  }, [editor, setEditor])
 
   /* ---------- 保存当前编辑 ---------- */
   const saveFile = useCallback(async () => {
-    if (!selectedFile) return
-    if (!editorOpen.dirty) {
+    if (!selectedFile || !editor.filePath) return
+    if (!editor.dirty) {
       message.info('没有改动')
       return
     }
@@ -172,54 +262,57 @@ export default function JavaScriptManager() {
       await putScriptFile(
         'local',
         undefined,
-        selectedFile.path,
-        editorOpen.content,
+        editor.filePath,
+        editor.content,
         rootPath,
       )
       message.success('保存成功')
-      setEditorContent({ ...editorOpen, dirty: false })
-      // 刷新文件列表（大小/时间会变）
-      if (selectedDir) loadFiles(selectedDir)
+      setEditor({
+        ...editor,
+        mode: 'view',
+        dirty: false,
+        baseline: editor.content,
+      })
+      // 刷新目录树(文件大小/时间会变)
+      setTreeVersion((v) => v + 1)
     } catch (e) {
-      message.error('保存失败：' + errMsg(e))
+      message.error('保存失败:' + errMsg(e))
     }
-  }, [selectedFile, selectedDir, editorOpen, rootPath, loadFiles])
+  }, [selectedFile, editor, rootPath, setEditor])
 
-  /* ---------- 新建服务目录 ---------- */
+  /* ---------- 新建子目录 ---------- */
   const onCreateDir = async (vals: { name: string }) => {
+    const parent = createDirParent || rootPath
     try {
-      await createScriptDir('local', undefined, rootPath, vals.name)
-      message.success('服务目录已创建：' + vals.name)
+      await createScriptDir('local', undefined, parent, vals.name)
+      message.success('目录已创建:' + vals.name)
       setCreateDirOpen(false)
-      loadDirs()
+      setTreeVersion((v) => v + 1)
     } catch (e) {
-      message.error('创建失败：' + errMsg(e))
+      message.error('创建失败:' + errMsg(e))
     }
   }
 
   /* ---------- 新建脚本文件 ---------- */
   const onCreateFile = async (vals: { name: string; content?: string }) => {
-    if (!selectedDir) {
-      message.warning('请先选择左侧一个服务')
-      return
-    }
+    const parent = createFileParent || rootPath
+    const fullPath = `${parent.replace(/\/+$/, '')}/${vals.name}`
     try {
-      const fullPath = `${selectedDir.path}/${vals.name}`
       await createScriptFile('local', undefined, fullPath, vals.content || '', rootPath)
-      message.success('脚本已创建：' + vals.name)
+      message.success('脚本已创建:' + vals.name)
       setCreateFileOpen(false)
-      loadFiles(selectedDir)
+      setTreeVersion((v) => v + 1)
     } catch (e) {
-      message.error('创建失败：' + errMsg(e))
+      message.error('创建失败:' + errMsg(e))
     }
   }
 
-  /* ---------- 删除条目（服务目录 / 脚本） ---------- */
+  /* ---------- 删除条目(目录/文件 自适应) ---------- */
   const onDelete = async (entry: ScriptDirEntry) => {
     const isDir = entry.isDir
     const confirmText = isDir
-      ? `确认删除服务目录「${entry.name}」及其下所有脚本？此操作不可恢复！`
-      : `确认删除脚本「${entry.name}」？此操作不可恢复！`
+      ? `确认删除「${entry.name}」及其下所有内容?此操作不可恢复!`
+      : `确认删除脚本「${entry.name}」?此操作不可恢复!`
     Modal.confirm({
       title: '删除确认',
       content: confirmText,
@@ -229,23 +322,22 @@ export default function JavaScriptManager() {
       onOk: async () => {
         try {
           await deleteScriptEntry('local', undefined, entry.path, rootPath)
-          message.success('已删除：' + entry.name)
-          if (isDir) {
-            if (selectedDir?.path === entry.path) {
-              setSelectedDir(null)
-              setSelectedFile(null)
-              setEditorContent({ open: false, dirty: false, content: '' })
-            }
-            loadDirs()
-          } else {
-            if (selectedFile?.path === entry.path) {
-              setSelectedFile(null)
-              setEditorContent({ open: false, dirty: false, content: '' })
-            }
-            if (selectedDir) loadFiles(selectedDir)
+          message.success('已删除:' + entry.name)
+          if (selectedFile?.path === entry.path) {
+            setSelectedFile(null)
+            setEditor({
+              mode: 'view',
+              open: false,
+              dirty: false,
+              loading: false,
+              content: '',
+              baseline: '',
+              filePath: undefined,
+            })
           }
+          setTreeVersion((v) => v + 1)
         } catch (e) {
-          message.error('删除失败：' + errMsg(e))
+          message.error('删除失败:' + errMsg(e))
         }
       },
     })
@@ -259,7 +351,7 @@ export default function JavaScriptManager() {
           <CodeOutlined style={{ marginRight: 8 }} />
           Java 启停脚本管理
         </Title>
-        <Tag color="purple">v1.7.9</Tag>
+        <Tag color="purple">v1.7.24</Tag>
         <div style={{ flex: 1 }} />
         <Tooltip title="查看使用说明">
           <Button icon={<QuestionCircleOutlined />} onClick={() => setHelpOpen(true)}>
@@ -268,7 +360,7 @@ export default function JavaScriptManager() {
         </Tooltip>
       </div>
 
-      {/* 顶部：脚本根路径 + 操作（自 v1.7.9 起只支持本机模式，去掉数据源切换） */}
+      {/* 顶部:脚本根路径 + 操作 */}
       <Card size="small" style={{ marginBottom: 12 }}>
         <Form layout="inline">
           <Form.Item label="脚本根路径" style={{ minWidth: 420 }}>
@@ -283,21 +375,32 @@ export default function JavaScriptManager() {
             <Space>
               <Button
                 icon={<ReloadOutlined />}
-                onClick={() => {
-                  loadDirs()
-                  if (selectedDir) loadFiles(selectedDir)
-                }}
+                onClick={() => setTreeVersion((v) => v + 1)}
               >
                 刷新
               </Button>
               {canManage && (
-                <Button
-                  icon={<FolderAddOutlined />}
-                  type="primary"
-                  onClick={() => setCreateDirOpen(true)}
-                >
-                  新建服务
-                </Button>
+                <>
+                  <Button
+                    icon={<FolderAddOutlined />}
+                    type="primary"
+                    onClick={() => {
+                      setCreateDirParent(rootPath)
+                      setCreateDirOpen(true)
+                    }}
+                  >
+                    新建目录
+                  </Button>
+                  <Button
+                    icon={<FileAddOutlined />}
+                    onClick={() => {
+                      setCreateFileParent(rootPath)
+                      setCreateFileOpen(true)
+                    }}
+                  >
+                    新建脚本
+                  </Button>
+                </>
               )}
             </Space>
           </Form.Item>
@@ -305,139 +408,134 @@ export default function JavaScriptManager() {
       </Card>
 
       <Row gutter={12}>
-          {/* 左：服务目录 */}
-          <Col span={6}>
-            <Card
-              size="small"
-              title={
-                <span>
-                  <FolderOutlined /> 服务目录（{dirs.length}）
-                </span>
-              }
-              bodyStyle={{ padding: 0, height: 'calc(100vh - 280px)', overflow: 'auto' }}
-            >
-              {dirsLoading ? (
-                <div style={{ padding: 24, textAlign: 'center' }}>
-                  <Spin />
-                </div>
-              ) : dirs.length === 0 ? (
-                <Empty
-                  description="暂无服务目录"
-                  imageStyle={{ height: 80 }}
-                  style={{ padding: 16 }}
-                >
-                  {canManage && (
-                    <Button type="primary" onClick={() => setCreateDirOpen(true)}>
-                      新建第一个服务
-                    </Button>
-                  )}
-                </Empty>
-              ) : (
-                <DirectoryList
-                  dirs={dirs}
-                  selected={selectedDir}
-                  onSelect={(d) => setSelectedDir(d)}
-                  onDelete={canManage ? (d) => onDelete(d) : undefined}
-                />
-              )}
-            </Card>
-          </Col>
-
-          {/* 右：文件 + 编辑器 */}
-          <Col span={18}>
-            <Card
-              size="small"
-              title={
-                <span>
-                  <CloudServerOutlined /> 脚本文件
-                  {selectedDir && (
-                    <Tag color="blue" style={{ marginLeft: 8 }}>
-                      {selectedDir.name}
-                    </Tag>
-                  )}
-                  {selectedFile && (
-                    <Tag color="cyan" style={{ marginLeft: 8 }}>
-                      {selectedFile.name}
-                    </Tag>
-                  )}
-                </span>
-              }
-              extra={
-                canManage && selectedDir && (
-                  <Space>
+        {/* 左:目录树(任意层级) */}
+        <Col span={7}>
+          <Card
+            size="small"
+            title={
+              <span>
+                <FolderOutlined /> 目录树({countTreeNodes(treeData)})
+              </span>
+            }
+            bodyStyle={{ padding: 0, height: 'calc(100vh - 280px)', overflow: 'auto' }}
+            extra={
+              canManage ? (
+                <Space size={4}>
+                  <Tooltip title="在根下新建">
                     <Button
                       size="small"
+                      type="text"
+                      icon={<FolderAddOutlined />}
+                      onClick={() => {
+                        setCreateDirParent(rootPath)
+                        setCreateDirOpen(true)
+                      }}
+                    />
+                  </Tooltip>
+                </Space>
+              ) : null
+            }
+          >
+            {treeLoading && treeData.length === 0 ? (
+              <div style={{ padding: 24, textAlign: 'center' }}>
+                <Spin />
+              </div>
+            ) : treeData.length === 0 ? (
+              <Empty
+                description="暂无条目"
+                imageStyle={{ height: 80 }}
+                style={{ padding: 16 }}
+              >
+                {canManage && (
+                  <Space>
+                    <Button
+                      type="primary"
+                      icon={<FolderAddOutlined />}
+                      onClick={() => {
+                        setCreateDirParent(rootPath)
+                        setCreateDirOpen(true)
+                      }}
+                    >
+                      新建目录
+                    </Button>
+                    <Button
                       icon={<FileAddOutlined />}
-                      onClick={() => setCreateFileOpen(true)}
+                      onClick={() => {
+                        setCreateFileParent(rootPath)
+                        setCreateFileOpen(true)
+                      }}
                     >
                       新建脚本
                     </Button>
                   </Space>
-                )
-              }
-              bodyStyle={{ padding: 0, height: 'calc(100vh - 280px)', overflow: 'hidden' }}
-            >
-              {!selectedDir ? (
-                <Empty
-                  description="请选择左侧的服务目录"
-                  style={{ marginTop: 80 }}
-                />
-              ) : (
-                <Row style={{ height: '100%' }}>
-                  {/* 服务下的文件列表 */}
-                  <Col
-                    span={7}
-                    style={{
-                      height: '100%',
-                      borderRight: '1px solid var(--border-soft)',
-                      overflow: 'auto',
-                    }}
-                  >
-                    {filesLoading ? (
-                      <div style={{ padding: 24, textAlign: 'center' }}>
-                        <Spin />
-                      </div>
-                    ) : files.length === 0 ? (
-                      <Empty description="尚无脚本" imageStyle={{ height: 60 }} />
-                    ) : (
-                      <FileList
-                        files={files}
-                        selected={selectedFile}
-                        onSelect={(f) => openFile(f)}
-                        onDelete={canManage ? (f) => onDelete(f) : undefined}
-                      />
-                    )}
-                  </Col>
-                  {/* 编辑器 */}
-                  <Col span={17} style={{ height: '100%' }}>
-                    <EditorPanel
-                      file={selectedFile}
-                      editor={editorOpen}
-                      onChange={(v) => {
-                        setEditorContent({ ...editorOpen, content: v, dirty: true })
-                      }}
-                      onSave={canManage ? saveFile : undefined}
-                      canManage={canManage}
-                    />
-                  </Col>
-                </Row>
-              )}
-            </Card>
-          </Col>
-        </Row>
+                )}
+              </Empty>
+            ) : (
+              <ScriptTreeView
+                treeData={treeData}
+                onLoadData={onLoadData}
+                onSelect={onTreeSelect}
+                onDelete={canManage ? onDelete : undefined}
+                onCreateDir={(parent) => {
+                  setCreateDirParent(parent)
+                  setCreateDirOpen(true)
+                }}
+                onCreateFile={(parent) => {
+                  setCreateFileParent(parent)
+                  setCreateFileOpen(true)
+                }}
+                canManage={canManage}
+              />
+            )}
+          </Card>
+        </Col>
 
-      {/* 新建服务目录 */}
+        {/* 右:编辑器(view/edit 两态) */}
+        <Col span={17}>
+          <Card
+            size="small"
+            title={
+              <span>
+                {editor.mode === 'edit' ? <EditOutlined /> : <EyeOutlined />}
+                &nbsp;
+                {selectedFile ? selectedFile.name : '脚本预览'}
+                {selectedFile && (
+                  <Tag color="blue" style={{ marginLeft: 8 }}>
+                    {selectedFile.path}
+                  </Tag>
+                )}
+              </span>
+            }
+            bodyStyle={{ padding: 0, height: 'calc(100vh - 280px)', overflow: 'hidden' }}
+          >
+            <EditorPanel
+              file={selectedFile}
+              editor={editor}
+              canManage={canManage}
+              onEnterEdit={enterEdit}
+              onCancelEdit={cancelEdit}
+              onChange={(v) =>
+                setEditor({ ...editor, content: v, dirty: v !== editor.baseline })
+              }
+              onSave={saveFile}
+            />
+          </Card>
+        </Col>
+      </Row>
+
+      {/* 新建目录 */}
       <CreateDirModal
         open={createDirOpen}
         onCancel={() => setCreateDirOpen(false)}
         onSubmit={onCreateDir}
+        parentPath={createDirParent}
       />
-      {/* 新建脚本文件 */}
+      {/* 新建脚本 */}
       <CreateFileModal
         open={createFileOpen}
         onCancel={() => setCreateFileOpen(false)}
         onSubmit={onCreateFile}
-        serviceName={selectedDir?.name}
+        parentPath={createFileParent}
       />
       {/* 帮助 */}
       <Drawer
@@ -447,12 +545,12 @@ export default function JavaScriptManager() {
         width={560}
       >
         <Paragraph>
-          <strong>适用场景：</strong>管理业务服务器上一组 Java
-          服务的启停脚本（如 <code>start.sh</code> / <code>stop.sh</code>
-          / <code>restart.sh</code>）。
+          <strong>适用场景:</strong>管理业务服务器上一组 Java
+          服务的启停脚本(如 <code>start.sh</code> / <code>stop.sh</code>
+          / <code>restart.sh</code>)。
         </Paragraph>
         <Paragraph>
-          <strong>目录结构：</strong>
+          <strong>目录结构:</strong>
           <pre
             style={{
               background: 'var(--bg-soft)',
@@ -461,47 +559,47 @@ export default function JavaScriptManager() {
             }}
           >
 {`${ROOT_DEFAULT}
-├── order-service/
-│   ├── start.sh
-│   ├── stop.sh
-│   └── restart.sh
-├── payment-service/
+├── 高质量发展-测试环境-后端java-auth-上传包/
+│   └── dits-auth.jar/                # 与 jar 同名的目录(便于按服务归档)
+│       └── java-start.sh
+├── 高质量发展-生产环境-后端java-auth-上传包/
 │   └── ...
 └── ...`}
           </pre>
         </Paragraph>
         <Paragraph>
-          <strong>数据模式：</strong>
-          <Tag color="green">平台本机</Tag>
-          自 v1.7.9 起只支持本机模式 —— 后端直接读写平台容器能看到的文件系统，
-          不经 ansible。适合「Jenkins 与平台同机、脚本就在平台这台机器上」的场景。
+          <strong>使用流程(v1.7.24+):</strong>
+          <ol>
+            <li>左侧目录树点 <strong>文件</strong>(最底层)→ 右侧只读预览内容</li>
+            <li>点顶部「<strong>编辑</strong>」按钮 → 进入编辑态</li>
+            <li>改完点「保存」回到只读态;不想改了点「取消」回退</li>
+            <li>顶部「刷新」或新建/删除会自动同步目录树</li>
+          </ol>
         </Paragraph>
         <Paragraph>
           <Text type="secondary">
-            ⚠️ 平台跑在容器里时，「本机」= <strong>容器</strong>文件系统。
-            要看到主机的脚本目录，必须在 <code>docker-compose.yml</code> 的
-            <code>backend.volumes</code> 里把该路径挂进容器（默认挂
-            <code>{ROOT_DEFAULT}</code>，可通过 <code>.env</code> 的
-            <code>SCRIPT_HOST_ROOT</code> 覆盖）。如果列表一直为空但主机目录
-            里能 ls 出内容（如 <code>China Mobile</code> 这种服务目录），九成
-            是挂载未生效或路径不一致 —— 改完 compose 要 <code>docker compose up -d --no-build backend</code>。
+            ⚠️ 平台跑在容器里时,「本机」= <strong>容器</strong>文件系统。
+            要看到主机的脚本目录,必须在 <code>docker-compose.yml</code> 的
+            <code>backend.volumes</code> 里把该路径挂进容器(默认挂
+            <code>{ROOT_DEFAULT}</code>,可通过 <code>.env</code> 的
+            <code>SCRIPT_HOST_ROOT</code> 覆盖)。改完 compose 要{' '}
+            <code>docker compose up -d --no-build backend</code>。
           </Text>
         </Paragraph>
         <Paragraph>
-          <strong>权限：</strong>
+          <strong>权限:</strong>
           <ul>
             <li>
-              <Tag color="blue">script:view</Tag> 查看服务列表、脚本内容
+              <Tag color="blue">script:view</Tag> 查看目录树、脚本内容
             </li>
             <li>
-              <Tag color="purple">script:manage</Tag> 新建 / 修改 / 删除服务与脚本
+              <Tag color="purple">script:manage</Tag> 新建 / 修改 / 删除目录与脚本
             </li>
           </ul>
         </Paragraph>
         <Paragraph>
-          <strong>备份：</strong>
-          每次保存会先复制到 <code>{`<原文件>.ophub.bak`}</code>
-          ；如果修改失败，可用 SSH 登录目标机恢复。
+          <strong>备份:</strong>每次保存会先复制到 <code>{`<原文件>.ophub.bak`}</code>;
+          如果修改失败,可用 SSH 登录目标机恢复。
         </Paragraph>
       </Drawer>
     </div>
@@ -512,130 +610,134 @@ export default function JavaScriptManager() {
  * 子组件
  * ========================================================================== */
 
-/** 服务目录列表（点击切换 file 列表） */
-function DirectoryList(props: {
-  dirs: ScriptDirEntry[]
-  selected: ScriptDirEntry | null
-  onSelect: (d: ScriptDirEntry) => void
-  onDelete?: (d: ScriptDirEntry) => void
+/** 把后端返回的 ScriptDirEntry 转成 antd Tree 的 DataNode */
+function toDataNode(it: ScriptDirEntry, root: string): DataNode & {
+  entry: ScriptDirEntry
+  path: string
+} {
+  const path = it.path
+  const title = (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        fontSize: 13,
+        padding: '2px 0',
+      }}
+    >
+      {it.isDir ? (
+        <FolderOutlined style={{ color: '#f59e0b' }} />
+      ) : (
+        <FileTextOutlined style={{ color: '#6366f1' }} />
+      )}
+      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        {it.name}
+      </span>
+      {!it.isDir && (
+        <Text type="secondary" style={{ fontSize: 11 }}>
+          {fmtBytes(it.size)}
+        </Text>
+      )}
+    </div>
+  )
+  return {
+    key: path,
+    title,
+    isLeaf: !it.isDir,
+    path,
+    entry: it,
+    // 目录节点的 children 留空数组(loadData 触发后填)
+    children: it.isDir ? [] : undefined,
+  }
+}
+
+/** 把某节点下的 children 替换掉(用于 loadData 回填) */
+function updateChildren(
+  orig: DataNode[],
+  key: string,
+  children: DataNode[],
+): DataNode[] {
+  return orig.map((n) => {
+    if (n.key === key) {
+      return { ...n, children }
+    }
+    if (n.children && n.children.length > 0) {
+      return {
+        ...n,
+        children: updateChildren(n.children, key, children),
+      }
+    }
+    return n
+  })
+}
+
+/** 数 tree 里有多少个节点(粗略,用于 Card title 显示计数) */
+function countTreeNodes(nodes: DataNode[]): number {
+  let n = 0
+  for (const x of nodes) {
+    n += 1
+    if (x.children && x.children.length > 0) {
+      n += countTreeNodes(x.children)
+    }
+  }
+  return n
+}
+
+/** 目录树 + 右键菜单(新建子目录 / 新建脚本 / 删除) */
+function ScriptTreeView(props: {
+  treeData: DataNode[]
+  onLoadData: (node: any) => Promise<void>
+  onSelect: (keys: React.Key[], info: any) => void
+  onDelete?: (entry: ScriptDirEntry) => void
+  onCreateDir: (parent: string) => void
+  onCreateFile: (parent: string) => void
+  canManage: boolean
 }) {
   return (
-    <div style={{ padding: 4 }}>
-      {props.dirs.map((d) => {
-        const active = props.selected?.path === d.path
-        return (
-          <div
-            key={d.path}
-            onClick={() => props.onSelect(d)}
-            style={{
-              padding: '8px 12px',
-              borderRadius: 4,
-              cursor: 'pointer',
-              background: active ? 'var(--primary-soft, rgba(99,102,241,0.1))' : undefined,
-              borderLeft: active
-                ? '3px solid var(--accent, #6366f1)'
-                : '3px solid transparent',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-            }}
-          >
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              <FolderOutlined style={{ marginRight: 8, color: '#f59e0b' }} />
-              {d.name}
-            </span>
-            {props.onDelete && (
-              <Button
-                type="text"
-                size="small"
-                danger
-                icon={<DeleteOutlined />}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  props.onDelete?.(d)
-                }}
-              />
-            )}
-          </div>
-        )
-      })}
-    </div>
+    <Tree
+      treeData={props.treeData}
+      loadData={props.onLoadData}
+      onSelect={props.onSelect}
+      showLine={{ showLeafIcon: false }}
+      blockNode
+      defaultExpandAll={false}
+      style={{ padding: 6 }}
+    />
   )
 }
 
-/** 脚本文件列表 */
-function FileList(props: {
-  files: ScriptDirEntry[]
-  selected: ScriptDirEntry | null
-  onSelect: (f: ScriptDirEntry) => void
-  onDelete?: (f: ScriptDirEntry) => void
-}) {
-  return (
-    <div style={{ padding: 4 }}>
-      {props.files.map((f) => {
-        const active = props.selected?.path === f.path
-        return (
-          <div
-            key={f.path}
-            onClick={() => props.onSelect(f)}
-            style={{
-              padding: '8px 12px',
-              borderRadius: 4,
-              cursor: 'pointer',
-              background: active ? 'var(--primary-soft, rgba(99,102,241,0.1))' : undefined,
-              borderLeft: active
-                ? '3px solid var(--accent, #6366f1)'
-                : '3px solid transparent',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-            }}
-          >
-            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              <SnippetsOutlined style={{ marginRight: 8 }} />
-              {f.name}
-            </span>
-            <Text type="secondary" style={{ fontSize: 11 }}>
-              {fmtBytes(f.size)}
-            </Text>
-            {props.onDelete && (
-              <Button
-                type="text"
-                size="small"
-                danger
-                icon={<DeleteOutlined />}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  props.onDelete?.(f)
-                }}
-              />
-            )}
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-/** 编辑器面板 */
+/** 编辑器面板:view / edit 两态 */
 function EditorPanel(props: {
   file: ScriptDirEntry | null
   editor: EditorState
-  onChange: (v: string) => void
-  onSave?: () => void
   canManage: boolean
+  onEnterEdit: () => void
+  onCancelEdit: () => void
+  onChange: (v: string) => void
+  onSave: () => void
 }) {
   if (!props.file) {
     return (
       <Empty
-        description="选择右侧的脚本以编辑"
+        description="选择左侧目录树里的脚本以预览"
         style={{ marginTop: 80 }}
       />
     )
   }
+  if (props.editor.loading) {
+    return (
+      <div style={{ padding: 24, textAlign: 'center' }}>
+        <Spin />
+      </div>
+    )
+  }
+
+  const isEdit = props.editor.mode === 'edit'
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {/* 顶部信息栏 */}
+      {/* 顶部信息栏 + 操作 */}
       <div
         style={{
           padding: '6px 12px',
@@ -646,58 +748,97 @@ function EditorPanel(props: {
         }}
       >
         <Text style={{ flex: 1 }} type="secondary">
-          <EditOutlined /> {props.file.path} · {fmtBytes(props.file.size)}
+          {props.file.path} · {fmtBytes(props.file.size)}
         </Text>
-        {props.editor.dirty && (
+        {isEdit && (
           <Tag color="orange" style={{ margin: 0 }}>
-            未保存
+            编辑中{props.editor.dirty ? ' · 有改动' : ''}
           </Tag>
         )}
-        {props.canManage && (
+        {!isEdit && props.canManage && (
           <Button
             size="small"
             type="primary"
-            icon={<SaveOutlined />}
-            onClick={props.onSave}
-            disabled={!props.editor.dirty}
+            icon={<EditOutlined />}
+            onClick={props.onEnterEdit}
           >
-            保存
+            编辑
           </Button>
         )}
+        {isEdit && props.canManage && (
+          <Space size={4}>
+            <Button size="small" onClick={props.onCancelEdit}>
+              取消
+            </Button>
+            <Button
+              size="small"
+              type="primary"
+              icon={<SaveOutlined />}
+              onClick={props.onSave}
+              disabled={!props.editor.dirty}
+            >
+              保存
+            </Button>
+          </Space>
+        )}
       </div>
-      <TextArea
-        value={props.editor.content}
-        onChange={(e) => props.onChange(e.target.value)}
-        spellCheck={false}
-        disabled={!props.canManage}
-        style={{
-          flex: 1,
-          fontFamily:
-            'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-          fontSize: 13,
-          lineHeight: 1.5,
-          border: 'none',
-          borderRadius: 0,
-          resize: 'none',
-        }}
-      />
+
+      {/* 内容区 */}
+      <div style={{ flex: 1, overflow: 'hidden', display: 'flex' }}>
+        {isEdit ? (
+          <TextArea
+            value={props.editor.content}
+            onChange={(e) => props.onChange(e.target.value)}
+            spellCheck={false}
+            style={{
+              flex: 1,
+              fontFamily:
+                'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+              fontSize: 13,
+              lineHeight: 1.5,
+              border: 'none',
+              borderRadius: 0,
+              resize: 'none',
+            }}
+          />
+        ) : (
+          <pre
+            style={{
+              flex: 1,
+              margin: 0,
+              padding: '12px 16px',
+              overflow: 'auto',
+              background: 'var(--bg-soft)',
+              fontFamily:
+                'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+              fontSize: 13,
+              lineHeight: 1.5,
+              whiteSpace: 'pre',
+            }}
+          >
+            {props.editor.content || '(空文件)'}
+          </pre>
+        )}
+      </div>
     </div>
   )
 }
 
-/** 新建服务目录 */
+/** 新建目录(任意父目录) */
 function CreateDirModal(props: {
   open: boolean
   onCancel: () => void
   onSubmit: (v: { name: string }) => void
+  parentPath: string | null
 }) {
   const [form] = Form.useForm<{ name: string }>()
   useEffect(() => {
     if (props.open) form.resetFields()
   }, [props.open, form])
+  const parent = props.parentPath || ROOT_DEFAULT
   return (
     <Modal
-      title="新建服务目录"
+      title="新建目录"
       open={props.open}
       onCancel={props.onCancel}
       onOk={() => form.submit()}
@@ -705,50 +846,50 @@ function CreateDirModal(props: {
       cancelText="取消"
       destroyOnClose
     >
+      <Paragraph type="secondary">
+        将创建在 <code>{parent}/&lt;目录名&gt;</code> 下
+      </Paragraph>
       <Form form={form} layout="vertical" onFinish={props.onSubmit}>
         <Form.Item
           name="name"
-          label="服务名（目录名）"
+          label="目录名"
           rules={[
             { required: true, message: '请填写目录名' },
             {
-              pattern: /^[A-Za-z0-9_.-]+$/,
-              message: '只能包含字母/数字/下划线/中划线/点',
+              pattern: /^[\p{L}\p{N}_.-]+$/u,
+              message: '只能包含字母/数字/下划线/中划线/点(支持中文)',
             },
           ]}
         >
-          <Input placeholder="order-service" />
+          <Input placeholder="order-service 或 中文服务名" autoFocus />
         </Form.Item>
-        <Paragraph type="secondary" style={{ marginTop: -8 }}>
-          将创建在 <code>{ROOT_DEFAULT}/&lt;服务名&gt;</code> 下
-        </Paragraph>
       </Form>
     </Modal>
   )
 }
 
-/** 新建脚本文件 */
+/** 新建脚本文件(任意父目录) */
 function CreateFileModal(props: {
   open: boolean
   onCancel: () => void
   onSubmit: (v: { name: string; content?: string }) => void
-  serviceName?: string
+  parentPath: string | null
 }) {
   const [form] = Form.useForm<{ name: string; content?: string }>()
   useEffect(() => {
     if (props.open) form.resetFields()
   }, [props.open, form])
+  const parent = props.parentPath || ROOT_DEFAULT
   return (
     <Modal
-      title={
-        props.serviceName ? `在「${props.serviceName}」下新建脚本` : '新建脚本'
-      }
+      title={`在「${parent}」下新建脚本`}
       open={props.open}
       onCancel={props.onCancel}
       onOk={() => form.submit()}
       okText="创建"
       cancelText="取消"
       destroyOnClose
+      width={640}
     >
       <Form form={form} layout="vertical" onFinish={props.onSubmit}>
         <Form.Item
@@ -757,17 +898,17 @@ function CreateFileModal(props: {
           rules={[
             { required: true, message: '请填写文件名' },
             {
-              pattern: /^[A-Za-z0-9_.-]+$/,
-              message: '只能包含字母/数字/下划线/中划线/点',
+              pattern: /^[\p{L}\p{N}_.-]+$/u,
+              message: '只能包含字母/数字/下划线/中划线/点(支持中文)',
             },
           ]}
         >
           <Input placeholder="start.sh" />
         </Form.Item>
-        <Form.Item name="content" label="初始内容（可选）">
+        <Form.Item name="content" label="初始内容(可选)">
           <TextArea
             rows={8}
-            placeholder="#!/bin/bash\n# 启动脚本\n..."
+            placeholder="#!/bin/bash&#10;# 启动脚本&#10;..."
             style={{ fontFamily: 'monospace', fontSize: 12 }}
           />
         </Form.Item>
@@ -777,27 +918,28 @@ function CreateFileModal(props: {
 }
 
 /* ============================================================================
- * useEditorState
+ * useEditorState —— 编辑器状态
  *
- * 编辑器状态（content + dirty 标记 + 是否打开）的轻量 store。
- * 用 useState + 一个 setter 工具暴露「全替换」和「部分合并」两个动词，
- * 比把每个字段都写 useState 看起来更整洁。
+ *  v1.7.24 改造:加 mode 字段(view/edit 两态);
+ *  baseline 是「进入编辑模式时的内容快照」,cancel 时回退;
+ *  filePath 用于切换文件时判断 dirty。
  * ========================================================================== */
 interface EditorState {
+  mode: 'view' | 'edit'
   open: boolean
   dirty: boolean
   loading?: boolean
   content: string
+  baseline?: string
+  filePath?: string
 }
 function useEditorState(): [EditorState, (s: EditorState) => void] {
   return useState<EditorState>({
+    mode: 'view',
     open: false,
     dirty: false,
     loading: false,
     content: '',
+    baseline: '',
   })
 }
-
-// 防止 Tree 类型 import 报错（暂未使用，保留方便扩展为服务树形展示）
-const _dataNode: DataNode = { key: '', title: '' }
-void _dataNode
