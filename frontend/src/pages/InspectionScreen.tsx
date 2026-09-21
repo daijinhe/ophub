@@ -23,6 +23,10 @@ import { firstAccessiblePath } from '../utils/perms'
 
 // 巡检大屏只展示生产环境数据（资产「环境」字段取值：生产环境 / 测试环境）。
 // 如需调整，改这里即可，后端 /inspection/dashboard 已支持 ?env= 过滤。
+//
+// 调试提示：若大屏全 0 但详情/报告正常，请直接浏览器访问
+//   /api/inspection/dashboard/_inspect-env?env=生产环境
+// 看返回的 envDistinctRaw / simulateDashboardCmdbFiltered 即可定位原因。
 const DASHBOARD_ENV = '生产环境'
 
 interface Host {

@@ -193,6 +193,7 @@ func main() {
 			auth.DELETE("/inspection/records", RequireAnyPermission("inspection:manage", "inspection:record:delete"), BatchDeleteInspectionRecords)
 			auth.GET("/inspection/results", RequireAnyPermission("inspection:view", "inspection:record:view"), ListInspectionResults)
 			auth.GET("/inspection/dashboard", RequireAnyPermission("inspection:view", "inspection:screen", "inspection:record:view"), InspectionDashboard)
+			auth.GET("/inspection/dashboard/_inspect-env", RequireAnyPermission("inspection:view", "inspection:screen", "inspection:record:view"), InspectionDashboardInspectEnv)
 			auth.GET("/inspection/export", RequireAnyPermission("inspection:view", "inspection:record:export"), InspectionExport)
 
 			// 巡检告警规则：按「项目简称 / 应用系统名称 / 指定资产」自定义阈值与屏蔽告警

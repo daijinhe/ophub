@@ -16,6 +16,21 @@ import (
 
 // ---- 辅助 ----
 
+// normalizeEnvFilter 大屏 env 过滤的归一化：去 BOM + 去前后空白。
+//
+// 历史坑：Excel 导入或手工粘贴时，"环境" 单元格可能带前导/尾随空白、或 UTF-8 BOM（\ufeff）。
+// 严格比较会把全部资产漏匹配 → 大屏 KPI 全是 0；详情/报告走 inspection_results 不依赖
+// 该字段，故仅大屏表现为 "全是 0"。这里两侧都过一遍相同的归一化。
+//
+// 用 "\ufeff" 显式转义，避免源码里嵌不可见字符（不同编辑器/Hook 兼容性差）。
+const envFilterBOM = "\ufeff"
+
+func normalizeEnvFilter(s string) string {
+	s = strings.TrimPrefix(s, envFilterBOM)
+	s = strings.TrimSuffix(s, envFilterBOM)
+	return strings.TrimSpace(s)
+}
+
 func mustJSON(v interface{}) []byte {
 	b, _ := json.Marshal(v)
 	return b
@@ -888,8 +903,16 @@ func InspectionDashboard(c *gin.Context) {
 		if zoneQ != "" && zoneQ != "全部" && fa["zone"] != zoneQ {
 			continue
 		}
-		if envQ != "" && envQ != "全部" && fa["env"] != envQ {
-			continue
+		// env 过滤：双侧 TrimSpace + 去 BOM（U+FEFF）。
+		// 历史坑：Excel 导入/手工粘贴时 "环境" 单元格可能带前导空格或 BOM，
+		// 严格比较会全部漏匹配 → KPI 全 0。详情/报告走 inspection_results 不依赖该字段，
+		// 故仅大屏表现为 "全是 0"。
+		if envQ != "" && envQ != "全部" {
+			assetEnv := normalizeEnvFilter(fa["env"])
+			queryEnv := normalizeEnvFilter(envQ)
+			if assetEnv != queryEnv {
+				continue
+			}
 		}
 		// 架构过滤：走 fa["arch"]（CMDB「操作系统版本」优先、巡检实测架构兜底，见 buildFA）
 		if archQ != "" && archQ != "all" && fa["arch"] != archQ {
@@ -910,7 +933,8 @@ func InspectionDashboard(c *gin.Context) {
 		if zoneQ != "" && zoneQ != "全部" && fa["zone"] != zoneQ {
 			continue
 		}
-		if envQ != "" && envQ != "全部" && fa["env"] != envQ {
+		// 与上方 results 过滤一致：env 走 normalizeEnvFilter，避免空格/BOM 漏匹配
+		if envQ != "" && envQ != "全部" && normalizeEnvFilter(fa["env"]) != normalizeEnvFilter(envQ) {
 			continue
 		}
 		if archQ != "" && archQ != "all" && fa["arch"] != archQ {
@@ -1045,6 +1069,7 @@ func InspectionDashboard(c *gin.Context) {
 
 	for _, r := range filtered {
 		var data map[string]interface{}
+		_ = json.Unmarshal(r.Data, &data)
 		flat := resolveFlat(data)
 		// 按 ID 查资产字段，查不到再用 IP 兜底（资产重新导入后主键会变）
 		fa := lookupAssetFields(r.AssetID, r.IP)
@@ -1499,6 +1524,72 @@ func InspectionDashboard(c *gin.Context) {
 	})
 }
 
+// InspectionDashboardInspectEnv 大屏 env 过滤的诊断端点（长期保留）。
+//
+// 列出资产 fields 里 "环境" key 的所有 distinct 值与台数，附带当前 dashboard 过滤
+// ?env= 生产环境 后实际命中的 cmdbFiltered / filtered 数量。出现「详情/报告正常、
+// 大屏全是 0」时，直接浏览器访问此端点即可一眼看出：值是不是真的叫「生产环境」、
+// 有没有空格/BOM、过滤后剩几条。v1.7.21 新增。
+func InspectionDashboardInspectEnv(c *gin.Context) {
+	// 复用 InspectionDashboard 的全量过滤逻辑（envQ/zoneQ/archQ 一致）
+	zoneQ := strings.TrimSpace(c.Query("zone"))
+	envQ := strings.TrimSpace(c.Query("env"))
+	archQ := strings.TrimSpace(strings.ToLower(c.Query("arch")))
+
+	// 1. distinct env 统计：含原始值、Trim 后值、字节 hex 摘要，便于判断空格/BOM
+	envRaw := map[string]int{}      // 原始字符串 → 台数
+	envTrim := map[string]int{}     // normalizeEnvFilter 后 → 台数
+	var assets []Asset
+	DB.Find(&assets)
+	for _, a := range assets {
+		var m map[string]interface{}
+		_ = json.Unmarshal(a.Fields, &m)
+		if m == nil {
+			m = map[string]interface{}{}
+		}
+		v, _ := m["环境"].(string)
+		envRaw[v]++
+		envTrim[normalizeEnvFilter(v)]++
+	}
+
+	// 2. 模拟 InspectionDashboard 在相同 query 下的过滤数量
+	cmdbFiltered := 0
+	cmdbAll := 0
+	for _, a := range assets {
+		var m map[string]interface{}
+		_ = json.Unmarshal(a.Fields, &m)
+		fa := map[string]string{}
+		if m != nil {
+			if s, ok := m["环境"].(string); ok {
+				fa["env"] = s
+			}
+		}
+		cmdbAll++
+		if zoneQ != "" && zoneQ != "全部" && fa["zone"] != zoneQ {
+			continue
+		}
+		if envQ != "" && envQ != "全部" {
+			if normalizeEnvFilter(fa["env"]) != normalizeEnvFilter(envQ) {
+				continue
+			}
+		}
+		if archQ != "" && archQ != "all" && fa["arch"] != archQ {
+			continue
+		}
+		cmdbFiltered++
+	}
+
+	OK(c, gin.H{
+		"query": gin.H{"zone": zoneQ, "env": envQ, "arch": archQ},
+		"assetTotal": len(assets),
+		"envDistinctRaw":   envRaw,
+		"envDistinctTrim":  envTrim,
+		"simulateDashboardCmdbFiltered": cmdbFiltered,
+		"simulateDashboardCmdbAll":     cmdbAll,
+		"note": "若 simulateDashboardCmdbFiltered=0 而详情/报告正常，多半是资产 env 字段值「带空格 / BOM / 写法不一」。把最像生产环境的那条 key 从 envDistinctRaw 拿出来比对字符即可。",
+	})
+}
+
 // InspectionExport 按周期导出明细（可选 recordId 单独导出某条记录）
 func InspectionExport(c *gin.Context) {
 	period := c.DefaultQuery("period", "week")
@@ -1556,6 +1647,7 @@ func InspectionExport(c *gin.Context) {
 	alertRows := make([]gin.H, 0, len(results)*2)
 	for _, r := range results {
 		var data map[string]interface{}
+		_ = json.Unmarshal(r.Data, &data)
 		flat := resolveFlat(data)
 		var alerts []map[string]interface{}
 		rec := recMap[r.RecordID]
@@ -1600,6 +1692,7 @@ func InspectionExport(c *gin.Context) {
 			continue
 		}
 		var data map[string]interface{}
+		_ = json.Unmarshal(r.Data, &data)
 		flat := resolveFlat(data)
 		if v, ok := flat["cpu_usage"].(float64); ok {
 			sumCpu += v
