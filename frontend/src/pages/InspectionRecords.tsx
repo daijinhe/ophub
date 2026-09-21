@@ -37,6 +37,7 @@ import {
   batchDeleteRecords,
   InspectionTask,
 } from '../api/inspection'
+import { buildQuarterReportXlsx, downloadBlob, fmtBytes } from '../utils/inspectionQuarterReport'
 
 const PeriodMap: Record<string, string> = {
   day: '日报',
@@ -330,6 +331,19 @@ export default function InspectionRecords() {
   const [exporting, setExporting] = useState(false)
   const [selectedKeys, setSelectedKeys] = useState<number[]>([])
 
+  // 季度报告(v1.7.26 起独立卡片)
+  const [quarterYear, setQuarterYear] = useState<number>(new Date().getFullYear())
+  const [quarter, setQuarter] = useState<1 | 2 | 3 | 4>(((new Date().getMonth()) / 3 | 0) + 1 as 1 | 2 | 3 | 4)
+  const [quarterGenerating, setQuarterGenerating] = useState(false)
+  const [quarterReport, setQuarterReport] = useState<{
+    filename: string
+    sizeMB: number
+    sizeBytes: number
+    degraded: boolean
+    droppedSheets: string[]
+    stats: { totalResults: number; totalAlerts: number; totalRecords: number; quarterStart: string; quarterEnd: string }
+  } | null>(null)
+
   const load = async () => {
     setLoading(true)
     try {
@@ -391,6 +405,52 @@ export default function InspectionRecords() {
     const d = await getRecord(id)
     setDetail(d)
     setDetailOpen(true)
+  }
+
+  /**
+   * 季度报告独立导出(v1.7.26+):
+   *   1. 调 utils/inspectionQuarterReport.buildQuarterReportXlsx
+   *      —— 它内部已经做了 5MB 硬上限 + sheet 降级
+   *   2. 拿到 Blob 后立即触发浏览器下载
+   *   3. 把"是否降级、丢了哪些 sheet、字节数"塞回卡片右下角的状态条
+   *      方便用户决定是否改条件重出
+   */
+  const generateQuarterReport = async () => {
+    setQuarterGenerating(true)
+    try {
+      const r = await buildQuarterReportXlsx({
+        year: quarterYear,
+        quarter,
+        taskId,
+        maxMB: 5,
+      })
+      downloadBlob(r.blob, r.filename)
+      setQuarterReport({
+        filename: r.filename,
+        sizeMB: r.sizeMB,
+        sizeBytes: r.sizeBytes,
+        degraded: r.degraded,
+        droppedSheets: r.droppedSheets,
+        stats: {
+          totalResults: r.stats.totalResults,
+          totalAlerts: r.stats.totalAlerts,
+          totalRecords: r.stats.totalRecords,
+          quarterStart: r.stats.quarterStart,
+          quarterEnd: r.stats.quarterEnd,
+        },
+      })
+      if (r.degraded) {
+        message.warning(
+          `已生成 ${fmtBytes(r.sizeBytes)} —— 自动降级丢掉了: ${r.droppedSheets.join('、')}。如需完整内容请缩小范围（如指定任务）。`
+        )
+      } else {
+        message.success(`已生成 ${fmtBytes(r.sizeBytes)}（${r.stats.totalResults} 个采集 · ${r.stats.totalAlerts} 个告警）`)
+      }
+    } catch (e: any) {
+      message.error('季度报告生成失败：' + (e?.response?.data?.msg || e?.message || '未知错误'))
+    } finally {
+      setQuarterGenerating(false)
+    }
   }
 
   const exportXlsx = async (p: string, ref: string, recordId?: number) => {
@@ -534,6 +594,96 @@ export default function InspectionRecords() {
           </div>
         </div>
       </div>
+
+      {/* ============ 季度报告（独立卡片，v1.7.26+） ============ */}
+      <Card
+        className="glass"
+        style={{
+          marginBottom: 16,
+          borderColor: 'rgba(56, 189, 248, 0.45)',
+          background: 'linear-gradient(160deg, rgba(56,189,248,0.08), rgba(2,6,23,0.4))',
+        }}
+        title={
+          <Space>
+            <FundOutlined style={{ color: '#38bdf8' }} />
+            <span style={{ fontWeight: 700, color: '#38bdf8' }}>季度报告导出</span>
+            <Tag color="cyan">xlsx · 5MB 硬上限</Tag>
+          </Space>
+        }
+        extra={
+          <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
+            6 个 Sheet：概览 / 各次运行 / 资产明细 / 告警明细 / 资产趋势 / 按天趋势
+          </span>
+        }
+      >
+        <Space wrap align="center">
+          <span style={{ color: 'var(--text-secondary)' }}>年份：</span>
+          <Select
+            value={quarterYear}
+            onChange={(v) => setQuarterYear(v)}
+            style={{ width: 110 }}
+            options={Array.from({ length: 5 }, (_, i) => {
+              const y = new Date().getFullYear() - i
+              return { label: `${y} 年`, value: y }
+            })}
+          />
+          <span style={{ color: 'var(--text-secondary)', marginLeft: 8 }}>季度：</span>
+          <Segmented
+            value={quarter}
+            onChange={(v) => setQuarter(v as 1 | 2 | 3 | 4)}
+            options={[
+              { label: 'Q1(1-3月)', value: 1 },
+              { label: 'Q2(4-6月)', value: 2 },
+              { label: 'Q3(7-9月)', value: 3 },
+              { label: 'Q4(10-12月)', value: 4 },
+            ]}
+          />
+          <span style={{ color: 'var(--text-secondary)', marginLeft: 8 }}>任务：</span>
+          <Select
+            allowClear
+            placeholder="全部任务"
+            style={{ width: 220 }}
+            value={taskId}
+            onChange={(v) => setTaskId(v)}
+            options={tasks.map((t) => ({ label: t.name, value: t.id }))}
+          />
+          <Button
+            type="primary"
+            icon={<DownloadOutlined />}
+            loading={quarterGenerating}
+            onClick={generateQuarterReport}
+          >
+            生成季度报告 xlsx
+          </Button>
+        </Space>
+        {quarterReport && (
+          <Alert
+            style={{ marginTop: 12 }}
+            type={quarterReport.degraded ? 'warning' : 'success'}
+            showIcon
+            message={
+              <Space wrap>
+                <span>
+                  <strong>{quarterReport.filename}</strong>
+                </span>
+                <Tag color={quarterReport.degraded ? 'orange' : 'green'}>
+                  {fmtBytes(quarterReport.sizeBytes)}
+                  {' '}
+                  {quarterReport.sizeMB <= 5 ? '✓ 在 5MB 内' : '⚠ 超 5MB'}
+                </Tag>
+                <span style={{ color: 'var(--text-secondary)' }}>
+                  季度 {quarterReport.stats.quarterStart} ~ {quarterReport.stats.quarterEnd} · 采集 {quarterReport.stats.totalResults} 条 · 运行 {quarterReport.stats.totalRecords} 次 · 告警 {quarterReport.stats.totalAlerts} 条
+                </span>
+                {quarterReport.degraded && (
+                  <Tooltip title="为保证 ≤ 5MB，自动丢掉了部分 Sheet；如需完整数据请缩小筛选范围（如指定任务）。">
+                    <Tag color="orange">已降级: 丢 {quarterReport.droppedSheets.join('、')}</Tag>
+                  </Tooltip>
+                )}
+              </Space>
+            }
+          />
+        )}
+      </Card>
 
       <Card className="glass" style={{ marginBottom: 16 }}>
         <Space wrap align="center">
