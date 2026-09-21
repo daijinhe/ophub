@@ -437,6 +437,12 @@ func finishAnsiScript(raw string, err error) (string, error) {
 			err = fmt.Errorf("%v（ansible：%s）", err, trimTail(d, 240))
 		}
 	}
+	if err == nil && strings.TrimSpace(out) == "" && strings.TrimSpace(detail) != "" {
+		// 有 detail 却无输出：回传解析失败（典型：JSON dict 被截断剪坏）或
+		// 目标机异常（UNREACHABLE 状态行）。绝不能当「成功但空输出」静默吞掉
+		// ——本机捕捉回传 >64KB 时曾因此整场捕捉显示「未取到任何输出」。
+		err = fmt.Errorf("ansible 回传解析失败：%s", trimTail(strings.TrimSpace(detail), 240))
+	}
 	return out, err
 }
 
@@ -839,8 +845,9 @@ func (r *AnsibleRunner) localAdhocOnce(module, ip, sshUser, sshPass string, sshP
 	ctx, cancel := newDeadlineContext(timeout)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "bash", "-c", cmdLine).CombinedOutput()
-	if len(out) > 64*1024 {
-		out = append(out[:64*1024], []byte("\n...(已截断)")...)
+	// 同 localScript：截断会剪坏 DI 协议 / JSON，放大到 2MB
+	if len(out) > 2*1024*1024 {
+		out = append(out[:2*1024*1024], []byte("\n...(已截断)")...)
 	}
 	return string(out), err
 }
@@ -881,16 +888,25 @@ func (r *AnsibleRunner) localScript(ip, sshUser, sshPass string, sshPort int, sc
 	ctx, cancel := newDeadlineContext(timeout)
 	defer cancel()
 	raw, err := exec.CommandContext(ctx, "bash", "-c", cmdLine).CombinedOutput()
-	if len(raw) > 64*1024 {
-		raw = append(raw[:64*1024], []byte("\n...(已截断)")...)
+	// 2MB：中间件捕捉回传（结果 dict JSON，stdout 是 base64 段）实测可超 64KB；
+	// 截断会把 JSON 剪坏 → 解析失败 → 曾被当成「成功但空输出」静默吞掉。
+	// 远端 pushAndScript（走 SSHClient.RunWithTimeout）本来就无截断，这里对齐。
+	if len(raw) > 2*1024*1024 {
+		raw = append(raw[:2*1024*1024], []byte("\n...(已截断)")...)
 	}
 	out, ferr := finishAnsiScript(string(raw), err)
 	if ferr == nil || !isAnsiModuleFailure(string(raw)) {
 		return out, ferr
 	}
-	// -m script 同样依赖目标机 python；脚本内容本来就是 shell，直接换 raw 跑
+	// -m script 同样依赖目标机 python；raw 模块不需要。但不能把多行脚本直接塞
+	// -a：ansible ad-hoc 会压坏换行（见统一采集通道的转义坑），且 composeTargetScript
+	// 的自提权头依赖 `$0`（要求脚本以文件形态存在）。正解：脚本整体 base64 后在
+	// 目标机落临时文件再 sh 执行，外面包 buildAdhocWrapper（单行 + DI 三段式协议）。
+	// 自提权已在脚本头内联（sudo -S 带密码），这里不再叠加 ansible --become。
 	log.Printf("[ansible] %s：script 模块执行失败（%v），改用 raw 模块重试", ip, ferr)
-	raw2, execErr2 := r.localAdhocOnce("raw", ip, sshUser, sshPass, sshPort, string(script), become, becomePass, timeout)
+	scriptB64 := base64.StdEncoding.EncodeToString(ensureShebang(script))
+	innerCmd := fmt.Sprintf(`S="${TMPDIR:-/tmp}/.ophub_s_$$.sh"; echo %s | base64 -d >"$S"; sh "$S"; RC=$?; rm -f "$S"; exit $RC`, scriptB64)
+	raw2, execErr2 := r.localAdhocOnce("raw", ip, sshUser, sshPass, sshPort, innerCmd, false, "", timeout)
 	out2, ferr2 := r.finishAdhoc(raw2, execErr2)
 	if ferr2 == nil {
 		log.Printf("[ansible] %s：raw 模块重试成功（该机大概率没有可用的 python 解释器）", ip)

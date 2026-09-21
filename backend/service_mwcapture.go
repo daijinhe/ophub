@@ -336,16 +336,17 @@ true`
 //   - direct：SSH 用户即维护用户，pre 为空直接跑。
 //
 // 返回的 privileged 只是初判，mwCaptureAsset 会按探测脚本回填的 meta 段
-// （uid=0）为准覆盖。
-func mwCaptureRun(t *crontabTarget, script string) (string, bool) {
+// （uid=0）为准覆盖。runErr 是底层真实失败原因（此前被吞掉，用户只能看到
+// 「未取到任何输出」，无法自查——v1.7.19 起透传到 rec.Error）。
+func mwCaptureRun(t *crontabTarget, script string) (out string, privileged bool, runErr error) {
 	runUser := strings.TrimSpace(t.RunUser)
 	if runUser == "" || runUser == strings.TrimSpace(t.SSHUser) {
 		// SSH 用户即维护用户：直接以该用户身份跑（无需提权）。
 		out, err := t.runScript("", script, mwCaptureTimeout)
 		if err != nil && strings.TrimSpace(out) == "" {
-			return "", false
+			return "", false, err
 		}
-		return out, false
+		return out, false, nil
 	}
 
 	// 非维护用户：先解析 sudo 通道，再按通道前缀执行（探测脚本以 true 收尾、
@@ -354,9 +355,9 @@ func mwCaptureRun(t *crontabTarget, script string) (string, bool) {
 	pre := mwOpsPrivPrefix(t)
 	out, err := t.runScript(pre, script, mwCaptureTimeout)
 	if err != nil && strings.TrimSpace(out) == "" {
-		return "", false
+		return "", false, err
 	}
-	return out, t.plan.Kind == crontabChanSudo
+	return out, t.plan.Kind == crontabChanSudo, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1876,12 +1877,16 @@ func mwCaptureAsset(a *Asset, by string) *MwCapture {
 		return rec
 	}
 
-	out, privileged := mwCaptureRun(t, mwCaptureScript())
+	out, privileged, runErr := mwCaptureRun(t, mwCaptureScript())
 	rec.Privileged = privileged
 	rec.DurationMs = time.Since(start).Milliseconds()
 	if strings.TrimSpace(out) == "" {
 		rec.Status = MwCaptureStatusFailed
-		rec.Error = "已连上目标机但未取到任何输出（目标机可能缺少 base64/head 等基础命令）"
+		if runErr != nil {
+			rec.Error = fmt.Sprintf("采集无输出：%v", runErr)
+		} else {
+			rec.Error = "已连上目标机但未取到任何输出（目标机可能缺少 base64/head 等基础命令）"
+		}
 		return rec
 	}
 	if len(out) > mwCaptureRawCap {
