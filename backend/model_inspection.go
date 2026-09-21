@@ -91,7 +91,8 @@ type InspectionTask struct {
 	MonthDay        int            `json:"monthDay"`                             // Freq=month：每月几号（1-31）
 	RunHour         int            `json:"runHour"`                              // Freq=day/week/month：执行时刻 时（0-23）
 	RunMinute       int            `json:"runMinute"`                            // Freq=hour/day/week/month：执行时刻 分（0-59）
-	RemoteNodeID    *uint          `json:"remoteNodeId"`                         // ansible 控制节点（可选）
+	RemoteNodeID    *uint          `json:"remoteNodeId"`                         // ansible 控制节点（可选，留空=跟随平台采集通道设置）
+	AllowSimulated  bool           `gorm:"default:false" json:"allowSimulated"`  // 采集失败时用模拟数据兜底（仅演示用；默认关，失败即记为 fail 并给出真实原因）
 	SshUser         string         `gorm:"size:64" json:"sshUser"`               // 目标机 SSH 用户（默认取节点用户）
 	SshPass         string         `gorm:"size:255" json:"sshPass,omitempty"`    // 目标机 SSH 密码
 	SshPort         int            `gorm:"default:65181" json:"sshPort"`         // 目标机 SSH 端口

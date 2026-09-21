@@ -2,9 +2,9 @@ package main
 
 import (
 	"crypto/md5"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"math/rand"
 	"strings"
@@ -427,9 +427,34 @@ LISTEN_PORTS=$SEC_OPEN
 export OS_HOSTNAME OS_NAME OS_VERSION OS_ARCH OS_KERNEL OS_TZ NTP_OFFSET UPTIME_DAYS BOOT_TIME SELINUX OS_ID OS_FAMILY OS_PRETTY CPU_MODEL CPU_CORES CPU_USAGE CPU_IOWAIT LOAD1 LOAD5 LOAD15 CPU_BEFORE CPU_AFTER MEM_TOTAL_KB MEM_AVAIL_KB MEM_USED_KB MEM_CACHE_KB SWAP_TOTAL_KB SWAP_USED_KB DISK_TSV INODE_TSV NET1 NET2 TCP_LINES PROC_TOTAL PROC_ZOMBIE PROC_TOP LISTEN_PORTS SEC_FW SEC_SELINUX SEC_ROOT SEC_SSH_FAIL SEC_OPEN EXPECTED
 
 echo "INSPECTION_RESULT_JSON>>>"
-PYY=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo python3)
+# 目标机可能没有 python3（CentOS 7 等只有 python2），甚至完全没有 python。
+# 这里显式探测：都找不到时给出可读错误并退出（否则会是一句莫名其妙的语法错误）。
+PYY=$(command -v python3 2>/dev/null || command -v python 2>/dev/null)
+if [ -z "$PYY" ]; then
+  echo "目标机缺少 python 解释器：巡检采集需要 python2.7+ / python3 组装 JSON，请先安装" >&2
+  exit 127
+fi
 eval "$PYY" - <<'PY'
-import os, json, re, subprocess
+# -*- coding: utf-8 -*-
+import os, json, re, subprocess, sys
+
+PY2 = sys.version_info[0] == 2
+
+
+def u(v):
+    # 统一成文本：py2 的环境变量是字节串、py3 的 Popen 输出是 bytes，
+    # 都要按 utf-8 解码，否则 json.dumps 遇中文直接抛 UnicodeDecodeError。
+    if PY2:
+        if isinstance(v, str):
+            try:
+                return v.decode("utf-8", "replace")
+            except Exception:
+                return v
+        return v
+    if isinstance(v, bytes):
+        return v.decode("utf-8", "replace")
+    return v
+
 
 def f(v, d=0.0):
     try:
@@ -437,14 +462,20 @@ def f(v, d=0.0):
     except Exception:
         return d
 
+
 def s(v, d=""):
-    return v if v else d
+    return u(v) if v else d
+
 
 def run(cmd):
+    # 用 Popen 而不是 subprocess.run：py2 没有 subprocess.run（3.5+ 才有），
+    # capture_output / text 参数更是 3.7+；Popen + communicate 在 2.7/3.x 通吃。
     try:
-        return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=20).stdout
+        p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out = p.communicate()[0]
     except Exception:
         return ""
+    return u(out) or ""
 
 os_d = {
     "hostname": s(os.environ.get("OS_HOSTNAME")),
@@ -630,7 +661,13 @@ security_d = {
 }
 
 result = {"os": os_d, "cpu": cpu_d, "mem": mem_d, "disk": disk_d, "net": net_d, "proc": proc_d, "security": security_d}
-print(json.dumps(result, ensure_ascii=False))
+# 直接写 stdout 字节流：py2 在 LANG=C 下 print unicode 会 UnicodeEncodeError，
+# 这里显式编码成 utf-8，保证任何 locale 下输出都是合法 UTF-8 JSON。
+_out = json.dumps(result, ensure_ascii=False)
+if PY2 and isinstance(_out, unicode):
+    _out = _out.encode("utf-8")
+sys.stdout.write(_out)
+sys.stdout.write("\n")
 PY
 echo "<<<INSPECTION_RESULT_JSON"
 `
@@ -641,47 +678,45 @@ func buildCollectScript(expected []MwProcExpect) string {
 	return strings.Replace(collectorScriptTemplate, "__EXPECTED__", string(b), 1)
 }
 
-// CollectAsset 采集单个资产资源信息
-// 优先通过 ansible 控制节点执行采集脚本；任何失败均回退为模拟数据（source=simulated）
-func CollectAsset(ip string, node *AnsibleRemote, sshUser, sshPass string, sshPort int, mwTypes []string) (map[string]interface{}, string, error) {
+// inspectionCollectTimeout 单台资产巡检采集超时（脚本较大：os/cpu/mem/disk/net/proc/svc/security 八类）
+const inspectionCollectTimeout = 90 * time.Second
+
+// CollectAsset 采集单个资产的资源信息（**统一走 AnsibleRunner 采集通道**）。
+//
+// v1.7.20 起：此前这里是「平台直连远端控制节点跑 ansible」的老实现，完全绕过
+// AnsibleRunner —— 采集通道开关（本机 / 远端 / 自动，v1.7.15）对它无效，本机模式下
+// node 恒为 nil，巡检直接落到 simulateData，表现为「配置了本机 ansible 但没有任何数据」。
+// 现改为与资源校准 / 中间件捕捉完全相同的口径：
+//
+//	资产「用户名/密码/SSH端口/所属网络区域」→ crontabSSHInfo → ResolveAnsibleRunner(zone)
+//	→ runner.Script(脚本)（自带无 python 目标机的 raw 回退 + 错误透传）
+//
+// nodeOverride 非 nil 表示任务里显式指定了控制节点（优先于平台采集通道设置）。
+// 采集失败返回 (nil, _, err)：**不再静默回退模拟数据** —— 巡检数据代表机器真实状态，
+// 静默伪造会误导决策；需要演示数据的任务可显式开启 AllowSimulated（见 handler_inspection.go）。
+func CollectAsset(a *Asset, nodeOverride *AnsibleRemote, mwTypes []string) (map[string]interface{}, string, error) {
+	t, err := crontabSSHInfo(a)
+	if err != nil {
+		return nil, SrcSimulated, err
+	}
+	if nodeOverride != nil {
+		// 显式指定控制节点：覆盖通道解析结果（保留「按任务指定节点」的能力）
+		t.Runner = &AnsibleRunner{Mode: runnerModeRemote, Node: nodeOverride}
+	}
 	script := buildCollectScript(middlewareToExpects(mwTypes))
-	source := SrcSimulated
-	data := map[string]interface{}{}
-
-	if node != nil && ip != "" {
-		client := node.ToSSHClient()
-		targetUser := sshUser
-		if targetUser == "" {
-			targetUser = node.User
-		}
-		targetPass := sshPass
-		if targetPass == "" {
-			targetPass = node.Password
-		}
-		if sshPort == 0 {
-			sshPort = node.Port
-		}
-		if sshPort == 0 {
-			sshPort = 65181
-		}
-		enc := base64.StdEncoding.EncodeToString([]byte(script))
-		ansibleCmd := fmt.Sprintf(
-			`ansible %s -i %s, -m shell -a 'echo %s | base64 -d | bash' -u %s -e "ansible_ssh_pass=%s" -e "ansible_ssh_port=%d" -o 2>/dev/null`,
-			shq(ip), shq(ip), enc, shq(targetUser), shq(targetPass), sshPort,
-		)
-		out, err := client.Run(ansibleCmd)
-		if err == nil {
-			if parsed, perr := parseInspectionJSON(out); perr == nil && len(parsed) > 0 {
-				data = parsed
-				source = SrcAnsible
-			}
-		}
+	out, runErr := t.runScript("", script, inspectionCollectTimeout)
+	if runErr != nil && strings.TrimSpace(out) == "" {
+		return nil, SrcSimulated, fmt.Errorf("经%s采集失败：%v", t.runnerName(), runErr)
 	}
-
-	if source == SrcSimulated {
-		data = simulateData(ip, mwTypes)
+	parsed, perr := parseInspectionJSON(out)
+	if perr != nil {
+		// 回传非空却解析不出结果 → 把回传头部打出来，便于判断是「目标机执行异常」
+		// 还是「ansible 包装形态变化」导致解析器没兜住。
+		log.Printf("[inspection] %s 经%s采集回传无法解析（out %d 字节，头 240：%q）",
+			t.IP, t.runnerName(), len(out), trimTail(strings.TrimSpace(out), 240))
+		return nil, SrcSimulated, fmt.Errorf("经%s采集成功但结果解析失败：%v", t.runnerName(), perr)
 	}
-	return data, source, nil
+	return parsed, SrcAnsible, nil
 }
 
 // parseInspectionJSON 从采集输出中提取结构化 JSON

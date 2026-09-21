@@ -63,6 +63,9 @@ export default function InspectionTasks() {
   const [cats, setCats] = useState<string[]>([])
   const [categories, setCategories] = useState<any[]>([])
   const [remotes, setRemotes] = useState<any[]>([])
+  // 平台采集通道（v1.7.20）：巡检采集与资源校准/中间件捕捉共用同一条通道，
+  // 这里把「当前实际生效」展示出来，避免用户以为必须选一个远端控制节点。
+  const [runnerMode, setRunnerMode] = useState<{ effective: string; mode: string } | null>(null)
   const [assets, setAssets] = useState<any[]>([])
   const [selectedKeys, setSelectedKeys] = useState<number[]>([])
   const [form] = Form.useForm()
@@ -70,6 +73,16 @@ export default function InspectionTasks() {
   const canManage = hasPerm('inspection:manage')
   // 当前选择的调度频率：联动显示对应的参数输入项（间隔 / 时刻 / 星期 / 日期）
   const freqVal = Form.useWatch('freq', form)
+
+  // 当前生效的采集通道（供表单里提示「留空即用这条通道」）
+  const effectiveChannelLabel =
+    runnerMode?.effective === 'local'
+      ? '本机 ansible'
+      : runnerMode?.effective === 'remote'
+      ? '远端控制节点'
+      : runnerMode?.effective === 'none'
+      ? '无可用通道'
+      : '未获取'
 
   const load = async () => {
     setLoading(true)
@@ -86,6 +99,10 @@ export default function InspectionTasks() {
     getMetricCatalog().then((m) => setCatalog(m))
     api.get('/categories').then((r) => setCategories(r.data.data || []))
     api.get('/ansible/remotes').then((r) => setRemotes(r.data.data.list || []))
+    api
+      .get('/ansible/mode')
+      .then((r) => setRunnerMode(r.data.data))
+      .catch(() => setRunnerMode(null))
     api.get('/assets', { params: { size: 300 } }).then((r) => setAssets(r.data.data.list || []))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -117,6 +134,7 @@ export default function InspectionTasks() {
       freq: 'manual',
       scheduleEnabled: false,
       metrics: dc,
+      allowSimulated: false,
       ...defaultSchedule,
     })
     setOpen(true)
@@ -145,6 +163,7 @@ export default function InspectionTasks() {
       runMinute: t.runMinute ?? defaultSchedule.runMinute,
       scheduleEnabled: t.scheduleEnabled,
       remoteNodeId: t.remoteNodeId,
+      allowSimulated: !!t.allowSimulated,
       metrics: base,
     })
     setOpen(true)
@@ -170,6 +189,7 @@ export default function InspectionTasks() {
       runMinute: v.runMinute,
       scheduleEnabled: v.scheduleEnabled,
       remoteNodeId: v.remoteNodeId || null,
+      allowSimulated: !!v.allowSimulated,
       metrics: cats,
     }
     if (editing) {
@@ -603,23 +623,58 @@ export default function InspectionTasks() {
           />
 
           <Divider style={{ margin: '8px 0 16px' }} />
-          <div style={{ fontWeight: 600, marginBottom: 8 }}>Ansible 采集配置（可选）</div>
+          <div style={{ fontWeight: 600, marginBottom: 8 }}>
+            Ansible 采集配置（可选）
+            <Tag
+              style={{ marginLeft: 8 }}
+              color={
+                runnerMode?.effective === 'local'
+                  ? 'green'
+                  : runnerMode?.effective === 'remote'
+                  ? 'blue'
+                  : 'red'
+              }
+            >
+              当前生效：{effectiveChannelLabel}
+            </Tag>
+          </div>
           <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-            <Form.Item name="remoteNodeId" label="Ansible 控制节点" style={{ width: 320 }}>
+            <Form.Item
+              name="remoteNodeId"
+              label="Ansible 控制节点"
+              style={{ width: 320 }}
+              extra="留空 = 跟随「Ansible 管理 → 平台采集通道设置」（推荐）"
+            >
               <Select
                 allowClear
-                placeholder="选择主机清单中的 Ansible 节点（留空则使用模拟采集）"
-                options={remotes.map((r) => ({ label: `${r.name}（${r.host}）`, value: r.id }))}
+                placeholder={`跟随平台采集通道设置（当前：${effectiveChannelLabel}）`}
+                options={remotes.map((r) => ({
+                  label: `指定控制节点：${r.name}（${r.host}）`,
+                  value: r.id,
+                }))}
               />
             </Form.Item>
           </div>
           <Alert
             type="info"
             showIcon
-            style={{ marginBottom: 4 }}
-            message="节点凭证自动联动"
-            description="无需再配置目标机 SSH 用户 / 密码 / 端口：采集时直接使用所选 Ansible 控制节点预配置的 SSH 凭证（默认端口 65181），并自动联动主机清单完成采集。"
+            style={{ marginBottom: 12 }}
+            message="采集通道统一由「平台采集通道设置」决定"
+            description={
+              runnerMode?.effective === 'local'
+                ? '当前平台走的是「本机 ansible」：巡检会直接用平台所在服务器的 ansible 采集，无需（也无需配置）远端控制节点。目标机的 SSH 用户/密码/端口取自资产管理里该资产的对应字段。'
+                : '当前平台走的是「远端控制节点」：巡检会经匹配到的控制节点执行 ansible 采集。如需改为本机 ansible，请到「Ansible 管理 → 平台采集通道设置」切换。'
+            }
           />
+          <Form.Item
+            name="allowSimulated"
+            label="采集失败时用模拟数据兜底"
+            valuePropName="checked"
+            tooltip="仅供演示/离线环境使用。默认关闭：采集失败会记为失败并显示真实原因，不会用假数据冒充真实采集结果。"
+            style={{ marginBottom: 0 }}
+          >
+            <Switch />
+          </Form.Item>
         </Form>
       </Modal>
     </div>

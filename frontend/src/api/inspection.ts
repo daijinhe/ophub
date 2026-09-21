@@ -47,6 +47,8 @@ export interface InspectionTask {
   runMinute?: number
   remoteNodeId?: number | null
   remoteNodeName?: string
+  /** 采集失败时用模拟数据兜底（仅演示；默认关，失败即记为 fail 并给出真实原因） */
+  allowSimulated?: boolean
   sshUser?: string
   sshPort?: number
   scheduleEnabled: boolean

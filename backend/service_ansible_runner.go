@@ -84,9 +84,9 @@ var (
 )
 
 // probeLocalAnsible 检查容器内 ansible 是否可用：
-//   1) sshpass 在 PATH（密码认证硬依赖）
-//   2) `ansible --version` 能跑（说明二进制装了）
-//   3) ANSIBLE_HOSTS 路径下文件可读（不必非空，用户可以自己填）
+//  1. sshpass 在 PATH（密码认证硬依赖）
+//  2. `ansible --version` 能跑（说明二进制装了）
+//  3. ANSIBLE_HOSTS 路径下文件可读（不必非空，用户可以自己填）
 func probeLocalAnsible() (bool, error) {
 	localRunnerProbeMu.Lock()
 	defer localRunnerProbeMu.Unlock()
@@ -170,8 +170,8 @@ func resolveRemoteRunner(zone string) (*AnsibleRunner, error) {
 //
 // 模式来源 ansibleRunnerModeConf()（页面「本机 Ansible 管理」可改，全平台生效）：
 //   - local  ：强制本机 ansible（backend 容器内 exec）。本机不可用时**明确报错**，
-//              不静默回退远端 —— 内网服务器只有本机 ansible 时，静默回退会让人
-//              以为在走本机，实际数据来自别处（踩过：v1.7.10~14 的隐式行为）。
+//     不静默回退远端 —— 内网服务器只有本机 ansible 时，静默回退会让人
+//     以为在走本机，实际数据来自别处（踩过：v1.7.10~14 的隐式行为）。
 //   - remote ：强制远端控制节点（zone 匹配 → id asc fallback），本机 ansible 再好也不用。
 //   - auto   ：本机可用则本机，否则远端（历史默认行为）。
 //

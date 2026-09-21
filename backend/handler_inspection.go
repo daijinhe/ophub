@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -122,12 +123,17 @@ func resolveTaskAssets(task *InspectionTask) ([]Asset, error) {
 			q = q.Where("category_id IN ?", ids)
 		}
 	case "selected":
+		// v1.7.20 修复：此前这里是个空代码块 —— task.AssetIDs 从未被解析进 ids，
+		// 于是「指定资产」范围静默退化成「全量资产」（选中 1 台却巡检全库），
+		// 既慢又可能误采无关机器。改为显式解析 + 解析不到时明确报错。
 		var ids []uint
 		if len(task.AssetIDs) > 0 {
+			_ = json.Unmarshal(task.AssetIDs, &ids)
 		}
-		if len(ids) > 0 {
-			q = q.Where("id IN ?", ids)
+		if len(ids) == 0 {
+			return nil, fmt.Errorf("任务范围是「指定资产」，但没有解析到任何资产 id（请重新选择资产后保存任务）")
 		}
+		q = q.Where("id IN ?", ids)
 	}
 	var assets []Asset
 	err := q.Order("id asc").Find(&assets).Error
@@ -195,7 +201,24 @@ func hostDisplayName(fa map[string]string, fallback string) string {
 
 // executeInspection 执行一次巡检（手动与定时共用）
 func executeInspection(task *InspectionTask) (*InspectionRecord, error) {
-	assets, _ := resolveTaskAssets(task)
+	assets, aerr := resolveTaskAssets(task)
+	if aerr != nil {
+		// 范围解析失败（如「指定资产」但资产列表为空）：落一条 failed 记录并把原因写进
+		// summary，页面能看到为什么没采到数据；同时把任务状态复位，避免卡在 running。
+		rec := InspectionRecord{
+			TaskID:   task.ID,
+			TaskName: task.Name,
+			RunAt:    time.Now(),
+			Status:   "failed",
+			Source:   SrcSimulated,
+			Summary:  mustJSON(map[string]interface{}{"error": aerr.Error()}),
+		}
+		DB.Create(&rec)
+		task.Status = "idle"
+		DB.Save(task)
+		log.Printf("[inspection] 任务 %s(#%d) 范围解析失败：%v", task.Name, task.ID, aerr)
+		return &rec, aerr
+	}
 
 	var node *AnsibleRemote
 	if task.RemoteNodeID != nil {
@@ -243,27 +266,45 @@ func executeInspection(task *InspectionTask) (*InspectionRecord, error) {
 			res.Error = "资产缺少 IP（虚拟机IPv4）"
 			fail++
 		} else {
-			data, src, _ := CollectAsset(ip, node, task.SshUser, task.SshPass, task.SshPort, mwTypes)
-			res.Data = mustJSON(data)
-			res.Source = src
-			res.Status = "ok"
-			alerts := evalAlertsWithProfile(data, resolveAlertProfile(alertRules, assetAlertScopeOf(&a)))
-			res.Alerts = mustJSON(alerts)
-			success++
-			if src == SrcAnsible {
-				rec.Source = SrcAnsible
+			// 采集统一走 AnsibleRunner（本机/远端/自动由「平台采集通道设置」决定）；
+			// 任务里显式指定了控制节点时优先用它。失败**不再静默塞模拟数据**。
+			data, src, colErr := CollectAsset(&a, node, mwTypes)
+			if colErr != nil && task.AllowSimulated {
+				// 任务显式开启「演示兜底」：仍用模拟数据，但把真实原因记进结果，不静默
+				data = simulateData(ip, mwTypes)
+				src = SrcSimulated
+				log.Printf("[inspection] %s(%s) 采集失败，按任务设置回退模拟数据：%v",
+					AssetDisplayName(&a), ip, colErr)
+				colErr = nil
 			}
-			flat := resolveFlat(data)
-			if v, ok := flat["cpu_usage"].(float64); ok {
-				sumCpu += v
-			}
-			if v, ok := flat["mem_usage"].(float64); ok {
-				sumMem += v
-			}
-			sumDisk += diskMaxUsage(flat)
-			cnt++
-			for _, al := range alerts {
-				categoryAlerts[categoryOfAlert(al)]++
+			if colErr != nil {
+				res.Status = "fail"
+				res.Source = src
+				res.Error = colErr.Error()
+				fail++
+				log.Printf("[inspection] %s(%s) 采集失败：%v", AssetDisplayName(&a), ip, colErr)
+			} else {
+				res.Data = mustJSON(data)
+				res.Source = src
+				res.Status = "ok"
+				alerts := evalAlertsWithProfile(data, resolveAlertProfile(alertRules, assetAlertScopeOf(&a)))
+				res.Alerts = mustJSON(alerts)
+				success++
+				if src == SrcAnsible {
+					rec.Source = SrcAnsible
+				}
+				flat := resolveFlat(data)
+				if v, ok := flat["cpu_usage"].(float64); ok {
+					sumCpu += v
+				}
+				if v, ok := flat["mem_usage"].(float64); ok {
+					sumMem += v
+				}
+				sumDisk += diskMaxUsage(flat)
+				cnt++
+				for _, al := range alerts {
+					categoryAlerts[categoryOfAlert(al)]++
+				}
 			}
 		}
 		if err := DB.Create(&res).Error; err != nil {
@@ -433,6 +474,7 @@ func UpdateInspectionTask(c *gin.Context) {
 	scheduleChanged := oldFreq != task.Freq || oldEnabled != body.ScheduleEnabled || oldCfg != newCfg
 
 	task.RemoteNodeID = body.RemoteNodeID
+	task.AllowSimulated = body.AllowSimulated
 	task.SshUser = body.SshUser
 	if body.SshPass != "" {
 		task.SshPass = body.SshPass

@@ -33,19 +33,19 @@ import (
 
 // localAnsibleInfo 本机 ansible 环境信息（前端「本机 Ansible 管理」首页展示用）
 type localAnsibleInfo struct {
-	Available       bool     `json:"available"`        // 本机 ansible 是否可用
-	AnsibleVersion  string   `json:"ansibleVersion"`   // ansible --version 首行
-	PythonVersion   string   `json:"pythonVersion"`    // ansible --version 中 python 版本行
-	ConfigFile      string   `json:"configFile"`       // ansible.cfg 路径
-	HostsPath       string   `json:"hostsPath"`        // /etc/ansible/hosts（=Cfg.AnsibleHosts）
-	PlaybookDirs    []string `json:"playbookDirs"`     // 探测到的 playbook 目录
-	Error           string   `json:"error"`            // 不可用时填这个
+	Available      bool     `json:"available"`      // 本机 ansible 是否可用
+	AnsibleVersion string   `json:"ansibleVersion"` // ansible --version 首行
+	PythonVersion  string   `json:"pythonVersion"`  // ansible --version 中 python 版本行
+	ConfigFile     string   `json:"configFile"`     // ansible.cfg 路径
+	HostsPath      string   `json:"hostsPath"`      // /etc/ansible/hosts（=Cfg.AnsibleHosts）
+	PlaybookDirs   []string `json:"playbookDirs"`   // 探测到的 playbook 目录
+	Error          string   `json:"error"`          // 不可用时填这个
 }
 
 // GetLocalAnsibleInfo 探测本机 ansible 环境，前端「本机 Ansible 管理」首页展示。
 func GetLocalAnsibleInfo(c *gin.Context) {
 	info := localAnsibleInfo{
-		HostsPath: Cfg.AnsibleHosts,
+		HostsPath:    Cfg.AnsibleHosts,
 		PlaybookDirs: []string{},
 	}
 	// ansible 二进制
@@ -110,12 +110,12 @@ func readDirNames(dir string) ([]string, error) {
 // ansibleModeResp 采集通道模式响应：配置值 + 本机/远端实际情况 + 当前生效通道
 type ansibleModeResp struct {
 	Mode           string `json:"mode"`           // 配置值：local / remote / auto
-	Effective      string `json:"effective"`       // 实际生效：local / remote / none
-	LocalAvailable bool   `json:"localAvailable"`  // 本机 ansible 是否可用
-	LocalError     string `json:"localError"`      // 本机不可用的原因
-	RemoteCount    int    `json:"remoteCount"`     // ansible_remotes 里的控制节点数
-	RemoteNames    string `json:"remoteNames"`     // 控制节点名（前若干个，展示用）
-	FromEnv        bool   `json:"fromEnv"`         // 是否来自环境变量（DB 未配置时）
+	Effective      string `json:"effective"`      // 实际生效：local / remote / none
+	LocalAvailable bool   `json:"localAvailable"` // 本机 ansible 是否可用
+	LocalError     string `json:"localError"`     // 本机不可用的原因
+	RemoteCount    int    `json:"remoteCount"`    // ansible_remotes 里的控制节点数
+	RemoteNames    string `json:"remoteNames"`    // 控制节点名（前若干个，展示用）
+	FromEnv        bool   `json:"fromEnv"`        // 是否来自环境变量（DB 未配置时）
 }
 
 // buildAnsibleModeResp 组装当前通道状态（GET/PUT 共用）
