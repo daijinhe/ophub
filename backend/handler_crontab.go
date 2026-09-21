@@ -247,12 +247,17 @@ func (t *crontabTarget) sudoPrefix() string {
 
 // runnerName 当前采集通道的可读名称（报错文案里告诉用户「经哪条通道」失败）
 func (t *crontabTarget) runnerName() string {
-	if t.Runner != nil && t.Runner.Node != nil {
-		name := strings.TrimSpace(t.Runner.Node.Name)
-		if name == "" {
-			name = t.Runner.Node.Host
+	if t.Runner != nil {
+		if t.Runner.Mode == runnerModeLocal {
+			return "本机 ansible"
 		}
-		return name
+		if t.Runner.Node != nil {
+			name := strings.TrimSpace(t.Runner.Node.Name)
+			if name == "" {
+				name = t.Runner.Node.Host
+			}
+			return name
+		}
 	}
 	return "平台直连"
 }

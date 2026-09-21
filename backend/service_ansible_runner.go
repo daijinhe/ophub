@@ -173,7 +173,23 @@ const adHocCmdBytes = 2000
 // shellCmd 非零退出）都会带 stderr 一起返回。
 func (r *AnsibleRunner) Adhoc(ip, sshUser, sshPass string, sshPort int, shellCmd string,
 	become bool, becomePass string, timeout time.Duration) (string, error) {
-	if r == nil || r.Node == nil {
+	if r == nil {
+		return "", ErrNoAnsibleNode
+	}
+	// 本机模式：容器内直接 exec ansible（localAdhoc 内部同样走三段式协议）。
+	// ⚠️ 实测 v1.7.10~13 这里漏了本机分支，Node==nil 直接返回 ErrNoAnsibleNode，
+	// 导致本机模式下所有 Adhoc 采集（校准/巡检/定时任务）全量失败。
+	if r.Mode == runnerModeLocal {
+		ip = strings.TrimSpace(ip)
+		if ip == "" {
+			return "", fmt.Errorf("目标机 IP 为空")
+		}
+		if sshPort == 0 {
+			sshPort = 22
+		}
+		return r.localAdhoc(ip, sshUser, sshPass, sshPort, shellCmd, become, becomePass, timeout)
+	}
+	if r.Node == nil {
 		return "", ErrNoAnsibleNode
 	}
 	ip = strings.TrimSpace(ip)

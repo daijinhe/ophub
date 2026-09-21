@@ -173,9 +173,14 @@ func CalibrateAsset(c *gin.Context) {
 
 	pr, rawOut, err := runCalibrationProbe(runner, ip, user, pass, port, becomePass)
 	if err != nil {
-		// ansible 路径报错时，把「通过哪台控制节点」一起带上，方便排查
+		// ansible 路径报错时，把「通过哪台控制节点」一起带上，方便排查。
+		// ⚠️ 本机模式 runner.Node 为 nil（实测 v1.7.13 直接取 .Name 空指针 panic → 500）
+		nodeLabel := "本机 ansible"
+		if runner.Mode != runnerModeLocal && runner.Node != nil {
+			nodeLabel = runner.Node.Name
+		}
 		Fail(c, http.StatusBadRequest, 400,
-			fmt.Sprintf("通过 ansible 控制节点 %s 采集 %s 失败：%v", runner.Node.Name, ip, err))
+			fmt.Sprintf("通过 ansible 控制节点 %s 采集 %s 失败：%v", nodeLabel, ip, err))
 		return
 	}
 	items, warn := buildCalibItems(fields, pr)
