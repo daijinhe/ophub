@@ -39,7 +39,14 @@ const nginxScanProbeCmd = `echo NGINX_NONE=$(command -v nginx >/dev/null 2>&1 &&
 var reNginxInclude = regexp.MustCompile(`(?i)^\s*include\s+(.+?)\s*;`)
 
 // reSafePath 仅允许绝对路径中的常规字符，防止把异常路径拼进远端命令
-var reSafePath = regexp.MustCompile(`^/[-A-Za-z0-9_./]+$`)
+//
+// v1.7.23 起允许 Unicode 字母/数字（\p{L}/\p{N}）：Java 服务的目录命名习惯里
+// 含中文等（如「601-测试环境-后端」「督办系统-后端-key-p」），纯 ASCII 白名单
+// 会让 list/read 整个服务目录都打不开。安全约束仍保留：
+//   - 路径必须以 / 开头（避免相对路径）
+//   - 不允许 NUL byte / 控制字符（Go RE2 \p{L}/\p{N} 自然不匹配）
+//   - 「..」防越界由 normalizeScriptPath 单独把关（regex 不防 ../etc/passwd）
+var reSafePath = regexp.MustCompile(`^/[\p{L}\p{N}_./-]+$`)
 
 // md5str 计算字符串 md5（十六进制）
 func md5str(s string) string {

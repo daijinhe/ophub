@@ -173,9 +173,10 @@ func (localScriptHost) Stat(path string) (bool, error) {
 
 // reSafeName 服务名 / 文件名安全字符约束：
 //
-//	字母 / 数字 / 下划线 / 中划线 / 点 —— 与 java 服务命名习惯保持一致；
-//	禁止斜杠（防止 path 穿越）、禁止空格（防止 shell 上下文被误解析）。
-var reSafeName = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+//	Unicode 字母 / 数字 / 下划线 / 中划线 / 点 —— 与 java 服务命名习惯保持一致；
+//	允许中文等服务名（v1.7.23 起放开，跟 reSafePath 同步）；禁止斜杠（防止
+//	path 穿越）、禁止控制字符与 NUL byte（Go RE2 \p{L}/\p{N} 自然不匹配）。
+var reSafeName = regexp.MustCompile(`^[\p{L}\p{N}_.-]+$`)
 
 // normalizeScriptPath 校验路径合法性 + 强制落在允许根之下。
 //
