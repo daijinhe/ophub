@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { Layout, Menu, Dropdown, Avatar, Typography, Grid } from 'antd'
 import {
   DashboardOutlined,
-  ApartmentOutlined,
   DatabaseOutlined,
   CloudServerOutlined,
   ApiOutlined,
@@ -77,7 +76,7 @@ export default function MainLayout() {
     // 脚本管理是独立一级分组（与定时任务平级），展开它才能看到子项
     if (p.startsWith('/scripts')) return ['scripts']
     if (p.startsWith('/nginx-config')) return ['middleware', 'mwconfig']
-    if (p.startsWith('/cmdb') || p.startsWith('/ansible')) return ['resource']
+    if (p.startsWith('/ansible')) return ['ansible']
     if (p.startsWith('/users') || p.startsWith('/roles')) return ['system']
     return []
   }
@@ -89,17 +88,19 @@ export default function MainLayout() {
   const rawItems: any[] = [
     { key: '/dashboard', icon: <DashboardOutlined />, label: '概览', perm: 'dashboard:view' },
 
+    // 资产管理：v1.7.16 起提升为一级菜单（原「资源配置」分组拆散：资产管理独立，ansible 相关另立分组）
+    { key: '/cmdb', icon: <DatabaseOutlined />, label: '资产管理', perm: 'cmdb:view' },
+
+    // Ansible 管理：与资产管理平级的一级分组（v1.7.16）。
+    // 采集通道设置放第一个——它是全平台开关，配置优先级高于具体节点管理。
     {
-      key: 'resource',
-      icon: <ApartmentOutlined />,
-      label: '资源配置',
+      key: 'ansible',
+      icon: <CloudServerOutlined />,
+      label: 'Ansible 管理',
       children: [
-        { key: '/cmdb', icon: <DatabaseOutlined />, label: '资产管理', perm: 'cmdb:view' },
-        // 主机清单（v1.7.10 起拆分）：「远端 Ansible 管理」+「本机 Ansible 管理」并列。
-        // 远端 = 多台 ansible 控制节点（走 SSH）；本机 = backend 容器内 ansible（直 exec）。
-        // 两者共用 ansible:manage 权限码（同一类功能的不同入口）。
-        { key: '/ansible/remote', icon: <CloudServerOutlined />, label: '远端 Ansible 管理', perm: 'ansible:manage' },
+        { key: '/ansible/mode', icon: <ApiOutlined />, label: '平台采集通道设置', perm: 'ansible:manage' },
         { key: '/ansible/local', icon: <CodeOutlined />, label: '本机 Ansible 管理', perm: 'ansible:manage' },
+        { key: '/ansible/remote', icon: <CloudServerOutlined />, label: '远端 Ansible 管理', perm: 'ansible:manage' },
       ],
     },
 

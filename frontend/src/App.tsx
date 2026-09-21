@@ -9,6 +9,7 @@ import Roles from './pages/Roles'
 import CMDB from './pages/CMDB'
 import AnsibleRemote from './pages/AnsibleRemote'
 import AnsibleLocal from './pages/AnsibleLocal'
+import AnsibleMode from './pages/AnsibleMode'
 import MiddlewareDeploy from './pages/MiddlewareDeploy'
 import MiddlewareOps from './pages/MiddlewareOps'
 import MiddlewareCapture from './pages/MiddlewareCapture'
@@ -78,10 +79,11 @@ export default function App() {
         <Route path="users" element={<RequirePerm perm="user:view"><Users /></RequirePerm>} />
         <Route path="roles" element={<RequirePerm perm="role:view"><Roles /></RequirePerm>} />
         <Route path="cmdb" element={<RequirePerm perm="cmdb:view"><CMDB /></RequirePerm>} />
-        {/* 旧的 /ansible 重定向到 /ansible/remote；本机 ansible 管理走 /ansible/local */}
-        <Route path="ansible" element={<Navigate to="/ansible/remote" replace />} />
-        <Route path="ansible/remote" element={<RequirePerm perm="ansible:manage"><AnsibleRemote /></RequirePerm>} />
+        {/* Ansible 管理：/ansible 默认落到「平台采集通道设置」；远端/本机 ansible 管理为同级子页面 */}
+        <Route path="ansible" element={<Navigate to="/ansible/mode" replace />} />
+        <Route path="ansible/mode" element={<RequirePerm perm="ansible:manage"><AnsibleMode /></RequirePerm>} />
         <Route path="ansible/local" element={<RequirePerm perm="ansible:manage"><AnsibleLocal /></RequirePerm>} />
+        <Route path="ansible/remote" element={<RequirePerm perm="ansible:manage"><AnsibleRemote /></RequirePerm>} />
         <Route path="deploy" element={<RequirePerm perm="deploy:manage"><MiddlewareDeploy /></RequirePerm>} />
         <Route path="deploy-config" element={<RequirePerm perm="deploy:manage"><MiddlewareConfig /></RequirePerm>} />
         <Route path="deploy-certs" element={<RequirePerm perm="deploy:manage"><CertManage /></RequirePerm>} />
