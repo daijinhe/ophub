@@ -181,23 +181,39 @@ var reSafeName = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 //
 // 返回：
 //   - absRoot : 规范化后的根（前端 root 或默认根，Clean 后确保无 ..）
-//   - absPath : 规范化后的目标路径
+//   - absPath : 规范化后的目标路径（p 为空时等于 absRoot —— 适用于「只校验根」
+//     的场景，如 MakeScriptDir；其他场景都传完整 path，行为不变）
 //   - err     : 越界 / 不合法时返回详细错误
 //
 // 为什么不用 reSafePath 单点过滤：reSafePath 只看字符集
-// （^[A-Za-z0-9_./-]+），而「../etc/passwd」同样满足字符集，必须前缀二次把关。
+// （^/[-A-Za-z0-9_./]+$），而「../etc/passwd」同样满足字符集，必须前缀二次把关。
+//
+// 重要：reSafePath 要求路径以 / 开头，因此 p 为空时跳过 regex 校验（视为「仅校验根」）。
+// 修复历史：v1.7.x 起 MakeScriptDir 调 normalizeScriptPath(root, "")，空 p 匹配不上
+// reSafePath（要求必须以 / 开头），导致「创建服务目录」永远报 400。改成允许空 p。
 func normalizeScriptPath(root, p string) (absRoot, absPath string, err error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
 		root = defaultScriptRoot
 	}
-	if !reSafePath.MatchString(root) || !reSafePath.MatchString(p) {
-		return "", "", fmt.Errorf("路径包含非法字符")
+	if strings.Contains(root, "..") {
+		return "", "", fmt.Errorf("根路径不允许包含 ..（防止越界）：%s", root)
+	}
+	if p != "" && strings.Contains(p, "..") {
+		return "", "", fmt.Errorf("路径不允许包含 ..（防止越界）：%s", p)
+	}
+	if !reSafePath.MatchString(root) {
+		return "", "", fmt.Errorf("根路径包含非法字符：%s", root)
+	}
+	if p != "" && !reSafePath.MatchString(p) {
+		return "", "", fmt.Errorf("路径包含非法字符：%s", p)
 	}
 	absRoot = filepath.Clean(root)
 	// p 既可能是绝对路径也可能是相对路径——相对时拼到根下，
 	// 拼接后再次 Clean 防御性消除多重 ../ 穿越
-	if !strings.HasPrefix(p, "/") {
+	if p == "" {
+		absPath = absRoot
+	} else if !strings.HasPrefix(p, "/") {
 		absPath = filepath.Clean(absRoot + "/" + p)
 	} else {
 		absPath = filepath.Clean(p)

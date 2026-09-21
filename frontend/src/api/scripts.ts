@@ -16,6 +16,10 @@ import api from './client'
 //   - 'remote' 目标服务器 —— 经 ansible 控制节点操作选中的资产
 //
 // 两种落点共用同一套路径约束（必须落在 root 之下）与 1MiB 大小上限。
+//
+// ⚠️ 响应解包：与 inspection.ts 一致，统一用 .then((r) => r.data.data) 解开 axios 包装 +
+// 后端 {code, msg, data} 双层包装。**v1.7.22 修复**：之前直接 return api.get(...)，
+// 导致 r.items 永远是 undefined（拿到的是 AxiosResponse 对象），页面始终显示空列表。
 // ============================================================================
 
 /** 数据落点：平台本机 / 目标服务器 */
@@ -58,13 +62,18 @@ function q(
   }
 }
 
+/** 统一解包：解掉 axios 的 response 包装 + 后端 {code, msg, data} 双层包装 */
+const unwrap = <T,>(p: Promise<any>): Promise<T> => p.then((r) => r.data as T)
+
 export function listScripts(
   source: ScriptSource,
   host: number | undefined,
   path: string,
   root?: string,
 ): Promise<ScriptListResponse> {
-  return api.get(BASE + '/ls', { params: q(source, host, path, root) })
+  return unwrap<ScriptListResponse>(
+    api.get(BASE + '/ls', { params: q(source, host, path, root) }),
+  )
 }
 
 export function getScriptFile(
@@ -73,7 +82,9 @@ export function getScriptFile(
   path: string,
   root?: string,
 ): Promise<ScriptFile> {
-  return api.get(BASE + '/file', { params: q(source, host, path, root) })
+  return unwrap<ScriptFile>(
+    api.get(BASE + '/file', { params: q(source, host, path, root) }),
+  )
 }
 
 export function putScriptFile(
@@ -83,9 +94,9 @@ export function putScriptFile(
   content: string,
   root?: string,
 ): Promise<{ msg: string; path: string; size: number }> {
-  return api.put(BASE + '/file', { content }, {
-    params: q(source, host, path, root),
-  })
+  return unwrap<{ msg: string; path: string; size: number }>(
+    api.put(BASE + '/file', { content }, { params: q(source, host, path, root) }),
+  )
 }
 
 export function createScriptDir(
@@ -94,14 +105,16 @@ export function createScriptDir(
   root: string,
   name: string,
 ): Promise<{ msg: string; path: string }> {
-  return api.post(BASE + '/dir', undefined, {
-    params: {
-      source,
-      host: source === 'local' ? undefined : host,
-      root,
-      name,
-    },
-  })
+  return unwrap<{ msg: string; path: string }>(
+    api.post(BASE + '/dir', undefined, {
+      params: {
+        source,
+        host: source === 'local' ? undefined : host,
+        root,
+        name,
+      },
+    }),
+  )
 }
 
 export function createScriptFile(
@@ -111,9 +124,11 @@ export function createScriptFile(
   content: string,
   root?: string,
 ): Promise<{ msg: string; path: string }> {
-  return api.post(BASE + '/file', undefined, {
-    params: { ...q(source, host, path, root), content },
-  })
+  return unwrap<{ msg: string; path: string }>(
+    api.post(BASE + '/file', undefined, {
+      params: { ...q(source, host, path, root), content },
+    }),
+  )
 }
 
 export function deleteScriptEntry(
@@ -122,5 +137,7 @@ export function deleteScriptEntry(
   path: string,
   root?: string,
 ): Promise<{ msg: string; path: string }> {
-  return api.delete(BASE + '/entry', { params: q(source, host, path, root) })
+  return unwrap<{ msg: string; path: string }>(
+    api.delete(BASE + '/entry', { params: q(source, host, path, root) }),
+  )
 }
