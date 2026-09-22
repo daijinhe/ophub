@@ -26,9 +26,9 @@ import (
 type promHostStat struct {
 	Instance   string  `json:"instance"`
 	Hostname   string  `json:"hostname"`
-	Department string  `json:"department"` // target label: department → 所属部门
-	System     string  `json:"system"`     // target label: system → 项目名
-	Env        string  `json:"env"`        // target label: env → 环境
+	Department string  `json:"department"`   // target label: department → 所属部门
+	System     string  `json:"system"`       // target label: system → 项目名
+	Env        string  `json:"env"`          // target label: env → 环境
 	DeploySvr  string  `json:"deployserver"` // target label: deployserver → 业务环境
 	Up         bool    `json:"up"`
 	CPU        float64 `json:"cpu"`
@@ -115,8 +115,8 @@ type promTopEntry struct {
 // promOverviewResp 大屏快照（v1.7.33：改为服务端定时采集产出，告警面板换成阈值派生）
 type promOverviewResp struct {
 	GeneratedAt string           `json:"generatedAt"`
-	CollectMs   int64            `json:"collectMs"`   // 本次采集耗时（毫秒）
-	Source      string           `json:"source"`      // auto | manual | restore | realtime
+	CollectMs   int64            `json:"collectMs"` // 本次采集耗时（毫秒）
+	Source      string           `json:"source"`    // auto | manual | restore | realtime
 	DSName      string           `json:"dsName"`
 	Up          promUpStat       `json:"up"`
 	Avg         promAvg          `json:"avg"`
@@ -500,9 +500,9 @@ func promAvgByTs(series []promSeries) map[int64]*float64 {
 type promReportRow struct {
 	Instance   string  `json:"instance"`
 	Hostname   string  `json:"hostname"`
-	Department string  `json:"department"` // 所属部门
-	System     string  `json:"system"`     // 项目名
-	Env        string  `json:"env"`        // 环境
+	Department string  `json:"department"`   // 所属部门
+	System     string  `json:"system"`       // 项目名
+	Env        string  `json:"env"`          // 环境
 	DeploySvr  string  `json:"deployserver"` // 业务环境
 	CPUAvg     float64 `json:"cpuAvg"`
 	CPUMax     float64 `json:"cpuMax"`
@@ -514,15 +514,15 @@ type promReportRow struct {
 
 // promReportResp 报表响应
 type promReportResp struct {
-	Period    string          `json:"period"` // month | quarter | year
-	PeriodCN  string          `json:"periodCN"`
-	Start     string          `json:"start"` // 展示用时间
-	End       string          `json:"end"`
-	Points    int             `json:"points"` // 聚合采样点数（每主机）
-	HostCount int             `json:"hostCount"`
-	Fleet     promReportFleet `json:"fleet"`
+	Period    string           `json:"period"` // month | quarter | year
+	PeriodCN  string           `json:"periodCN"`
+	Start     string           `json:"start"` // 展示用时间
+	End       string           `json:"end"`
+	Points    int              `json:"points"` // 聚合采样点数（每主机）
+	HostCount int              `json:"hostCount"`
+	Fleet     promReportFleet  `json:"fleet"`
 	Trend     []promTrendPoint `json:"trend"`
-	Rows      []promReportRow `json:"rows"`
+	Rows      []promReportRow  `json:"rows"`
 	Config    promCfgView      `json:"config"` // 生效阈值（导出 Excel 的「风险」判定与之一致）
 }
 
@@ -579,62 +579,21 @@ func promReportWindow(period, ref string) (start, end time.Time, periodCN string
 }
 
 // PromReport GET /api/prom/report?ds=&period=month|quarter|year&ref=2026-09-15
+//
+// 只查不归档（页面直接展示用）。「生成报告」走 POST /api/prom/reports/generate，
+// 两者共用 promBuildReport，避免同一份聚合写两遍。
 func PromReport(c *gin.Context) {
-	_, cli, err := resolvePromDS(c)
+	ds, _, err := resolvePromDS(c)
 	if err != nil {
 		Fail(c, http.StatusBadRequest, 1, err.Error())
 		return
 	}
 	period := strings.TrimSpace(c.DefaultQuery("period", "month"))
-	start, end, periodCN, step, rateWin, err := promReportWindow(period, c.Query("ref"))
+	resp, err := promBuildReport(ds, period, c.Query("ref"))
 	if err != nil {
 		Fail(c, http.StatusBadRequest, 1, err.Error())
 		return
 	}
-	ctx, cancel := context.WithTimeout(c.Request.Context(), promHTTPTimeout*2)
-	defer cancel()
-
-	// 三组区间查询（CPU / 内存 / 磁盘）
-	cpuSeries, errC := cli.queryRange(ctx, promQLCPU(rateWin), start.Unix(), end.Unix(), step)
-	memSeries, errM := cli.queryRange(ctx, promQLMem, start.Unix(), end.Unix(), step)
-	diskSeries, errD := cli.queryRange(ctx, promQLDisk, start.Unix(), end.Unix(), step)
-	if errC != nil && errM != nil && errD != nil {
-		Fail(c, http.StatusBadRequest, 1, "查询报表数据失败："+errC.Error())
-		return
-	}
-
-	// 主机名
-	hostnames := map[string]string{}
-	unameSamples, _ := cli.query(ctx, promQLUname, "")
-	for _, s := range unameSamples {
-		inst := s.Metric["instance"]
-		if hn := s.Metric["nodename"]; hn != "" && hostnames[inst] == "" {
-			hostnames[inst] = hn
-		}
-	}
-
-	// 业务标签（department/system/env/deployserver）：up 最便宜且覆盖全部 target
-	upSamples, _ := cli.query(ctx, "up", "")
-	instLabels := promCollectLabels(upSamples, unameSamples)
-
-	rows := promAggregateRows(cpuSeries, memSeries, diskSeries, hostnames, instLabels)
-	resp := promReportResp{
-		Period:   period,
-		PeriodCN: periodCN,
-		Start:    start.Format("2006-01-02 15:04"),
-		End:      end.Format("2006-01-02 15:04"),
-		HostCount: len(rows),
-		Rows:      rows,
-		Config:    promLoadConfig().view(),
-	}
-	if len(cpuSeries) > 0 {
-		resp.Points = len(cpuSeries[0].Values)
-	}
-
-	// 全集群汇总 + 趋势（窗口内全集群均值线）
-	resp.Fleet = promFleetSummary(rows)
-	resp.Trend = promTrendFromSeries(cpuSeries, memSeries, diskSeries)
-
 	OK(c, resp)
 }
 

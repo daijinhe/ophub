@@ -287,6 +287,12 @@ func main() {
 			auth.GET("/prom/label/:name/values", RequireAnyPermission("prom:view", "prom:screen"), PromLabelValues)
 			auth.GET("/prom/overview", RequireAnyPermission("prom:view", "prom:screen"), PromOverview)
 			auth.GET("/prom/report", RequireAnyPermission("prom:view", "prom:screen"), PromReport)
+			// v1.7.36：报告记录 —— 「生成报告」即归档，可回看 / 重新导出 / 删除
+			auth.POST("/prom/reports/generate", RequireAnyPermission("prom:view", "prom:manage"), PromGenerateReport)
+			auth.GET("/prom/reports", RequireAnyPermission("prom:view", "prom:screen"), PromListReports)
+			auth.GET("/prom/reports/:id", RequireAnyPermission("prom:view", "prom:screen"), PromGetReport)
+			auth.PUT("/prom/reports/:id", RequirePermission("prom:manage"), PromUpdateReport)
+			auth.DELETE("/prom/reports/:id", RequirePermission("prom:manage"), PromDeleteReport)
 			// v1.7.33：大屏改为「服务端定期采集 → 读快照」，并支持阈值/采集频率的集中管理
 			auth.GET("/prom/screen-config", RequireAnyPermission("prom:view", "prom:manage"), PromGetScreenConfig)
 			auth.PUT("/prom/screen-config", RequirePermission("prom:manage"), PromSaveScreenConfig)

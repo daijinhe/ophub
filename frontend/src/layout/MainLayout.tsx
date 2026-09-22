@@ -25,6 +25,7 @@ import {
   FundOutlined,
   NodeIndexOutlined,
   BarChartOutlined,
+  StopOutlined,
   SettingOutlined,
   TeamOutlined,
   KeyOutlined,
@@ -204,8 +205,8 @@ export default function MainLayout() {
       label: 'Prometheus 监控',
       children: [
         { key: '/prom/datasources', icon: <ApiOutlined />, label: '数据源管理', perm: 'prom:view' },
-        { key: '/prom/metrics', icon: <NodeIndexOutlined />, label: '指标查询', perm: 'prom:view' },
         { key: '/prom/report', icon: <BarChartOutlined />, label: '监控报表', perm: 'prom:view' },
+        { key: '/prom/report-records', icon: <FileTextOutlined />, label: '报告记录', perm: 'prom:view' },
         {
           key: '/prom/screen',
           icon: <DotChartOutlined />,
@@ -222,6 +223,7 @@ export default function MainLayout() {
           perms: ['prom:screen', 'prom:view'],
         },
         { key: '/prom/screen-admin', icon: <ControlOutlined />, label: '大屏管理', perm: 'prom:manage' },
+        { key: '/prom/masks', icon: <StopOutlined />, label: '屏蔽规则', perm: 'prom:manage' },
       ],
     },
 

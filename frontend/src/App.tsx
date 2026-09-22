@@ -26,8 +26,9 @@ import DeployRecords from './pages/DeployRecords'
 import InspectionScreen from './pages/InspectionScreen'
 import InspectionReport from './pages/InspectionReport'
 import PromDataSources from './pages/PromDataSources'
-import PromMetrics from './pages/PromMetrics'
+import PromMaskRules from './pages/PromMaskRules'
 import PromReport from './pages/PromReport'
+import PromReportRecords from './pages/PromReportRecords'
 import PromScreen from './pages/PromScreen'
 import PromScreenAdmin from './pages/PromScreenAdmin'
 import WebTerminalPage from './pages/WebTerminalPage'
@@ -102,12 +103,13 @@ export default function App() {
         <Route path="inspection/tasks" element={<RequirePerm perm="inspection:view"><InspectionTasks /></RequirePerm>} />
         <Route path="inspection/records" element={<RequirePerm perm="inspection:view"><InspectionRecords /></RequirePerm>} />
         <Route path="inspection/alert-rules" element={<RequirePerm perm="inspection:manage"><InspectionAlertRules /></RequirePerm>} />
-        {/* Prometheus 监控（v1.8.0 独立大类）：数据源 / 指标 / 报表在主布局内，大屏新标签页 */}
+        {/* Prometheus 监控（v1.8.0 独立大类）：数据源 / 报表 / 报告记录在主布局内，大屏新标签页 */}
         <Route path="prom/datasources" element={<RequirePerm perm="prom:view"><PromDataSources /></RequirePerm>} />
-        <Route path="prom/metrics" element={<RequirePerm perm="prom:view"><PromMetrics /></RequirePerm>} />
         <Route path="prom/report" element={<RequirePerm perm="prom:view"><PromReport /></RequirePerm>} />
-        {/* 大屏管理（阈值 / 采集频率）属配置动作 → prom:manage */}
+        <Route path="prom/report-records" element={<RequirePerm perm="prom:view"><PromReportRecords /></RequirePerm>} />
+        {/* 大屏管理（阈值 / 采集频率）与屏蔽规则属配置动作 → prom:manage */}
         <Route path="prom/screen-admin" element={<RequirePerm perm="prom:manage"><PromScreenAdmin /></RequirePerm>} />
+        <Route path="prom/masks" element={<RequirePerm perm="prom:manage"><PromMaskRules /></RequirePerm>} />
       </Route>
       <Route
         path="/webterm/:assetId"

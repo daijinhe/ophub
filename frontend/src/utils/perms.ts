@@ -30,11 +30,12 @@ export const ROUTE_PERMS: { path: string; perm: string }[] = [
   // Prometheus 监控（v1.8.0）：数据源/指标/报表用 prom:view（页面内按 prom:manage 收口）；
   // 大屏独立权限码，可单独授予「只看大屏」的账号（路由侧 RequireAnyPerm 放行两种）。
   { path: '/prom/datasources', perm: 'prom:view' },
-  { path: '/prom/metrics', perm: 'prom:view' },
   { path: '/prom/report', perm: 'prom:view' },
+  { path: '/prom/report-records', perm: 'prom:view' },
   { path: '/prom/screen', perm: 'prom:screen' },
-  // 大屏管理（阈值 / 采集频率 / 手动采集）：配置动作，用 prom:manage
+  // 大屏管理（阈值 / 采集频率 / 手动采集）与屏蔽规则：配置动作，用 prom:manage
   { path: '/prom/screen-admin', perm: 'prom:manage' },
+  { path: '/prom/masks', perm: 'prom:manage' },
 ]
 
 // 路由路径 -> 所需权限码

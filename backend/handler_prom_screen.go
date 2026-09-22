@@ -116,17 +116,17 @@ type promCfgView struct {
 
 // promIssue 超阈值条目（平台自算，不依赖 Prometheus 的 ALERTS）
 type promIssue struct {
-	Instance    string  `json:"instance"`
-	Name        string  `json:"name"`
-	Department  string  `json:"department"`
-	System      string  `json:"system"`
-	Env         string  `json:"env"`
-	DeploySvr   string  `json:"deployserver"`
-	Metric      string  `json:"metric"`   // cpu | mem | disk | offline
-	MetricCN    string  `json:"metricCN"` // CPU | 内存 | 磁盘 | 连通性
-	Value       float64 `json:"value"`
-	Level       string  `json:"level"`   // crit | warn
-	LevelCN     string  `json:"levelCN"` // 严重 | 关注
+	Instance   string  `json:"instance"`
+	Name       string  `json:"name"`
+	Department string  `json:"department"`
+	System     string  `json:"system"`
+	Env        string  `json:"env"`
+	DeploySvr  string  `json:"deployserver"`
+	Metric     string  `json:"metric"`   // cpu | mem | disk | offline
+	MetricCN   string  `json:"metricCN"` // CPU | 内存 | 磁盘 | 连通性
+	Value      float64 `json:"value"`
+	Level      string  `json:"level"`   // crit | warn
+	LevelCN    string  `json:"levelCN"` // 严重 | 关注
 }
 
 // promIssueStat 超阈值统计
@@ -728,22 +728,22 @@ func jsonUnmarshalSnapshot(s string) (*promOverviewResp, error) {
 
 // promScreenCfgBody 保存大屏配置的请求体（开关类字段用指针区分「未传」与「显式 0」）
 type promScreenCfgBody struct {
-	Title       string         `json:"title"`
-	AutoCollect *int           `json:"autoCollect"`
-	IntervalSec int            `json:"intervalSec"`
-	CPUWarn     float64        `json:"cpuWarn"`
-	CPUCrit     float64        `json:"cpuCrit"`
-	MemWarn     float64        `json:"memWarn"`
-	MemCrit     float64        `json:"memCrit"`
-	DiskWarn    float64        `json:"diskWarn"`
-	DiskCrit    float64        `json:"diskCrit"`
-	TopN        int            `json:"topN"`
-	HostLimit   int            `json:"hostLimit"`
-	ShowOffline *int           `json:"showOffline"`
-	TrendHours  int            `json:"trendHours"`
-	GroupBy     string         `json:"groupBy"`
+	Title       string          `json:"title"`
+	AutoCollect *int            `json:"autoCollect"`
+	IntervalSec int             `json:"intervalSec"`
+	CPUWarn     float64         `json:"cpuWarn"`
+	CPUCrit     float64         `json:"cpuCrit"`
+	MemWarn     float64         `json:"memWarn"`
+	MemCrit     float64         `json:"memCrit"`
+	DiskWarn    float64         `json:"diskWarn"`
+	DiskCrit    float64         `json:"diskCrit"`
+	TopN        int             `json:"topN"`
+	HostLimit   int             `json:"hostLimit"`
+	ShowOffline *int            `json:"showOffline"`
+	TrendHours  int             `json:"trendHours"`
+	GroupBy     string          `json:"groupBy"`
 	Masks       *[]promMaskRule `json:"masks"` // 指针：nil=未传（保持原值），传了=整体覆盖
-	Remark      string         `json:"remark"`
+	Remark      string          `json:"remark"`
 }
 
 type promCollectStatus struct {
@@ -788,13 +788,13 @@ func promCollectStatusList() []promCollectStatus {
 
 // promSnapshotResp 大屏轮询的响应（永不直查 Prometheus）
 type promSnapshotResp struct {
-	Ready       bool            `json:"ready"`
-	Collecting  bool            `json:"collecting"`
-	AutoCollect int             `json:"autoCollect"`
-	IntervalSec int             `json:"intervalSec"`
-	NextAt      int64           `json:"nextAt"` // unix 秒；0=未知
-	Msg         string          `json:"msg"`
-	Config      promCfgView     `json:"config"`
+	Ready       bool              `json:"ready"`
+	Collecting  bool              `json:"collecting"`
+	AutoCollect int               `json:"autoCollect"`
+	IntervalSec int               `json:"intervalSec"`
+	NextAt      int64             `json:"nextAt"` // unix 秒；0=未知
+	Msg         string            `json:"msg"`
+	Config      promCfgView       `json:"config"`
 	Data        *promOverviewResp `json:"data"`
 }
 
@@ -897,8 +897,13 @@ func PromSaveScreenConfig(c *gin.Context) {
 		return
 	}
 	old := promLoadConfig()
-	// 只覆盖前端可调字段，避免前端漏传导致结构字段被清空
-	old.Title = strings.TrimSpace(body.Title)
+	// 只覆盖前端可调字段，避免前端漏传导致结构字段被清空。
+	//
+	// ⚠️ 数值/文本字段一律「非零才覆盖」：屏蔽规则页（独立菜单）只会提交 masks，
+	// 若在这里无条件赋值，保存一次屏蔽规则会把标题、采集间隔、阈值全部打回默认值。
+	if t := strings.TrimSpace(body.Title); t != "" {
+		old.Title = t
+	}
 	if body.AutoCollect != nil {
 		v := 0
 		if *body.AutoCollect != 0 {
@@ -913,17 +918,39 @@ func PromSaveScreenConfig(c *gin.Context) {
 		}
 		old.ShowOffline = v
 	}
-	old.IntervalSec = body.IntervalSec
-	old.CPUWarn = body.CPUWarn
-	old.CPUCrit = body.CPUCrit
-	old.MemWarn = body.MemWarn
-	old.MemCrit = body.MemCrit
-	old.DiskWarn = body.DiskWarn
-	old.DiskCrit = body.DiskCrit
-	old.TopN = body.TopN
-	old.HostLimit = body.HostLimit
-	old.TrendHours = body.TrendHours
-	old.GroupBy = body.GroupBy
+	if body.IntervalSec > 0 {
+		old.IntervalSec = body.IntervalSec
+	}
+	if body.CPUWarn > 0 {
+		old.CPUWarn = body.CPUWarn
+	}
+	if body.CPUCrit > 0 {
+		old.CPUCrit = body.CPUCrit
+	}
+	if body.MemWarn > 0 {
+		old.MemWarn = body.MemWarn
+	}
+	if body.MemCrit > 0 {
+		old.MemCrit = body.MemCrit
+	}
+	if body.DiskWarn > 0 {
+		old.DiskWarn = body.DiskWarn
+	}
+	if body.DiskCrit > 0 {
+		old.DiskCrit = body.DiskCrit
+	}
+	if body.TopN > 0 {
+		old.TopN = body.TopN
+	}
+	if body.HostLimit > 0 {
+		old.HostLimit = body.HostLimit
+	}
+	if body.TrendHours > 0 {
+		old.TrendHours = body.TrendHours
+	}
+	if body.GroupBy != "" {
+		old.GroupBy = body.GroupBy
+	}
 	if body.Masks != nil {
 		old.Masks = promMasksToJSON(*body.Masks)
 	}

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Alert,
-  AutoComplete,
   Button,
   Card,
   Col,
@@ -16,28 +15,22 @@ import {
   Switch,
   Table,
   Tag,
-  Tooltip,
   Typography,
   message,
 } from 'antd'
 import {
   CloudDownloadOutlined,
   DatabaseOutlined,
-  DeleteOutlined,
-  PlusOutlined,
   ReloadOutlined,
   SaveOutlined,
   SettingOutlined,
-  StopOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons'
 import {
   getPromScreenConfig,
   promCollectNow,
-  promSnapshot,
   savePromScreenConfig,
   type PromCollectStatus,
-  type PromMaskRule,
   type PromScreenConfig,
   type PromScreenConfigResp,
 } from '../api/prometheus'
@@ -73,29 +66,16 @@ const SOURCE_CN: Record<string, string> = {
   realtime: '实时现算',
 }
 
-/** 屏蔽规则的指标口径 */
-const MASK_METRIC_OPTIONS = [
-  { value: 'all', label: '全部指标' },
-  { value: 'cpu', label: 'CPU' },
-  { value: 'mem', label: '内存' },
-  { value: 'disk', label: '磁盘' },
-  { value: 'offline', label: '离线（连通性）' },
-]
-const MASK_METRIC_CN: Record<string, string> = {
-  all: '全部指标',
-  cpu: 'CPU',
-  mem: '内存',
-  disk: '磁盘',
-  offline: '离线（连通性）',
-}
-
 /**
- * Prometheus 监控大屏 · 管理（v1.7.33）
+ * Prometheus 监控大屏 · 管理（v1.7.33，v1.7.36 调整）
  *
  * 集中管理大屏「展示什么、怎么判、多久采一次」：
  *   - 展示：大屏标题、TOP N、主机列表上限、是否显示离线、趋势窗口、分组维度；
  *   - 判级：CPU / 内存 / 磁盘 的「关注 / 严重」阈值（决定超阈值清单与健康分布）；
  *   - 采集：自动采集开关 + 采集间隔（10 秒 ~ 30 分钟）+ 每个数据源的立即采集。
+ *
+ * ⚠️ 「屏蔽规则」v1.7.36 起独立成菜单（Prometheus 监控 → 屏蔽规则），
+ * 本页不再维护它，也不再提交 masks 字段（避免把规则清空）。
  */
 export default function PromScreenAdmin() {
   const [cfg, setCfg] = useState<PromScreenConfig | null>(null)
@@ -106,12 +86,6 @@ export default function PromScreenAdmin() {
   const [collectingId, setCollectingId] = useState<number | null>(null)
   const [form] = Form.useForm()
   const [tick, setTick] = useState(0)
-  // 屏蔽规则（v1.7.35）：本地编辑，点「保存配置」一起提交；保存后立即对快照生效
-  const [masks, setMasks] = useState<PromMaskRule[]>([])
-  const [hostOpts, setHostOpts] = useState<{ value: string; label: string }[]>([])
-  const [newTarget, setNewTarget] = useState('')
-  const [newMetric, setNewMetric] = useState<PromMaskRule['metric']>('all')
-  const [newNote, setNewNote] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -120,7 +94,6 @@ export default function PromScreenAdmin() {
       setCfg(r.config)
       setStatus(r.status || [])
       setNextAt(r.nextAt || 0)
-      setMasks(r.config.masks || [])
       form.setFieldsValue(r.config)
     } catch (e) {
       message.error('加载大屏配置失败:' + errMsg(e))
@@ -132,20 +105,6 @@ export default function PromScreenAdmin() {
   useEffect(() => {
     load()
   }, [load])
-
-  // 拉一次快照，给「屏蔽规则」的主机下拉提供候选（失败不阻塞配置加载）
-  useEffect(() => {
-    promSnapshot()
-      .then((s) => {
-        setHostOpts(
-          (s.data?.hosts || []).map((h) => ({
-            value: h.instance,
-            label: h.instance,
-          })),
-        )
-      })
-      .catch(() => undefined)
-  }, [])
 
   // 采集状态每 5 秒自刷新（自动采集开着时能看见时间在动）
   useEffect(() => {
@@ -173,11 +132,11 @@ export default function PromScreenAdmin() {
     }
     setSaving(true)
     try {
+      // 只提交本页字段；masks 不传 → 后端保持原值（规则在「屏蔽规则」页维护）
       const r = await savePromScreenConfig({
         ...vals,
         autoCollect: vals.autoCollect ? 1 : 0,
         showOffline: vals.showOffline ? 1 : 0,
-        masks,
       })
       message.success(r.msg || '已保存')
       setCfg(r.config)
@@ -187,29 +146,7 @@ export default function PromScreenAdmin() {
     } finally {
       setSaving(false)
     }
-  }, [form, load, masks])
-
-  const addMask = useCallback(() => {
-    const t = newTarget.trim()
-    if (!t) {
-      message.warning('请填写要屏蔽的主机（instance 或名称关键字）')
-      return
-    }
-    if (masks.some((m) => m.target === t && m.metric === newMetric)) {
-      message.info('该屏蔽规则已存在')
-      return
-    }
-    setMasks([...masks, { target: t, metric: newMetric, note: newNote.trim() || undefined }])
-    setNewTarget('')
-    setNewNote('')
-  }, [masks, newTarget, newMetric, newNote])
-
-  const removeMask = useCallback(
-    (t: string, m: string) => {
-      setMasks(masks.filter((x) => !(x.target === t && x.metric === m)))
-    },
-    [masks],
-  )
+  }, [form, load])
 
   const onCollect = useCallback(async (id: number) => {
     setCollectingId(id)
@@ -305,52 +242,6 @@ export default function PromScreenAdmin() {
       },
     ],
     [collectingId, onCollect],
-  )
-
-  const maskColumns = useMemo(
-    () => [
-      {
-        title: '目标（包含匹配）',
-        dataIndex: 'target',
-        key: 'target',
-        render: (v: string, r: PromMaskRule) => (
-          <div>
-            <div style={{ fontWeight: 600 }}>{v}</div>
-            {r.note && (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                {r.note}
-              </Text>
-            )}
-          </div>
-        ),
-      },
-      {
-        title: '屏蔽指标',
-        dataIndex: 'metric',
-        key: 'metric',
-        width: 140,
-        render: (v: string) => (
-          <Tag color={v === 'all' ? 'red' : 'geekblue'}>{MASK_METRIC_CN[v] || v}</Tag>
-        ),
-      },
-      {
-        title: '操作',
-        key: 'op',
-        width: 70,
-        render: (_: any, r: PromMaskRule) => (
-          <Tooltip title="删除该规则">
-            <Button
-              size="small"
-              type="text"
-              danger
-              icon={<DeleteOutlined />}
-              onClick={() => removeMask(r.target, r.metric)}
-            />
-          </Tooltip>
-        ),
-      },
-    ],
-    [removeMask],
   )
 
   return (
@@ -509,54 +400,19 @@ export default function PromScreenAdmin() {
             />
           </Card>
 
-          {/* 屏蔽规则（v1.7.35）：命中规则的主机指标不再进大屏「超阈值主机」面板 */}
-          <Card
-            size="small"
-            title={<span><StopOutlined /> 屏蔽规则（超阈值面板）</span>}
+          {/* 屏蔽规则已独立成菜单（v1.7.36）：这里只留指路，避免两处都能改、改完互相覆盖 */}
+          <Alert
+            type="info"
+            showIcon
             style={{ marginBottom: 12 }}
-            extra={<Tag color="red">{masks.length} 条</Tag>}
-          >
-            <Space.Compact style={{ width: '100%', marginBottom: 8 }}>
-              <AutoComplete
-                value={newTarget}
-                onChange={setNewTarget}
-                options={hostOpts}
-                placeholder="主机 instance（IP:端口）或名称关键字"
-                style={{ width: '46%' }}
-                filterOption={(input, option) =>
-                  String(option?.value || '').toLowerCase().includes(input.toLowerCase())
-                }
-              />
-              <Select
-                value={newMetric}
-                onChange={(v) => setNewMetric(v)}
-                options={MASK_METRIC_OPTIONS}
-                style={{ width: '24%' }}
-              />
-              <Input
-                value={newNote}
-                onChange={(e) => setNewNote(e.target.value)}
-                placeholder="备注（可选）"
-                style={{ width: '22%' }}
-                maxLength={50}
-                onPressEnter={addMask}
-              />
-              <Button type="primary" icon={<PlusOutlined />} onClick={addMask} title="添加屏蔽规则" />
-            </Space.Compact>
-            <Table
-              rowKey={(r) => `${r.target}|${r.metric}`}
-              size="small"
-              columns={maskColumns}
-              dataSource={masks}
-              pagination={false}
-              locale={{ emptyText: '暂无屏蔽规则 —— 大屏展示全部超阈值主机' }}
-            />
-            <Paragraph type="secondary" style={{ fontSize: 12, marginTop: 8, marginBottom: 0 }}>
-              命中规则的主机指标将从大屏「超阈值主机」面板隐藏（不再计数）。目标支持
-              instance（如 <code>198.51.100.31:9100</code>）或展示名关键字（如 和创利OA），
-              按「包含」匹配、不区分大小写；点「保存配置」后立即生效。
-            </Paragraph>
-          </Card>
+            message="屏蔽规则已移到「Prometheus 监控 → 屏蔽规则」"
+            description="在那边添加 / 删除规则并保存，服务端会立即用当前快照重算大屏「超阈值主机」面板。"
+            action={
+              <Button size="small" onClick={() => window.open('/prom/masks', '_blank')}>
+                去配置
+              </Button>
+            }
+          />
 
           <Card size="small" title="当前阈值速查">
             {cfg ? (

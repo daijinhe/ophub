@@ -320,6 +320,89 @@ export function promCollectNow(ds?: number): Promise<{ msg: string; generatedAt:
   return unwrap(api.post('/prom/collect', undefined, { params: ds ? { ds } : {} }))
 }
 
+/* ---------------- 报告记录（v1.7.36） ---------------- */
+
+/** 列表项（不含明细数据，避免列表接口过大） */
+export interface PromReportRecord {
+  id: number
+  title: string
+  dsId: number
+  dsName: string
+  period: 'month' | 'quarter' | 'year'
+  periodCN: string
+  refDate: string
+  start: string
+  end: string
+  hostCount: number
+  points: number
+  score: number
+  level: string
+  riskHosts: number
+  critHosts: number
+  cpuAvg: number
+  cpuMax: number
+  memAvg: number
+  memMax: number
+  diskAvg: number
+  diskMax: number
+  alertHit: number
+  rowsTruncated: number
+  remark: string
+  createdBy: number
+  createdByName: string
+  createdAt: string
+}
+
+/** 详情（列表字段 + 冻结的报告数据） */
+export interface PromReportRecordDetail extends PromReportRecord {
+  rows: PromReportRow[]
+  trend: PromTrendPoint[]
+  fleet: PromReport['fleet']
+  config: PromReport['config']
+}
+
+export interface PromReportRecordList {
+  list: PromReportRecord[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+/** 生成报告并归档（一次聚合，两个用途：页面展示 + 报告记录） */
+export function promGenerateReport(
+  ds: number,
+  period: 'month' | 'quarter' | 'year',
+  ref?: string,
+  title?: string,
+): Promise<{ report: PromReport; archived: boolean; id?: number; title?: string; msg?: string }> {
+  return unwrap(api.post('/prom/reports/generate', { ds, period, ref, title }))
+}
+
+export function listPromReports(params: {
+  ds?: number
+  period?: string
+  kw?: string
+  page?: number
+  pageSize?: number
+}): Promise<PromReportRecordList> {
+  return unwrap(api.get('/prom/reports', { params }))
+}
+
+export function getPromReport(id: number): Promise<PromReportRecordDetail> {
+  return unwrap(api.get(`/prom/reports/${id}`))
+}
+
+export function updatePromReport(
+  id: number,
+  body: { title?: string; remark?: string },
+): Promise<{ msg: string; record: PromReportRecord }> {
+  return unwrap(api.put(`/prom/reports/${id}`, body))
+}
+
+export function deletePromReport(id: number): Promise<{ msg: string }> {
+  return unwrap(api.delete(`/prom/reports/${id}`))
+}
+
 /* ---------------- 常用预置 PromQL（node_exporter 口径） ---------------- */
 
 export const PROM_PRESETS: { label: string; query: string; range: boolean }[] = [
