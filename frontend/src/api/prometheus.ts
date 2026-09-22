@@ -53,13 +53,6 @@ export interface PromHostStat {
   disk: number
 }
 
-export interface PromAlertItem {
-  alertname: string
-  instance: string
-  severity: string
-  description: string
-}
-
 export interface PromTopEntry {
   instance: string
   hostname: string
@@ -68,6 +61,54 @@ export interface PromTopEntry {
   env: string
   deployserver: string
   value: number
+}
+
+export interface PromIssue {
+  instance: string
+  name: string
+  department: string
+  system: string
+  env: string
+  deployserver: string
+  metric: 'cpu' | 'mem' | 'disk' | 'offline'
+  metricCN: string
+  value: number
+  level: 'crit' | 'warn'
+  levelCN: string
+}
+
+export interface PromIssueStat {
+  crit: number
+  warn: number
+  hosts: number
+}
+
+export interface PromGroupStat {
+  key: string
+  hosts: number
+  online: number
+  cpuAvg: number
+  memAvg: number
+  diskAvg: number
+  maxVal: number
+  riskHosts: number
+}
+
+export interface PromCfgView {
+  title: string
+  autoCollect: number
+  intervalSec: number
+  cpuWarn: number
+  cpuCrit: number
+  memWarn: number
+  memCrit: number
+  diskWarn: number
+  diskCrit: number
+  topN: number
+  hostLimit: number
+  showOffline: number
+  trendHours: number
+  groupBy: 'system' | 'department' | 'env' | 'deployserver'
 }
 
 export interface PromTrendPoint {
@@ -86,14 +127,30 @@ export interface PromUsageDist {
 
 export interface PromOverview {
   generatedAt: string
+  collectMs: number
+  source: string
+  dsName: string
   up: { total: number; online: number; offline: number }
   avg: { cpu: number; mem: number; disk: number }
   usageDist: PromUsageDist
   trend: PromTrendPoint[]
   hosts: PromHostStat[]
-  alerts: PromAlertItem[]
-  alertsTotal: number
   top: { cpu: PromTopEntry[]; mem: PromTopEntry[]; disk: PromTopEntry[] }
+  issues: PromIssue[]
+  issueStat: PromIssueStat
+  groups: PromGroupStat[]
+  config: PromCfgView
+}
+
+export interface PromSnapshotResp {
+  ready: boolean
+  collecting: boolean
+  autoCollect: number
+  intervalSec: number
+  nextAt: number
+  msg: string
+  config: PromCfgView
+  data: PromOverview | null
 }
 
 export interface PromReportRow {
@@ -129,6 +186,7 @@ export interface PromReport {
   }
   trend: PromTrendPoint[]
   rows: PromReportRow[]
+  config: PromCfgView
 }
 
 const unwrap = <T,>(p: Promise<any>): Promise<T> =>
@@ -207,6 +265,50 @@ export function promReport(
   ref?: string,
 ): Promise<PromReport> {
   return unwrap(api.get('/prom/report', { params: { ds, period, ref } }))
+}
+
+/* ---------------- 大屏采集 / 配置管理（v1.7.33） ---------------- */
+
+export interface PromScreenConfig extends PromCfgView {
+  id: number
+  remark: string
+  updatedAt?: string
+}
+
+export interface PromCollectStatus {
+  id: number
+  name: string
+  ready: boolean
+  busy: boolean
+  generatedAt: string
+  collectMs: number
+  hosts: number
+  source: string
+  msg: string
+}
+
+export interface PromScreenConfigResp {
+  config: PromScreenConfig
+  status: PromCollectStatus[]
+  nextAt: number
+}
+
+export function getPromScreenConfig(): Promise<PromScreenConfigResp> {
+  return unwrap(api.get('/prom/screen-config'))
+}
+
+export function savePromScreenConfig(body: Partial<PromScreenConfig>): Promise<{ msg: string; config: PromScreenConfig }> {
+  return unwrap(api.put('/prom/screen-config', body))
+}
+
+/** 读最新采集快照（不查 Prometheus，秒回） */
+export function promSnapshot(ds?: number): Promise<PromSnapshotResp> {
+  return unwrap(api.get('/prom/snapshot', { params: ds ? { ds } : {} }))
+}
+
+/** 手动触发一次采集（同步等待，采集完大屏立即刷新） */
+export function promCollectNow(ds?: number): Promise<{ msg: string; generatedAt: string; hosts: number; collectMs: number }> {
+  return unwrap(api.post('/prom/collect', undefined, { params: ds ? { ds } : {} }))
 }
 
 /* ---------------- 常用预置 PromQL（node_exporter 口径） ---------------- */

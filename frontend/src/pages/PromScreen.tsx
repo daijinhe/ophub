@@ -3,6 +3,7 @@ import { Spin, Tag, Tooltip } from 'antd'
 import {
   AlertOutlined,
   ArrowLeftOutlined,
+  CloudDownloadOutlined,
   CloudServerOutlined,
   DashboardOutlined,
   DatabaseOutlined,
@@ -16,12 +17,16 @@ import {
 import ReactECharts from 'echarts-for-react'
 import dayjs from 'dayjs'
 import {
-  promOverview,
+  promSnapshot,
+  promCollectNow,
   listPromDataSources,
   type PromOverview,
   type PromDataSource,
   type PromHostStat,
   type PromTopEntry,
+  type PromIssue,
+  type PromGroupStat,
+  type PromSnapshotResp,
 } from '../api/prometheus'
 
 /**
@@ -29,18 +34,18 @@ import {
  *
  * 与巡检大屏完全同一套布局与视觉语言（深蓝科技风 + 角标面板 + 自适应缩放画布）：
  *   - 设计高度锁 1080，宽度按视口宽高比动态计算，任何比例屏幕无黑边；
- *   - 顶栏：边缘隐藏返回键 + 品牌/时钟居中 + 数据源/全屏/刷新；
+ *   - 顶栏：边缘隐藏返回键 + 品牌/时钟居中 + 数据源/立即采集/全屏/刷新；
  *   - 左栏：容量卡（目标/在线/离线）+ KPI 行 + 资源健康分布饼图；
- *   - 中栏：资源仪表×4 + 负载 TOP5×3 + 各主机使用率柱状图 + 24h 趋势；
- *   - 右栏：实时告警列表（自动滚动）+ 告警等级 + 主机实时资源（自动滚动）；
- *   - 30s 自动刷新（倒计时可见）。
+ *   - 中栏：资源仪表×4 + 负载 TOP N×3 + 各主机使用率柱状图 + 趋势；
+ *   - 右栏：超阈值主机（阈值自算，替代没有数据的 ALERTS）+ 项目水位 TOP + 主机实时资源；
+ *   - 数据来自服务端定期采集的快照（大屏只读快照，不打爆 Prometheus），
+ *     顶栏「立即采集」可手动触发一次并实时同步。
  *
- * 主机展示名与巡检大屏资产展示名同口径：项目名_环境_业务环境_虚拟机IPv4（空段跳过）。
+ * 主机展示名：项目名_环境_业务环境（v1.7.33 起不再拼 IP，IP 在副行小字展示）。
  */
 const DESIGN_H = 1080
 const MIN_W = 1440
 const MAX_W = 2560
-const REFRESH_INTERVAL_S = 30
 
 function fitCanvas(vw: number, vh: number) {
   const aspect = vw / vh
@@ -55,10 +60,17 @@ function usageColor(v: number) {
   return '#22c55e'
 }
 
-/** 主机展示名：项目名_环境_业务环境_虚拟机IPv4（空段跳过），与巡检大屏资产展示名同口径 */
+/** 在线率 / 健康度这类「越高越好」的指标：低于健康线才变色（100% 必须是绿色） */
+function goodColor(v: number) {
+  if (v >= 95) return '#22c55e'
+  if (v >= 90) return '#f59e0b'
+  return '#ef4444'
+}
+
+/** 主机展示名：项目名_环境_业务环境（空段跳过）；都没有则回退主机名 / IP */
 function hostName(h: Partial<PromHostStat>): string {
-  const parts = [h.system, h.env, h.deployserver, h.instance].filter((x) => !!x && String(x).trim() !== '')
-  if (parts.length > 1) return parts.join('_')
+  const parts = [h.system, h.env, h.deployserver].filter((x) => !!x && String(x).trim() !== '')
+  if (parts.length > 0) return parts.join('_')
   return h.hostname || h.instance || '—'
 }
 
@@ -120,18 +132,29 @@ const LiveClock = memo(function LiveClock() {
   )
 })
 
-const NextRefresh = memo(function NextRefresh({ lastAt, intervalS }: { lastAt: number; intervalS: number }) {
+/** 下次采集倒计时：以后端下发的 nextAt（unix 秒）为准，没有则退化成「间隔 - 已过时间」 */
+const NextRefresh = memo(function NextRefresh({
+  nextAt,
+  lastAt,
+  intervalS,
+}: {
+  nextAt: number
+  lastAt: number
+  intervalS: number
+}) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const tick = () => {
       if (!ref.current) return
-      const remain = Math.max(0, intervalS - Math.floor((Date.now() - lastAt) / 1000))
-      ref.current.textContent = remain > 0 ? `下次预计 ${remain}s 后` : '正在刷新…'
+      const remain = nextAt > 0
+        ? Math.max(0, Math.round((nextAt * 1000 - Date.now()) / 1000))
+        : Math.max(0, intervalS - Math.floor((Date.now() - lastAt) / 1000))
+      ref.current.textContent = remain > 0 ? `下次采集 ${remain}s 后` : '正在采集…'
     }
     tick()
     const id = window.setInterval(tick, 1000)
     return () => window.clearInterval(id)
-  }, [lastAt, intervalS])
+  }, [nextAt, lastAt, intervalS])
   return <div ref={ref} style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>—</div>
 })
 
@@ -238,9 +261,14 @@ function KpiRow({ icon, label, value, color, sub }: { icon: React.ReactNode; lab
   )
 }
 
-function Gauge({ label, value, color }: { label: string; value: number; color: string }) {
+/**
+ * 资源仪表。
+ * reverse=true 表示「越高越好」（在线率、健康度）：100% 显示绿色，越低越红。
+ * 默认 false 表示「越低越好」（CPU/内存/磁盘使用率）：越高越红。
+ */
+function Gauge({ label, value, color, reverse }: { label: string; value: number; color: string; reverse?: boolean }) {
   const v = Math.max(0, Math.min(100, value || 0))
-  const c = usageColor(v)
+  const c = reverse ? goodColor(v) : usageColor(v)
   return (
     <div className="prom-panel" style={{ padding: '8px 12px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
       <div style={{ color: '#94a3b8', fontSize: 11 }}>{label}</div>
@@ -286,8 +314,8 @@ function HostCard({ h }: { h: PromHostStat }) {
         >
           {hostName(h)}
         </div>
-        <div style={{ fontSize: 9, color: '#64748b' }}>
-          {h.department || ''} {h.env ? `· ${h.env}` : ''}
+        <div style={{ fontSize: 9, color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {[h.department, h.instance].filter(Boolean).join(' · ')}
         </div>
         <div style={{ display: 'flex', gap: 4, marginTop: 3 }}>
           <MiniBar label="CPU" v={h.cpu} />
@@ -355,39 +383,52 @@ function TopList({ rows, metric }: { rows: PromTopEntry[]; metric: string }) {
   )
 }
 
-function AlertItem({ a, nameOf }: { a: PromOverview['alerts'][number]; nameOf: (inst: string) => string }) {
-  const crit = (a.severity || '').toLowerCase() === 'critical'
-  const lvColor = crit ? '#ef4444' : (a.severity || '').toLowerCase() === 'warning' ? '#f59e0b' : '#38bdf8'
+/**
+ * 超阈值条目（v1.7.33：替代原先恒空的 Prometheus ALERTS 面板）。
+ * 阈值来自「大屏管理」配置，只要主机水位越线就一定有内容；离线单列为「连通性」严重项。
+ */
+function IssueItem({ it }: { it: PromIssue }) {
+  const crit = it.level === 'crit'
+  const lvColor = crit ? '#ef4444' : '#f59e0b'
+  const valColor = it.metric === 'offline' ? '#ef4444' : usageColor(it.value)
   return (
     <div style={{ padding: '7px 0', borderBottom: '1px dashed rgba(148,163,184,0.18)' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
           <span
             className={crit ? 'prom-blink' : ''}
             style={{
               display: 'inline-block', width: 6, height: 6, borderRadius: 3, background: lvColor,
-              boxShadow: crit ? `0 0 8px ${lvColor}` : 'none',
+              boxShadow: crit ? `0 0 8px ${lvColor}` : 'none', flex: '0 0 auto',
             }}
           />
           <span
             style={{
               fontWeight: 600, color: '#e2e8f0', fontSize: 12,
-              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 150,
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             }}
-            title={nameOf(a.instance)}
+            title={`${it.name} · ${it.instance}`}
           >
-            {nameOf(a.instance)}
+            {it.name || it.instance}
           </span>
         </div>
-        <Tag color={crit ? 'red' : 'orange'} className={crit ? 'prom-blink' : ''} style={{ margin: 0, fontSize: 10 }}>
-          {crit ? '严重' : '预警'}
+        <Tag
+          color={crit ? 'red' : 'orange'}
+          className={crit ? 'prom-blink' : ''}
+          style={{ margin: 0, fontSize: 10, flex: '0 0 auto' }}
+        >
+          {it.levelCN}
         </Tag>
       </div>
-      <div style={{ marginTop: 4, display: 'flex', gap: 6, flexWrap: 'wrap', fontSize: 11 }}>
-        <Tag color="geekblue" style={{ margin: 0 }}>{a.alertname || '—'}</Tag>
-        <Tag style={{ margin: 0 }}>{a.instance || '—'}</Tag>
+      <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+        <Tag color="geekblue" style={{ margin: 0 }}>{it.metricCN}</Tag>
+        <span className="prom-num" style={{ color: valColor, fontWeight: 700 }}>
+          {it.metric === 'offline' ? '失联' : `${Number(it.value || 0).toFixed(1)}%`}
+        </span>
+        <span style={{ color: '#64748b', fontSize: 10, marginLeft: 'auto', whiteSpace: 'nowrap' }}>
+          {it.instance}
+        </span>
       </div>
-      {a.description && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>{a.description}</div>}
     </div>
   )
 }
@@ -516,25 +557,65 @@ function trendOption(trend: PromOverview['trend']) {
   }
 }
 
-function alertLevelOption(crit: number, warn: number) {
-  const hasData = crit + warn > 0
+/**
+ * 分组水位 TOP（横向条形）：按「大屏管理」配置的维度（默认项目名 system）聚合，
+ * 展示每组的最高水位 + 风险主机数，替代原先恒空的「告警等级」饼图。
+ */
+function groupBarOption(groups: PromGroupStat[], groupBy: string) {
+  const data = (groups || []).slice(0, 10).slice().reverse() // 横向条形自下而上 → 反转让最大值在顶部
+  const dimCN: Record<string, string> = {
+    system: '项目',
+    department: '部门',
+    env: '环境',
+    deployserver: '业务环境',
+  }
   return {
     backgroundColor: 'transparent',
-    tooltip: { ...TOOLTIP_BASE, trigger: 'item', formatter: '{b}<br/>{c} 条（{d}%）' },
+    grid: { left: 96, right: 46, top: 8, bottom: 8 },
+    tooltip: {
+      ...TOOLTIP_BASE,
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      formatter: (ps: any[]) => {
+        if (!ps || !ps.length) return ''
+        const g = data[ps[0].dataIndex]
+        if (!g) return ''
+        return [
+          `<b>${g.key}</b>`,
+          `主机 ${g.hosts} 台（在线 ${g.online}）`,
+          `最高水位 ${g.maxVal.toFixed(1)}%`,
+          `CPU 均值 ${g.cpuAvg.toFixed(1)}% · 内存 ${g.memAvg.toFixed(1)}% · 磁盘 ${g.diskAvg.toFixed(1)}%`,
+          `严重主机 ${g.riskHosts} 台`,
+        ].join('<br/>')
+      },
+    },
+    xAxis: {
+      type: 'value',
+      max: 100,
+      axisLabel: { color: '#94a3b8', fontSize: 9, formatter: '{value}%' },
+      splitLine: { lineStyle: { color: 'rgba(148,163,184,0.1)' } },
+    },
+    yAxis: {
+      type: 'category',
+      data: data.map((g) => g.key),
+      axisLine: { lineStyle: { color: 'rgba(148,163,184,0.3)' } },
+      axisLabel: { color: '#cbd5e1', fontSize: 10, width: 88, overflow: 'truncate' },
+      axisTick: { show: false },
+    },
     series: [
       {
-        type: 'pie',
-        radius: ['58%', '86%'],
-        center: ['50%', '50%'],
-        itemStyle: { borderColor: '#0b1120', borderWidth: 2 },
-        label: { show: false },
-        labelLine: { show: false },
-        data: hasData
-          ? [
-              { name: '严重', value: crit, itemStyle: { color: '#ef4444' } },
-              { name: '预警', value: warn, itemStyle: { color: '#f59e0b' } },
-            ]
-          : [{ name: '无告警', value: 1, itemStyle: { color: '#334155' } }],
+        name: `${dimCN[groupBy] || '项目'}最高水位`,
+        type: 'bar',
+        data: data.map((g) => ({ value: g.maxVal, itemStyle: { color: usageColor(g.maxVal) } })),
+        barWidth: 9,
+        label: {
+          show: true,
+          position: 'right',
+          formatter: (p: any) => `${Number(p.value || 0).toFixed(0)}%`,
+          color: '#cbd5e1',
+          fontSize: 10,
+        },
+        itemStyle: { borderRadius: [0, 4, 4, 0] },
       },
     ],
   }
@@ -542,10 +623,11 @@ function alertLevelOption(crit: number, warn: number) {
 
 // ============= 主组件 =============
 export default function PromScreen() {
-  const [data, setData] = useState<PromOverview | null>(null)
+  const [snap, setSnap] = useState<PromSnapshotResp | null>(null)
   const [dss, setDss] = useState<PromDataSource[]>([])
   const [ds, setDs] = useState<number | undefined>(undefined)
   const [loading, setLoading] = useState(true)
+  const [collecting, setCollecting] = useState(false)
   const [lastAt, setLastAt] = useState<number>(Date.now())
   const [canvas, setCanvas] = useState(() => fitCanvas(window.innerWidth, window.innerHeight))
   const [isFull, setIsFull] = useState(false)
@@ -553,10 +635,11 @@ export default function PromScreen() {
   const [err, setErr] = useState<string | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const timer = useRef<number>()
-  // 数据源代际守卫：大数据源（上千 target）查询可能十几秒，期间用户切走数据源时，
+  // 数据源代际守卫：大数据源（上千 target）采集可能十几秒，期间用户切走数据源时，
   // 迟到的旧响应必须丢弃，否则会把新数据源的面板覆盖回旧数据
   const dsRef = useRef(ds)
   dsRef.current = ds
+  const collectingRef = useRef(false)
 
   /* ---------- 自适应缩放 ---------- */
   const fit = useRef<() => void>(() => {})
@@ -583,32 +666,58 @@ export default function PromScreen() {
       .catch(() => setDss([]))
   }, [])
 
+  /* ---------- 读快照（不查 Prometheus，毫秒级返回） ---------- */
   const load = () => {
     const target = dsRef.current
-    setLoading(true)
-    promOverview(target)
+    promSnapshot(target)
       .then((r) => {
         if (dsRef.current !== target) return // 已切走 → 丢弃过期响应
-        setData(r)
-        setErr(null)
-        setLastAt(Date.now())
+        setSnap(r)
+        // 采集失败时保留上一次快照，只在顶栏提示错误
+        setErr(r.ready ? null : (r.msg || null))
+        if (r.ready) setLastAt(Date.now())
       })
       .catch((e: any) => {
         if (dsRef.current !== target) return
-        setErr(e?.response?.data?.msg || e?.message || '查询失败')
+        setErr(e?.response?.data?.msg || e?.message || '读取采集快照失败')
       })
       .finally(() => {
         if (dsRef.current === target) setLoading(false)
       })
   }
 
+  /* ---------- 手动触发一次采集（同步等待，采完立即同步到大屏） ---------- */
+  const collectNow = () => {
+    if (collectingRef.current) return
+    collectingRef.current = true
+    setCollecting(true)
+    promCollectNow(dsRef.current)
+      .then((r) => {
+        if (r?.msg) setErr(null)
+        load()
+      })
+      .catch((e: any) => {
+        setErr(e?.response?.data?.msg || e?.message || '手动采集失败')
+      })
+      .finally(() => {
+        collectingRef.current = false
+        setCollecting(false)
+      })
+  }
+
+  // 轮询间隔跟随采集间隔：最快 3s、最慢 30s（间隔长时不必空转，靠 nextAt 倒计时提示）
+  const pollMs = useMemo(() => {
+    const iv = snap?.config?.intervalSec || 30
+    return Math.min(30000, Math.max(3000, Math.round((iv * 1000) / 2)))
+  }, [snap?.config?.intervalSec])
+
   useEffect(() => {
     if (ds === undefined && dss.length > 0) return
     load()
-    timer.current = window.setInterval(load, REFRESH_INTERVAL_S * 1000)
+    timer.current = window.setInterval(load, pollMs)
     return () => window.clearInterval(timer.current)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ds, dss.length])
+  }, [ds, dss.length, pollMs])
 
   const toggleFull = () => {
     if (!document.fullscreenElement) {
@@ -629,28 +738,18 @@ export default function PromScreen() {
   }
 
   /* ---------- 派生数据（必须在条件 return 之前，保持 hook 顺序） ---------- */
-  const hostMap = useMemo(() => {
-    const m = new Map<string, PromHostStat>()
-    ;(data?.hosts || []).forEach((h) => m.set(h.instance, h))
-    return m
-  }, [data?.hosts])
-  const nameOf = useMemo(() => {
-    return (inst: string) => {
-      const h = hostMap.get(inst)
-      if (h) return hostName(h)
-      return inst || '—'
-    }
-  }, [hostMap])
-
-  const alertCrit = useMemo(
-    () => (data?.alerts || []).filter((a) => (a.severity || '').toLowerCase() === 'critical').length,
-    [data?.alerts],
-  )
-  const alertWarn = useMemo(() => (data?.alertsTotal || 0) - alertCrit, [data?.alertsTotal, alertCrit])
-  const alertInstances = useMemo(
-    () => new Set((data?.alerts || []).map((a) => a.instance)).size,
-    [data?.alerts],
-  )
+  const data: PromOverview | null = snap?.data || null
+  const cfg = snap?.config
+  const issues = data?.issues || []
+  const issueStat = data?.issueStat || { crit: 0, warn: 0, hosts: 0 }
+  const trendHours = cfg?.trendHours || 24
+  const groupDimCN: Record<string, string> = {
+    system: '项目',
+    department: '部门',
+    env: '环境',
+    deployserver: '业务环境',
+  }
+  const groupCN = groupDimCN[cfg?.groupBy || 'system'] || '项目'
 
   const distOpt = useMemo(
     () => distOption(data?.usageDist || { low: 0, mid: 0, high: 0, crit: 0, none: 0 }),
@@ -665,7 +764,10 @@ export default function PromScreen() {
     [data?.hosts],
   )
   const trendOpt = useMemo(() => trendOption(data?.trend || []), [data?.trend])
-  const lvOpt = useMemo(() => alertLevelOption(alertCrit, alertWarn), [alertCrit, alertWarn])
+  const groupOpt = useMemo(
+    () => groupBarOption(data?.groups || [], cfg?.groupBy || 'system'),
+    [data?.groups, cfg?.groupBy],
+  )
 
   const dsName = useMemo(() => dss.find((x) => x.id === ds)?.name || '—', [dss, ds])
   const distTotal = useMemo(() => {
@@ -770,7 +872,7 @@ export default function PromScreen() {
                     filter: 'drop-shadow(0 0 7px rgba(56,189,248,0.42))',
                   }}
                 >
-                  Prometheus 监控大屏
+                  {cfg?.title || 'Prometheus 监控大屏'}
                 </div>
                 <div style={{ fontSize: 9, fontWeight: 500, letterSpacing: 2.2, color: '#5b7290', marginTop: 2, whiteSpace: 'nowrap' }}>
                   PROMETHEUS MONITORING PLATFORM
@@ -815,7 +917,7 @@ export default function PromScreen() {
               >
                 {dsName}
               </div>
-              <NextRefresh lastAt={lastAt} intervalS={REFRESH_INTERVAL_S} />
+              <NextRefresh nextAt={snap?.nextAt || 0} lastAt={lastAt} intervalS={cfg?.intervalSec || 30} />
             </div>
             <Tooltip title={isFull ? '退出全屏' : '进入全屏'}>
               <div
@@ -834,8 +936,23 @@ export default function PromScreen() {
               </div>
             </Tooltip>
             <button
+              onClick={collectNow}
+              disabled={collecting}
+              title="立即向 Prometheus 采集一次并同步到大屏"
+              style={{
+                height: 56, padding: '0 14px', borderRadius: 10,
+                background: 'linear-gradient(180deg, rgba(52,211,153,0.20), rgba(52,211,153,0.06))',
+                border: '1px solid rgba(52,211,153,0.5)',
+                color: collecting ? '#64748b' : '#6ee7b7', cursor: collecting ? 'not-allowed' : 'pointer',
+                display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600,
+                boxShadow: '0 0 16px rgba(52,211,153,0.16) inset',
+              }}
+            >
+              <CloudDownloadOutlined spin={collecting} /> {collecting ? '采集中…' : '立即采集'}
+            </button>
+            <button
               onClick={load}
-              title="手动刷新"
+              title="重新读取服务端最新采集快照"
               style={{
                 height: 56, padding: '0 16px', borderRadius: 10,
                 background: 'linear-gradient(180deg, rgba(56,189,248,0.18), rgba(56,189,248,0.06))',
@@ -845,23 +962,25 @@ export default function PromScreen() {
                 boxShadow: '0 0 16px rgba(56,189,248,0.18) inset',
               }}
             >
-              <ReloadOutlined spin={loading} /> 刷新数据
+              <ReloadOutlined spin={loading} /> 刷新
             </button>
           </div>
         </div>
 
         {/* ============= 主体 ============= */}
-        {err ? (
+        {err && !data ? (
           <div className="prom-panel" style={{ margin: `0 ${BODY_PAD}px`, padding: 60, textAlign: 'center', color: '#f87171', fontSize: 14 }}>
-            数据加载失败：{err}
+            数据采集失败：{err}
             <div style={{ marginTop: 8, color: '#64748b', fontSize: 12 }}>
-              请确认数据源配置正确且 Prometheus 可达（「数据源管理」里可一键测试）
+              已保留上一次成功快照请稍后重试；若持续失败，请在「数据源管理」里做一次连通性测试
             </div>
           </div>
         ) : !data ? (
           <div style={{ height: BODY_H, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#7dd3fc' }}>
             <Spin size="large" />
-            <span style={{ marginLeft: 12 }}>正在连接 Prometheus …</span>
+            <span style={{ marginLeft: 12 }}>
+              {snap?.collecting ? '正在采集 Prometheus 数据（目标较多时约需十几秒）…' : '正在连接 Prometheus …'}
+            </span>
           </div>
         ) : (
           <div
@@ -905,17 +1024,17 @@ export default function PromScreen() {
 
               <KpiRow
                 icon={<CloudServerOutlined />}
-                color="#38bdf8"
+                color={Number(onlineRate) >= 95 ? '#22c55e' : Number(onlineRate) >= 90 ? '#f59e0b' : '#ef4444'}
                 label="在线率"
                 value={`${onlineRate}%`}
                 sub={`在线 ${up?.online ?? 0} · 离线 ${up?.offline ?? 0}`}
               />
               <KpiRow
                 icon={<AlertOutlined />}
-                color={alertCrit ? '#ef4444' : alertWarn ? '#f59e0b' : '#22c55e'}
-                label="告警项 / 实例"
-                value={`${data.alertsTotal} / ${alertInstances}`}
-                sub={`严重 ${alertCrit} · 预警 ${alertWarn}`}
+                color={issueStat.crit ? '#ef4444' : issueStat.warn ? '#f59e0b' : '#22c55e'}
+                label="超阈值项 / 主机"
+                value={`${issueStat.crit + issueStat.warn} / ${issueStat.hosts}`}
+                sub={`严重 ${issueStat.crit} · 关注 ${issueStat.warn}（阈值可在大屏管理里调）`}
               />
               <KpiRow
                 icon={<FireOutlined />}
@@ -936,7 +1055,7 @@ export default function PromScreen() {
                 color="#38bdf8"
                 label="数据更新"
                 value={data.generatedAt ? data.generatedAt.slice(11) : '—'}
-                sub={`采集时间 ${data.generatedAt || '—'}`}
+                sub={`采集 ${data.collectMs ? data.collectMs + 'ms' : '—'} · 每 ${cfg?.intervalSec ?? 30}s ${cfg?.autoCollect === 1 ? '自动' : '（自动已关）'} · ${data.source === 'manual' ? '手动' : data.source === 'auto' ? '自动' : data.source === 'realtime' ? '实时' : '恢复'}`}
               />
 
               {/* 资源健康分布饼图 */}
@@ -986,15 +1105,16 @@ export default function PromScreen() {
                 <Gauge label="CPU 平均使用率" value={avg?.cpu || 0} color="#38bdf8" />
                 <Gauge label="内存平均使用率" value={avg?.mem || 0} color="#a78bfa" />
                 <Gauge label="磁盘平均使用率" value={avg?.disk || 0} color="#22d3ee" />
-                <Gauge label="目标在线率" value={Number(onlineRate)} color="#34d399" />
+                {/* 在线率「越高越好」→ reverse 配色（100% 必须是绿色） */}
+                <Gauge label="目标在线率" value={Number(onlineRate)} color="#34d399" reverse />
               </div>
 
               {/* 负载 TOP5 ×3 */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, height: 196 }}>
                 {[
-                  { title: 'CPU 负载 TOP5', rows: data.top?.cpu || [], metric: 'CPU' },
-                  { title: '内存负载 TOP5', rows: data.top?.mem || [], metric: '内存' },
-                  { title: '磁盘负载 TOP5', rows: data.top?.disk || [], metric: '磁盘' },
+                  { title: `CPU 负载 TOP${cfg?.topN ?? 5}`, rows: data.top?.cpu || [], metric: 'CPU' },
+                  { title: `内存负载 TOP${cfg?.topN ?? 5}`, rows: data.top?.mem || [], metric: '内存' },
+                  { title: `磁盘负载 TOP${cfg?.topN ?? 5}`, rows: data.top?.disk || [], metric: '磁盘' },
                 ].map((it) => (
                   <div className="prom-panel" key={it.title} style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
                     <div className="prom-title"><FireOutlined /> {it.title}</div>
@@ -1015,7 +1135,7 @@ export default function PromScreen() {
 
               {/* 24h 趋势 */}
               <div className="prom-panel" style={{ height: 230, display: 'flex', flexDirection: 'column' }}>
-                <div className="prom-title"><FundOutlined /> 资源使用率趋势（近 24 小时）</div>
+                <div className="prom-title"><FundOutlined /> 资源使用率趋势（近 {trendHours} 小时）</div>
                 <div style={{ flex: 1, minHeight: 0 }}>
                   <ReactECharts option={trendOpt} style={{ height: '100%', width: '100%' }} notMerge lazyUpdate />
                 </div>
@@ -1024,56 +1144,38 @@ export default function PromScreen() {
 
             {/* ===== 右栏：告警列表 + 告警等级 + 主机实时资源 ===== */}
             <div style={{ display: 'grid', gridTemplateRows: '1fr 190px 240px', gap: 10, minHeight: 0 }}>
-              {/* 告警列表（自动滚动） */}
+              {/* 超阈值主机（阈值自算，替代原先恒空的 ALERTS 面板） */}
               <div className="prom-panel" style={{ display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%' }}>
                 <div className="prom-title">
-                  <AlertOutlined /> 实时告警列表
+                  <AlertOutlined /> 超阈值主机
                   <span style={{ marginLeft: 'auto', fontSize: 11, color: '#94a3b8', textTransform: 'none' }}>
-                    严重 {alertCrit} · 预警 {alertWarn}
+                    严重 {issueStat.crit} · 关注 {issueStat.warn}
                   </span>
                 </div>
-                {(data.alerts || []).length === 0 ? (
+                {issues.length === 0 ? (
                   <div className="prom-empty" style={{ flex: 1, minHeight: 0, flexDirection: 'column', gap: 8 }}>
                     <InboxOutlined style={{ fontSize: 32, color: '#22c55e' }} />
-                    <span style={{ color: '#22c55e' }}>当前无告警 · 系统运行平稳</span>
+                    <span style={{ color: '#22c55e' }}>全部在阈值内 · 运行平稳</span>
                   </div>
                 ) : (
                   <AutoScroll speed={SCROLL_SPEED.alert} fade={14} style={{ padding: '6px 12px' }}>
-                    {data.alerts.map((a, i) => (
-                      <AlertItem key={`${a.alertname}-${a.instance}-${i}`} a={a} nameOf={nameOf} />
+                    {issues.map((it, i) => (
+                      <IssueItem key={`${it.instance}-${it.metric}-${i}`} it={it} />
                     ))}
                   </AutoScroll>
                 )}
               </div>
 
-              {/* 告警等级 */}
-              <div className="prom-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-                <div className="prom-title"><AlertOutlined /> 告警等级</div>
-                <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-                  <ReactECharts option={lvOpt} style={{ height: '100%', width: '100%' }} notMerge lazyUpdate />
-                  <div
-                    style={{
-                      position: 'absolute', inset: 0, pointerEvents: 'none',
-                      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                    }}
-                  >
-                    <div className="prom-num" style={{ fontSize: 20, lineHeight: 1, color: data.alertsTotal > 0 ? '#e2e8f0' : '#475569' }}>
-                      {data.alertsTotal}
-                    </div>
-                    <div style={{ fontSize: 9, color: '#64748b', letterSpacing: 1, marginTop: 3 }}>告警项</div>
-                  </div>
+              {/* 分组水位 TOP（按项目 / 部门 / 环境，配置可选） */}
+              <div className="prom-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                <div className="prom-title">
+                  <FundOutlined /> {groupCN}水位 TOP10
+                  <span style={{ marginLeft: 'auto', fontSize: 11, color: '#94a3b8', textTransform: 'none' }}>
+                    {data.groups?.length || 0} 个{groupCN}
+                  </span>
                 </div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '2px 12px', padding: '0 8px 7px', fontSize: 11 }}>
-                  {[
-                    { name: '严重', v: alertCrit, color: '#ef4444' },
-                    { name: '预警', v: alertWarn, color: '#f59e0b' },
-                  ].map((x) => (
-                    <span key={x.name} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: '#94a3b8' }}>
-                      <i style={{ width: 8, height: 8, borderRadius: 2, background: x.color, display: 'inline-block' }} />
-                      {x.name}
-                      <b className="prom-num" style={{ color: x.v > 0 ? x.color : '#475569' }}>{x.v}</b>
-                    </span>
-                  ))}
+                <div style={{ flex: 1, minHeight: 0 }}>
+                  <ReactECharts option={groupOpt} style={{ height: '100%', width: '100%' }} notMerge lazyUpdate />
                 </div>
               </div>
 
@@ -1107,7 +1209,7 @@ export default function PromScreen() {
             background: 'linear-gradient(0deg, rgba(2,6,23,0.6), transparent)',
           }}
         >
-          数据每 {REFRESH_INTERVAL_S} 秒自动刷新
+          数据每 {cfg?.intervalSec ?? 30} 秒采集一次（{cfg?.autoCollect === 1 ? '自动采集已开启' : '自动采集已关闭，需手动触发'}）
           {data?.generatedAt && (
             <>
               · 采集时间：<span style={{ color: '#94a3b8', margin: '0 4px' }}>{data.generatedAt}</span>
@@ -1115,7 +1217,9 @@ export default function PromScreen() {
           )}
           · 数据源：<span style={{ color: '#94a3b8', margin: '0 4px' }}>{dsName}</span>
           · 监控目标：<span style={{ color: '#94a3b8', margin: '0 4px' }}>{up?.total ?? 0} 台（在线 {up?.online ?? 0} / 离线 {up?.offline ?? 0}）</span>
-          · 告警：<span style={{ color: '#94a3b8', margin: '0 4px' }}>{data?.alertsTotal ?? 0} 条</span>
+          · 超阈值：<span style={{ color: issueStat.crit > 0 ? '#f87171' : '#94a3b8', margin: '0 4px' }}>
+            严重 {issueStat.crit} · 关注 {issueStat.warn}
+          </span>
         </div>
       </div>
     </div>

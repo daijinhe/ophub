@@ -221,6 +221,7 @@ export default function MainLayout() {
           ),
           perms: ['prom:screen', 'prom:view'],
         },
+        { key: '/prom/screen-admin', icon: <ControlOutlined />, label: '大屏管理', perm: 'prom:manage' },
       ],
     },
 

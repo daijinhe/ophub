@@ -29,6 +29,7 @@ import PromDataSources from './pages/PromDataSources'
 import PromMetrics from './pages/PromMetrics'
 import PromReport from './pages/PromReport'
 import PromScreen from './pages/PromScreen'
+import PromScreenAdmin from './pages/PromScreenAdmin'
 import WebTerminalPage from './pages/WebTerminalPage'
 import RequirePerm, { RequireAnyPerm } from './components/RequirePerm'
 import { useAuth } from './store/AuthContext'
@@ -105,6 +106,8 @@ export default function App() {
         <Route path="prom/datasources" element={<RequirePerm perm="prom:view"><PromDataSources /></RequirePerm>} />
         <Route path="prom/metrics" element={<RequirePerm perm="prom:view"><PromMetrics /></RequirePerm>} />
         <Route path="prom/report" element={<RequirePerm perm="prom:view"><PromReport /></RequirePerm>} />
+        {/* 大屏管理（阈值 / 采集频率）属配置动作 → prom:manage */}
+        <Route path="prom/screen-admin" element={<RequirePerm perm="prom:manage"><PromScreenAdmin /></RequirePerm>} />
       </Route>
       <Route
         path="/webterm/:assetId"

@@ -287,8 +287,16 @@ func main() {
 			auth.GET("/prom/label/:name/values", RequireAnyPermission("prom:view", "prom:screen"), PromLabelValues)
 			auth.GET("/prom/overview", RequireAnyPermission("prom:view", "prom:screen"), PromOverview)
 			auth.GET("/prom/report", RequireAnyPermission("prom:view", "prom:screen"), PromReport)
+			// v1.7.33：大屏改为「服务端定期采集 → 读快照」，并支持阈值/采集频率的集中管理
+			auth.GET("/prom/screen-config", RequireAnyPermission("prom:view", "prom:manage"), PromGetScreenConfig)
+			auth.PUT("/prom/screen-config", RequirePermission("prom:manage"), PromSaveScreenConfig)
+			auth.GET("/prom/snapshot", RequireAnyPermission("prom:view", "prom:screen"), PromGetSnapshot)
+			auth.POST("/prom/collect", RequireAnyPermission("prom:manage", "prom:view", "prom:screen"), PromCollectNow)
 		}
 	}
+
+	// Prometheus 大屏定期采集（后台 goroutine：快照缓存 + 落库，大屏只读快照）
+	promStartCollector()
 
 	log.Printf("云枢 OpsHub 服务已启动，监听端口 :%s", Cfg.ServerPort)
 	if err := r.Run(":" + Cfg.ServerPort); err != nil {

@@ -86,14 +86,6 @@ func promCollectLabels(sampleSets ...[]promSample) map[string]*promInstLabels {
 	return out
 }
 
-// promAlertItem 告警条目
-type promAlertItem struct {
-	Alertname   string `json:"alertname"`
-	Instance    string `json:"instance"`
-	Severity    string `json:"severity"`
-	Description string `json:"description"`
-}
-
 // promTrendPoint 趋势点
 type promTrendPoint struct {
 	TS  int64    `json:"ts"` // unix 秒
@@ -119,17 +111,22 @@ type promTopEntry struct {
 	Value      float64 `json:"value"`
 }
 
-// promOverviewResp 大屏聚合响应
+// promOverviewResp 大屏快照（v1.7.33：改为服务端定时采集产出，告警面板换成阈值派生）
 type promOverviewResp struct {
 	GeneratedAt string           `json:"generatedAt"`
+	CollectMs   int64            `json:"collectMs"`   // 本次采集耗时（毫秒）
+	Source      string           `json:"source"`      // auto | manual | restore | realtime
+	DSName      string           `json:"dsName"`
 	Up          promUpStat       `json:"up"`
 	Avg         promAvg          `json:"avg"`
 	UsageDist   promUsageDist    `json:"usageDist"`
 	Trend       []promTrendPoint `json:"trend"`
 	Hosts       []promHostStat   `json:"hosts"`
-	Alerts      []promAlertItem  `json:"alerts"`
-	AlertsTotal int              `json:"alertsTotal"`
 	Top         promTopSets      `json:"top"`
+	Issues      []promIssue      `json:"issues"`    // 超阈值清单（按「大屏管理」里配的阈值自算）
+	IssueStat   promIssueStat    `json:"issueStat"` // 严重 / 关注 / 涉及主机
+	Groups      []promGroupStat  `json:"groups"`    // 按项目（或其他维度）聚合的水位排行
+	Config      promCfgView      `json:"config"`    // 本次快照生效的配置（前端直接用）
 }
 
 type promUpStat struct {
@@ -144,23 +141,39 @@ type promTopSets struct {
 	Disk []promTopEntry `json:"disk"`
 }
 
-// promOverview GET /api/prom/overview?ds=
+// PromOverview GET /api/prom/overview?ds=
+//
+// 兼容保留：实时现算一次（不经缓存）。大屏默认走 /api/prom/snapshot 读采集缓存，
+// 避免上千 target 的数据源被前端轮询打爆。
 func PromOverview(c *gin.Context) {
-	_, cli, err := resolvePromDS(c)
+	ds, cli, err := resolvePromDS(c)
 	if err != nil {
 		Fail(c, http.StatusBadRequest, 1, err.Error())
 		return
 	}
-	ctx, cancel := context.WithTimeout(c.Request.Context(), promHTTPTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), promCollectTimeout)
 	defer cancel()
+	out, err := buildPromSnapshot(ctx, cli, ds.Name, promLoadConfig(), "realtime")
+	if err != nil {
+		Fail(c, http.StatusBadRequest, 1, err.Error())
+		return
+	}
+	OK(c, out)
+}
 
-	out := promOverviewResp{GeneratedAt: time.Now().Format("2006-01-02 15:04:05")}
+// buildPromSnapshot 采集一次全量快照（定时采集 / 手动触发 / 实时接口 共用同一实现）
+func buildPromSnapshot(ctx context.Context, cli *promClient, dsName string, cfg *PromScreenConfig, source string) (*promOverviewResp, error) {
+	out := &promOverviewResp{
+		GeneratedAt: time.Now().Format("2006-01-02 15:04:05"),
+		Source:      source,
+		DSName:      dsName,
+		Config:      cfg.view(),
+	}
 
 	// ---- 1. up（目标总数 / 在线 / 离线） ----
 	upSamples, err := cli.query(ctx, "up", "")
 	if err != nil {
-		Fail(c, http.StatusBadRequest, 1, "查询 up 失败："+err.Error())
-		return
+		return nil, fmt.Errorf("查询 up 失败：%v", err)
 	}
 	upMap := map[string]bool{}
 	for _, s := range upSamples {
@@ -232,37 +245,82 @@ func PromOverview(c *gin.Context) {
 		addHost(inst)
 	}
 	sort.Slice(hosts, func(i, j int) bool { return hosts[i].Instance < hosts[j].Instance })
-	out.Hosts = hosts
 
-	// 资源均值（只统计在线且有值的）
+	// 资源均值（只统计在线且有值的）—— 全量口径，不受展示上限影响
 	out.Avg = promAvgOf(hosts)
-
 	// 资源健康分布（正常/关注/预警/严重/离线）
 	out.UsageDist = promUsageDistOf(hosts)
 
-	// ---- 4. 告警（firing） ----
-	alertSamples, _ := cli.query(ctx, `ALERTS{alertstate="firing"}`, "")
-	for _, s := range alertSamples {
-		out.Alerts = append(out.Alerts, promAlertItem{
-			Alertname:   s.Metric["alertname"],
-			Instance:    s.Metric["instance"],
-			Severity:    s.Metric["severity"],
-			Description: s.Metric["description"],
-		})
-	}
-	out.AlertsTotal = len(out.Alerts)
-
-	// ---- 5. TOP5（CPU / 内存 / 磁盘） ----
+	// ---- 4. TOP N（CPU / 内存 / 磁盘） ----
 	out.Top = promTopSets{
-		CPU:  promTopN(hosts, instLabels, func(h promHostStat) float64 { return h.CPU }),
-		Mem:  promTopN(hosts, instLabels, func(h promHostStat) float64 { return h.Mem }),
-		Disk: promTopN(hosts, instLabels, func(h promHostStat) float64 { return h.Disk }),
+		CPU:  promTopN(hosts, instLabels, cfg.TopN, func(h promHostStat) float64 { return h.CPU }),
+		Mem:  promTopN(hosts, instLabels, cfg.TopN, func(h promHostStat) float64 { return h.Mem }),
+		Disk: promTopN(hosts, instLabels, cfg.TopN, func(h promHostStat) float64 { return h.Disk }),
 	}
 
-	// ---- 6. 24h 趋势（15m 步长，全集群均值） ----
-	out.Trend = promFleetTrend(ctx, cli, 24*3600, 15*60)
+	// ---- 5. 超阈值清单 + 分组水位（阈值来自「大屏管理」配置） ----
+	out.Issues, out.IssueStat = promBuildIssues(hosts, cfg, 100)
+	out.Groups = promBuildGroups(hosts, cfg, 12)
 
-	OK(c, out)
+	// ---- 6. 趋势（窗口与步长由配置决定，保证点数恒定在 ~100） ----
+	out.Trend = promFleetTrend(ctx, cli, int64(cfg.TrendHours)*3600, promTrendStep(cfg.TrendHours))
+
+	// ---- 7. 输出主机列表（离线过滤 + 展示上限裁剪） ----
+	out.Hosts = promTrimHosts(hosts, cfg)
+	return out, nil
+}
+
+// promTrendStep 按窗口选步长，保证趋势点数稳定在 60~140 之间（点数太多前端卡、太少看不出波动）
+func promTrendStep(hours int) int64 {
+	switch {
+	case hours <= 3:
+		return 120
+	case hours <= 6:
+		return 300
+	case hours <= 24:
+		return 900
+	case hours <= 72:
+		return 3600
+	case hours <= 168:
+		return 3 * 3600
+	default:
+		return 12 * 3600
+	}
+}
+
+// promTrimHosts 按配置裁剪大屏主机列表：离线优先展示，其余按综合水位降序
+func promTrimHosts(hosts []promHostStat, cfg *PromScreenConfig) []promHostStat {
+	out := make([]promHostStat, 0, len(hosts))
+	for _, h := range hosts {
+		if cfg.ShowOffline == 0 && !h.Up {
+			continue
+		}
+		out = append(out, h)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Up != out[j].Up {
+			return !out[i].Up // 离线排前面
+		}
+		mi := out[i].CPU
+		if out[i].Mem > mi {
+			mi = out[i].Mem
+		}
+		if out[i].Disk > mi {
+			mi = out[i].Disk
+		}
+		mj := out[j].CPU
+		if out[j].Mem > mj {
+			mj = out[j].Mem
+		}
+		if out[j].Disk > mj {
+			mj = out[j].Disk
+		}
+		return mi > mj
+	})
+	if cfg.HostLimit > 0 && len(out) > cfg.HostLimit {
+		out = out[:cfg.HostLimit]
+	}
+	return out
 }
 
 // promCurrentMap 即时查询 → instance -> 使用率
@@ -341,8 +399,11 @@ func promUsageDistOf(hosts []promHostStat) promUsageDist {
 	return d
 }
 
-// promTopN 按指定字段取前 5（过滤 0 值与离线）
-func promTopN(hosts []promHostStat, labels map[string]*promInstLabels, pick func(promHostStat) float64) []promTopEntry {
+// promTopN 按指定字段取前 n（过滤 0 值与离线）
+func promTopN(hosts []promHostStat, labels map[string]*promInstLabels, n int, pick func(promHostStat) float64) []promTopEntry {
+	if n <= 0 {
+		n = 5
+	}
 	ups := make([]promHostStat, 0, len(hosts))
 	for _, h := range hosts {
 		if h.Up && pick(h) > 0 {
@@ -350,8 +411,8 @@ func promTopN(hosts []promHostStat, labels map[string]*promInstLabels, pick func
 		}
 	}
 	sort.Slice(ups, func(i, j int) bool { return pick(ups[i]) > pick(ups[j]) })
-	if len(ups) > 5 {
-		ups = ups[:5]
+	if len(ups) > n {
+		ups = ups[:n]
 	}
 	out := make([]promTopEntry, 0, len(ups))
 	for _, h := range ups {
@@ -375,7 +436,12 @@ func promTopN(hosts []promHostStat, labels map[string]*promInstLabels, pick func
 func promFleetTrend(ctx context.Context, cli *promClient, window, step int64) []promTrendPoint {
 	end := time.Now().Unix()
 	start := end - window
-	cpuSeries, err1 := cli.queryRange(ctx, promQLCPU("10m"), start, end, step)
+	// rate 窗口必须 ≥ 2*step，否则区间查询会出现空洞（Prometheus 官方口径）
+	rw := step * 2
+	if rw < 300 {
+		rw = 300
+	}
+	cpuSeries, err1 := cli.queryRange(ctx, promQLCPU(fmt.Sprintf("%ds", rw)), start, end, step)
 	memSeries, err2 := cli.queryRange(ctx, promQLMem, start, end, step)
 	if err1 != nil && err2 != nil {
 		return []promTrendPoint{}
@@ -451,6 +517,7 @@ type promReportResp struct {
 	Fleet     promReportFleet `json:"fleet"`
 	Trend     []promTrendPoint `json:"trend"`
 	Rows      []promReportRow `json:"rows"`
+	Config    promCfgView      `json:"config"` // 生效阈值（导出 Excel 的「风险」判定与之一致）
 }
 
 // promReportFleet 全集群峰值 / 均值
@@ -551,7 +618,8 @@ func PromReport(c *gin.Context) {
 		Start:    start.Format("2006-01-02 15:04"),
 		End:      end.Format("2006-01-02 15:04"),
 		HostCount: len(rows),
-		Rows:     rows,
+		Rows:      rows,
+		Config:    promLoadConfig().view(),
 	}
 	if len(cpuSeries) > 0 {
 		resp.Points = len(cpuSeries[0].Values)
