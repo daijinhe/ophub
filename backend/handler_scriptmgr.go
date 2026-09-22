@@ -324,7 +324,7 @@ func PutScriptFile(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"msg": "保存成功", "path": absPath, "size": len(body.Content)})
 }
 
-// ----- 创建服务目录（一个 Java 服务对应一个子目录） -----
+// ----- 创建目录（v1.8.0 起支持任意层级：parent 不传 = 根目录） -----
 
 func MakeScriptDir(c *gin.Context) {
 	h, err := resolveScriptHost(c)
@@ -332,7 +332,9 @@ func MakeScriptDir(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"msg": err.Error()})
 		return
 	}
-	absRoot, _, err := normalizeScriptPath(c.Query("root"), "")
+	// parent 支持传完整子目录路径（必须在允许根之下）；
+	// 为空时向后兼容为「在根目录创建」（此前 v1.7.x 只支持在根创建）。
+	_, absParent, err := normalizeScriptPath(c.Query("root"), c.Query("parent"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"msg": err.Error()})
 		return
@@ -346,7 +348,16 @@ func MakeScriptDir(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"msg": "目录名只能包含字母/数字/下划线/中划线/点"})
 		return
 	}
-	target := absRoot + "/" + name
+	// Stat 父目录必须存在且是目录，避免「打错路径静默创建到别处」
+	if isDir, err := h.Stat(absParent); err != nil || !isDir {
+		c.JSON(http.StatusBadRequest, gin.H{"msg": "父目录不存在或不可访问：" + absParent})
+		return
+	}
+	target := absParent + "/" + name
+	if _, err := h.Stat(target); err == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"msg": "同名条目已存在：" + target})
+		return
+	}
 	if err := h.MkDir(target); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"msg": err.Error()})
 		return
@@ -430,6 +441,17 @@ func PostScriptFile(c *gin.Context) {
 	// 文件名仅取 basename 校验（目录部分已由 normalizeScriptPath 把关）
 	if !reSafeName.MatchString(filepath.Base(absPath)) {
 		c.JSON(http.StatusBadRequest, gin.H{"msg": "文件名只能包含字母/数字/下划线/中划线/点"})
+		return
+	}
+	// 父目录必须存在（不存在时明确报错，让用户先建目录，避免「以为建在 A 实际写进 B」）
+	parentDir := filepath.Dir(absPath)
+	if isDir, err := h.Stat(parentDir); err != nil || !isDir {
+		c.JSON(http.StatusBadRequest, gin.H{"msg": "父目录不存在，请先创建目录：" + parentDir})
+		return
+	}
+	// 新建语义：不允许覆盖已有文件（覆盖请走「编辑 → 保存」）
+	if _, err := h.Stat(absPath); err == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"msg": "同名文件已存在：" + absPath})
 		return
 	}
 	content := c.Query("content") // 新建时可选：给则写入，不给则建空文件

@@ -25,6 +25,10 @@ import InspectionAlertRules from './pages/InspectionAlertRules'
 import DeployRecords from './pages/DeployRecords'
 import InspectionScreen from './pages/InspectionScreen'
 import InspectionReport from './pages/InspectionReport'
+import PromDataSources from './pages/PromDataSources'
+import PromMetrics from './pages/PromMetrics'
+import PromReport from './pages/PromReport'
+import PromScreen from './pages/PromScreen'
 import WebTerminalPage from './pages/WebTerminalPage'
 import RequirePerm, { RequireAnyPerm } from './components/RequirePerm'
 import { useAuth } from './store/AuthContext'
@@ -97,6 +101,10 @@ export default function App() {
         <Route path="inspection/tasks" element={<RequirePerm perm="inspection:view"><InspectionTasks /></RequirePerm>} />
         <Route path="inspection/records" element={<RequirePerm perm="inspection:view"><InspectionRecords /></RequirePerm>} />
         <Route path="inspection/alert-rules" element={<RequirePerm perm="inspection:manage"><InspectionAlertRules /></RequirePerm>} />
+        {/* Prometheus 监控（v1.8.0 独立大类）：数据源 / 指标 / 报表在主布局内，大屏新标签页 */}
+        <Route path="prom/datasources" element={<RequirePerm perm="prom:view"><PromDataSources /></RequirePerm>} />
+        <Route path="prom/metrics" element={<RequirePerm perm="prom:view"><PromMetrics /></RequirePerm>} />
+        <Route path="prom/report" element={<RequirePerm perm="prom:view"><PromReport /></RequirePerm>} />
       </Route>
       <Route
         path="/webterm/:assetId"
@@ -121,6 +129,19 @@ export default function App() {
             <RequirePerm perm="inspection:view">
               <InspectionReport />
             </RequirePerm>
+          ) : (
+            <Navigate to="/login" />
+          )
+        }
+      />
+      {/* Prometheus 监控大屏：与巡检大屏同口径，只看大屏的账号（prom:screen）也能进 */}
+      <Route
+        path="/prom/screen"
+        element={
+          token ? (
+            <RequireAnyPerm perms={['prom:screen', 'prom:view']}>
+              <PromScreen />
+            </RequireAnyPerm>
           ) : (
             <Navigate to="/login" />
           )

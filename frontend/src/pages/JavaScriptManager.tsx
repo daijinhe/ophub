@@ -5,6 +5,7 @@ import {
   Card,
   Col,
   Drawer,
+  Dropdown,
   Empty,
   Form,
   Input,
@@ -30,6 +31,7 @@ import {
   FileTextOutlined,
   FolderAddOutlined,
   FolderOutlined,
+  MoreOutlined,
   QuestionCircleOutlined,
   ReloadOutlined,
   SaveOutlined,
@@ -116,20 +118,105 @@ export default function JavaScriptManager() {
   // 帮助文档抽屉
   const [helpOpen, setHelpOpen] = useState(false)
 
+  /* ---------- 新建子目录 ---------- */
+  const onCreateDir = async (vals: { name: string }) => {
+    const parent = createDirParent || rootPath
+    try {
+      await createScriptDir('local', undefined, rootPath, vals.name, parent)
+      message.success('目录已创建:' + vals.name)
+      setCreateDirOpen(false)
+      // 整树重载（目录最多百余项，代价可忽略）
+      setTreeVersion((v) => v + 1)
+    } catch (e) {
+      message.error('创建失败:' + errMsg(e))
+    }
+  }
+
+  /* ---------- 新建脚本文件 ---------- */
+  const onCreateFile = async (vals: { name: string; content?: string }) => {
+    const parent = createFileParent || rootPath
+    const fullPath = `${parent.replace(/\/+$/, '')}/${vals.name}`
+    try {
+      await createScriptFile('local', undefined, fullPath, vals.content || '', rootPath)
+      message.success('脚本已创建:' + vals.name)
+      setCreateFileOpen(false)
+      setTreeVersion((v) => v + 1)
+    } catch (e) {
+      message.error('创建失败:' + errMsg(e))
+    }
+  }
+
+  /* ---------- 删除条目(目录/文件 自适应) ---------- */
+  const onDelete = async (entry: ScriptDirEntry) => {
+    const isDir = entry.isDir
+    const confirmText = isDir
+      ? `确认删除「${entry.name}」及其下所有内容?此操作不可恢复!`
+      : `确认删除脚本「${entry.name}」?此操作不可恢复!`
+    Modal.confirm({
+      title: '删除确认',
+      content: confirmText,
+      okText: '删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          await deleteScriptEntry('local', undefined, entry.path, rootPath)
+          message.success('已删除:' + entry.name)
+          if (selectedFile?.path === entry.path) {
+            setSelectedFile(null)
+            setEditor({
+              mode: 'view',
+              open: false,
+              dirty: false,
+              loading: false,
+              content: '',
+              baseline: '',
+              filePath: undefined,
+            })
+          }
+          setTreeVersion((v) => v + 1)
+        } catch (e) {
+          message.error('删除失败:' + errMsg(e))
+        }
+      },
+    })
+  }
+
+  /* ---------- 节点操作回调(传给树节点右侧的「…」菜单) ---------- */
+  const nodeActs = useMemo<NodeActions | undefined>(
+    () =>
+      canManage
+        ? {
+            canManage: true,
+            onDelete,
+            onCreateDir: (parent: string) => {
+              setCreateDirParent(parent)
+              setCreateDirOpen(true)
+            },
+            onCreateFile: (parent: string) => {
+              setCreateFileParent(parent)
+              setCreateFileOpen(true)
+            },
+          }
+        : undefined,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [canManage, rootPath],
+  )
+
   /* ---------- 加载根目录下的顶层节点 ---------- */
   const loadRoot = useCallback(async () => {
     setTreeLoading(true)
     try {
       const r = await listScripts('local', undefined, rootPath)
       const items = (r.items || []).filter((it) => !it.name.startsWith('.'))
-      setTreeData(items.map((it) => toDataNode(it, rootPath)))
+      setTreeData(items.map((it) => toDataNode(it, rootPath, nodeActs)))
     } catch (e) {
       message.error('加载脚本目录失败:' + errMsg(e))
       setTreeData([])
     } finally {
       setTreeLoading(false)
     }
-  }, [rootPath])
+  }, [rootPath, nodeActs])
 
   useEffect(() => {
     loadRoot()
@@ -142,7 +229,7 @@ export default function JavaScriptManager() {
       try {
         const r = await listScripts('local', undefined, path, rootPath)
         const items = (r.items || []).filter((it) => !it.name.startsWith('.'))
-        const children = items.map((it) => toDataNode(it, rootPath))
+        const children = items.map((it) => toDataNode(it, rootPath, nodeActs))
         setTreeData((orig) => updateChildren(orig, node.key as string, children))
       } catch (e) {
         message.error('加载子目录失败:' + errMsg(e))
@@ -152,7 +239,7 @@ export default function JavaScriptManager() {
         )
       }
     },
-    [rootPath],
+    [rootPath, nodeActs],
   )
 
   /* ---------- 选中节点(目录:展开/折叠;文件:打开编辑器) ---------- */
@@ -285,69 +372,6 @@ export default function JavaScriptManager() {
     }
   }, [selectedFile, editor, rootPath, setEditor])
 
-  /* ---------- 新建子目录 ---------- */
-  const onCreateDir = async (vals: { name: string }) => {
-    const parent = createDirParent || rootPath
-    try {
-      await createScriptDir('local', undefined, parent, vals.name)
-      message.success('目录已创建:' + vals.name)
-      setCreateDirOpen(false)
-      setTreeVersion((v) => v + 1)
-    } catch (e) {
-      message.error('创建失败:' + errMsg(e))
-    }
-  }
-
-  /* ---------- 新建脚本文件 ---------- */
-  const onCreateFile = async (vals: { name: string; content?: string }) => {
-    const parent = createFileParent || rootPath
-    const fullPath = `${parent.replace(/\/+$/, '')}/${vals.name}`
-    try {
-      await createScriptFile('local', undefined, fullPath, vals.content || '', rootPath)
-      message.success('脚本已创建:' + vals.name)
-      setCreateFileOpen(false)
-      setTreeVersion((v) => v + 1)
-    } catch (e) {
-      message.error('创建失败:' + errMsg(e))
-    }
-  }
-
-  /* ---------- 删除条目(目录/文件 自适应) ---------- */
-  const onDelete = async (entry: ScriptDirEntry) => {
-    const isDir = entry.isDir
-    const confirmText = isDir
-      ? `确认删除「${entry.name}」及其下所有内容?此操作不可恢复!`
-      : `确认删除脚本「${entry.name}」?此操作不可恢复!`
-    Modal.confirm({
-      title: '删除确认',
-      content: confirmText,
-      okText: '删除',
-      okButtonProps: { danger: true },
-      cancelText: '取消',
-      onOk: async () => {
-        try {
-          await deleteScriptEntry('local', undefined, entry.path, rootPath)
-          message.success('已删除:' + entry.name)
-          if (selectedFile?.path === entry.path) {
-            setSelectedFile(null)
-            setEditor({
-              mode: 'view',
-              open: false,
-              dirty: false,
-              loading: false,
-              content: '',
-              baseline: '',
-              filePath: undefined,
-            })
-          }
-          setTreeVersion((v) => v + 1)
-        } catch (e) {
-          message.error('删除失败:' + errMsg(e))
-        }
-      },
-    })
-  }
-
   /* ---------- UI 渲染 ---------- */
   return (
     <div>
@@ -356,7 +380,7 @@ export default function JavaScriptManager() {
           <CodeOutlined style={{ marginRight: 8 }} />
           Java 启停脚本管理
         </Title>
-        <Tag color="purple">v1.7.25</Tag>
+        <Tag color="purple">v1.8.0</Tag>
         <div style={{ flex: 1 }} />
         <Tooltip title="查看使用说明">
           <Button icon={<QuestionCircleOutlined />} onClick={() => setHelpOpen(true)}>
@@ -573,9 +597,14 @@ export default function JavaScriptManager() {
           </pre>
         </Paragraph>
         <Paragraph>
-          <strong>使用流程(v1.7.25+):</strong>
+          <strong>使用流程(v1.8.0+):</strong>
           <ol>
             <li>左侧目录树 <strong>双击文件夹</strong>展开子目录,单击文件名进入只读预览</li>
+            <li>
+              <strong>悬浮任意节点</strong> → 点右侧「<strong>…</strong>」菜单 →
+              可在该目录下「<strong>新建子目录</strong>」「<strong>新建文件</strong>」或删除该节点
+              (v1.8.0 起<strong>不再局限于根目录</strong>)
+            </li>
             <li>点顶部「<strong>编辑</strong>」按钮 → 进入编辑态</li>
             <li>改完点「保存」回到只读态;不想改了点「取消」回退</li>
             <li>顶部「刷新」或新建/删除会自动同步目录树</li>
@@ -615,8 +644,20 @@ export default function JavaScriptManager() {
  * 子组件
  * ========================================================================== */
 
+/** 树节点上的操作回调（v1.8.0：任意目录下新建子目录/文件 + 删除） */
+interface NodeActions {
+  canManage: boolean
+  onDelete: (entry: ScriptDirEntry) => void
+  onCreateDir: (parent: string) => void
+  onCreateFile: (parent: string) => void
+}
+
 /** 把后端返回的 ScriptDirEntry 转成 antd Tree 的 DataNode */
-function toDataNode(it: ScriptDirEntry, root: string): DataNode & {
+function toDataNode(
+  it: ScriptDirEntry,
+  root: string,
+  acts?: NodeActions,
+): DataNode & {
   entry: ScriptDirEntry
   path: string
 } {
@@ -644,6 +685,7 @@ function toDataNode(it: ScriptDirEntry, root: string): DataNode & {
           {fmtBytes(it.size)}
         </Text>
       )}
+      {acts?.canManage && <NodeActionsMenu entry={it} acts={acts} />}
     </div>
   )
   return {
@@ -655,6 +697,48 @@ function toDataNode(it: ScriptDirEntry, root: string): DataNode & {
     // 目录节点的 children 留空数组(loadData 触发后填)
     children: it.isDir ? [] : undefined,
   }
+}
+
+/** 节点右侧悬浮操作菜单（点击展开，不触发树选中） */
+function NodeActionsMenu({
+  entry,
+  acts,
+}: {
+  entry: ScriptDirEntry
+  acts: NodeActions
+}) {
+  const items: { key: string; icon: React.ReactNode; label: string; danger?: boolean }[] = []
+  if (entry.isDir) {
+    items.push({ key: 'mkdir', icon: <FolderAddOutlined />, label: '新建子目录' })
+    items.push({ key: 'mkfile', icon: <FileAddOutlined />, label: '新建文件' })
+  }
+  items.push({ key: 'del', icon: <DeleteOutlined />, label: '删除', danger: true })
+  return (
+    <Dropdown
+      trigger={['click']}
+      menu={{
+        items,
+        onClick: ({ key, domEvent }) => {
+          domEvent.stopPropagation()
+          if (key === 'mkdir') acts.onCreateDir(entry.path)
+          else if (key === 'mkfile') acts.onCreateFile(entry.path)
+          else if (key === 'del') acts.onDelete(entry)
+        },
+      }}
+    >
+      <Button
+        type="text"
+        size="small"
+        icon={<MoreOutlined style={{ color: '#94a3b8' }} />}
+        onClick={(e) => {
+          e.stopPropagation()
+          e.preventDefault()
+        }}
+        className="script-node-more"
+        data-node-more="1"
+      />
+    </Dropdown>
+  )
 }
 
 /** 把某节点下的 children 替换掉(用于 loadData 回填) */
@@ -721,6 +805,15 @@ function ScriptTreeView(props: {
         }
         .script-tree-no-switcher .ant-tree-node-content-wrapper {
           flex: 1;
+        }
+        /* 节点「…」操作按钮:悬浮才显示(v1.8.0 任意目录下新建/删除) */
+        .script-node-more {
+          opacity: 0;
+          transition: opacity 0.15s ease;
+        }
+        .ant-tree-node-content-wrapper:hover .script-node-more,
+        .script-node-more.ant-dropdown-open {
+          opacity: 1;
         }
       `}</style>
       <Tree

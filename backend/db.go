@@ -28,7 +28,7 @@ func InitDB(cfg Config) {
 		log.Fatalf("连接数据库失败: %v", err)
 	}
 	DB = db
-	if err := db.AutoMigrate(&User{}, &Role{}, &Category{}, &Asset{}, &AnsibleRemote{}, &MwTemplate{}, &InspectionTask{}, &InspectionRecord{}, &InspectionResult{}, &InspectionAlertRule{}, &DeployCert{}, &DeployJob{}, &DeployMiddleware{}, &SysInitCatalog{}, &SysInitJob{}, &NginxConfig{}, &MwOpsProfile{}, &MwInstance{}, &CrontabTaskNote{}, &MwCapture{}, &SystemSetting{}); err != nil {
+	if err := db.AutoMigrate(&User{}, &Role{}, &Category{}, &Asset{}, &AnsibleRemote{}, &MwTemplate{}, &InspectionTask{}, &InspectionRecord{}, &InspectionResult{}, &InspectionAlertRule{}, &DeployCert{}, &DeployJob{}, &DeployMiddleware{}, &SysInitCatalog{}, &SysInitJob{}, &NginxConfig{}, &MwOpsProfile{}, &MwInstance{}, &CrontabTaskNote{}, &MwCapture{}, &SystemSetting{}, &PromDataSource{}); err != nil {
 		log.Fatalf("数据库迁移失败: %v", err)
 	}
 	seed()

@@ -22,6 +22,9 @@ import {
   FileTextOutlined,
   AlertOutlined,
   DotChartOutlined,
+  FundOutlined,
+  NodeIndexOutlined,
+  BarChartOutlined,
   SettingOutlined,
   TeamOutlined,
   KeyOutlined,
@@ -70,6 +73,7 @@ export default function MainLayout() {
   // 根据当前路由反查应当默认展开的菜单分组（支持多级嵌套，返回所有祖先分组）
   const openGroupsOf = (p: string): string[] => {
     if (p.startsWith('/inspection')) return ['monitor']
+    if (p.startsWith('/prom')) return ['prom']
     if (p.startsWith('/deploy') || p.startsWith('/sysinit-config')) return ['middleware', 'deploy']
     if (p.startsWith('/mwops')) return ['middleware', 'ops']
     if (p.startsWith('/crontab')) return []
@@ -191,6 +195,35 @@ export default function MainLayout() {
       ],
     },
 
+    // Prometheus 监控：独立一级大类（v1.8.0）。
+    // 数据源管理列出用 prom:view，增删改在页面内再按 prom:manage 收口；
+    // 大屏在新标签页打开，prom:screen（只看大屏）与 prom:view 共用入口。
+    {
+      key: 'prom',
+      icon: <FundOutlined />,
+      label: 'Prometheus 监控',
+      children: [
+        { key: '/prom/datasources', icon: <ApiOutlined />, label: '数据源管理', perm: 'prom:view' },
+        { key: '/prom/metrics', icon: <NodeIndexOutlined />, label: '指标查询', perm: 'prom:view' },
+        { key: '/prom/report', icon: <BarChartOutlined />, label: '监控报表', perm: 'prom:view' },
+        {
+          key: '/prom/screen',
+          icon: <DotChartOutlined />,
+          label: (
+            <a
+              href="/prom/screen"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: 'inherit', textDecoration: 'none' }}
+            >
+              监控大屏
+            </a>
+          ),
+          perms: ['prom:screen', 'prom:view'],
+        },
+      ],
+    },
+
     {
       key: 'system',
       icon: <SettingOutlined />,
@@ -267,11 +300,14 @@ export default function MainLayout() {
           onOpenChange={(keys) => setOpenKeysState(keys as string[])}
           onClick={({ key }) => {
             const k = String(key)
-            // 巡检大屏：由 label 里的 <a target="_blank"> 打开新标签页，此处不 navigate，
+            // 巡检大屏 / 监控大屏：由 label 里的 <a target="_blank"> 打开新标签页，此处不 navigate，
             // 主窗口保持在当前页，方便同时使用其他功能
-            if (k === '/inspection/screen') return
+            if (k === '/inspection/screen' || k === '/prom/screen') return
             if (k.startsWith('/inspection')) {
               setOpenKeysState((prev) => (prev.includes('monitor') ? prev : [...prev, 'monitor']))
+            }
+            if (k.startsWith('/prom')) {
+              setOpenKeysState((prev) => (prev.includes('prom') ? prev : [...prev, 'prom']))
             }
             navigate(k)
           }}

@@ -27,6 +27,12 @@ export const ROUTE_PERMS: { path: string; perm: string }[] = [
   // 巡检大屏：独立权限码，可单独授予「只看大屏」的账号。
   // 放在最后，保证同时有 inspection:view 的账号仍首选落到「智能巡检」而非大屏。
   { path: '/inspection/screen', perm: 'inspection:screen' },
+  // Prometheus 监控（v1.8.0）：数据源/指标/报表用 prom:view（页面内按 prom:manage 收口）；
+  // 大屏独立权限码，可单独授予「只看大屏」的账号（路由侧 RequireAnyPerm 放行两种）。
+  { path: '/prom/datasources', perm: 'prom:view' },
+  { path: '/prom/metrics', perm: 'prom:view' },
+  { path: '/prom/report', perm: 'prom:view' },
+  { path: '/prom/screen', perm: 'prom:screen' },
 ]
 
 // 路由路径 -> 所需权限码

@@ -271,6 +271,22 @@ func main() {
 			auth.POST("/scripts/java/file", RequirePermission("script:manage"), PostScriptFile)
 			auth.POST("/scripts/java/dir", RequirePermission("script:manage"), MakeScriptDir)
 			auth.DELETE("/scripts/java/entry", RequirePermission("script:manage"), DeleteScriptEntry)
+
+			// Prometheus 监控（v1.8.0 独立大类）：数据源管理 + 只读查询代理 +
+			// 大屏聚合 + 月度/季度/年度报表。
+			// 读接口用 prom:view（大屏专属账号补 prom:screen 进 any-of），
+			// 数据源增删改用 prom:manage。
+			auth.GET("/prom/datasources", RequireAnyPermission("prom:view", "prom:manage"), ListPromDataSources)
+			auth.POST("/prom/datasources", RequirePermission("prom:manage"), CreatePromDataSource)
+			auth.PUT("/prom/datasources/:id", RequirePermission("prom:manage"), UpdatePromDataSource)
+			auth.DELETE("/prom/datasources/:id", RequirePermission("prom:manage"), DeletePromDataSource)
+			auth.POST("/prom/datasources/:id/test", RequireAnyPermission("prom:view", "prom:manage"), TestPromDataSource)
+			auth.GET("/prom/query", RequireAnyPermission("prom:view", "prom:screen"), PromProxyQuery)
+			auth.GET("/prom/query_range", RequireAnyPermission("prom:view", "prom:screen"), PromProxyQueryRange)
+			auth.GET("/prom/metric-names", RequireAnyPermission("prom:view", "prom:screen"), PromMetricNames)
+			auth.GET("/prom/label/:name/values", RequireAnyPermission("prom:view", "prom:screen"), PromLabelValues)
+			auth.GET("/prom/overview", RequireAnyPermission("prom:view", "prom:screen"), PromOverview)
+			auth.GET("/prom/report", RequireAnyPermission("prom:view", "prom:screen"), PromReport)
 		}
 	}
 

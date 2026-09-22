@@ -99,11 +99,16 @@ export function putScriptFile(
   )
 }
 
+/**
+ * 新建目录。
+ * v1.8.0：parent 支持传任意子目录完整路径（必须在 root 之下），不传 = 根目录。
+ */
 export function createScriptDir(
   source: ScriptSource,
   host: number | undefined,
   root: string,
   name: string,
+  parent?: string,
 ): Promise<{ msg: string; path: string }> {
   return unwrap<{ msg: string; path: string }>(
     api.post(BASE + '/dir', undefined, {
@@ -112,6 +117,7 @@ export function createScriptDir(
         host: source === 'local' ? undefined : host,
         root,
         name,
+        parent: parent || undefined,
       },
     }),
   )
