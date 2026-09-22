@@ -22,6 +22,8 @@ export interface QuarterReportOptions {
   year: number
   quarter: 1 | 2 | 3 | 4
   taskId?: number
+  /** 任务名称：传入时文件名带任务名、概览标注「巡检任务」（按任务独立导出用） */
+  taskName?: string
   /** 5MB 硬上限 */
   maxMB?: number
 }
@@ -157,7 +159,7 @@ export async function buildQuarterReportXlsx(opts: QuarterReportOptions): Promis
 
   // 2. 派生各 sheet 的 AOA（先按「全量」装配）
   const makeSpecs = (mode: SheetMode) =>
-    buildSheets(rows, alerts, summary, range, opts.year, opts.quarter, mode)
+    buildSheets(rows, alerts, summary, range, opts.year, opts.quarter, mode, opts.taskName)
 
   // 3. 写 → **实测**字节。
   //    不再用「行数 × 估算行宽」的公式：300 台量级下估算 15MB、真实 15MB 虽然碰巧接近，
@@ -209,7 +211,11 @@ export async function buildQuarterReportXlsx(opts: QuarterReportOptions): Promis
     }
   }
 
-  const filename = `巡检季度报告_${opts.year}${QUARTER_LABEL[opts.quarter]}_${(range.start || '').replace(/-/g, '')}-${(range.end || '').replace(/-/g, '')}.xlsx`
+  // 按任务独立导出时文件名带任务名（v1.7.29）；任务名里的非法文件字符替换成 _
+  const taskTag = opts.taskName
+    ? `_${opts.taskName.replace(/[\\/:*?"<>|]/g, '_')}`
+    : ''
+  const filename = `巡检季度报告${taskTag}_${opts.year}${QUARTER_LABEL[opts.quarter]}_${(range.start || '').replace(/-/g, '')}-${(range.end || '').replace(/-/g, '')}.xlsx`
 
   // 5. 派生统计
   // 各次运行(按 巡检时间 + 任务名称 聚合)
@@ -264,7 +270,8 @@ function buildSheets(
   range: any,
   year: number,
   quarter: number,
-  mode: SheetMode = { detail: 'full', alert: 'full' }
+  mode: SheetMode = { detail: 'full', alert: 'full' },
+  taskName?: string
 ): SheetSpec[] {
   // ---- 概览 sheet ----
   const totalAlerts = alerts.length
@@ -283,32 +290,48 @@ function buildSheets(
   let healthScore = 0
   const healthColorOf = (s: number) => (s >= 85 ? '良好' : s >= 65 ? '关注' : '风险')
 
+  // ---- 巡检项目列表（v1.7.29）：本季度巡检覆盖的所有项目简称，放在「整体健康」之前 ----
+  // 按 (项目简称, IP) 去重统计每个项目的资产台数
+  const projAssets = new Map<string, Set<string>>()
+  for (const r of rows) {
+    const p = String(r['项目简称'] || '').trim() || '—'
+    const ip = String(r['虚拟机IPv4'] || '').trim()
+    if (!projAssets.has(p)) projAssets.set(p, new Set())
+    if (ip) projAssets.get(p)!.add(ip)
+  }
+  const projectNames = Array.from(projAssets.keys()).sort((a, b) => a.localeCompare(b, 'zh'))
+  const projectAoa: any[][] = projectNames.map((p) => [p, `${projAssets.get(p)!.size} 台`])
+
   const overviewAoa: any[][] = [
     [`${year} 年 ${QUARTER_LABEL[quarter]} 智能巡检季度报告`],
     [],
     ['季度范围', `${range.start || '—'}  ~  ${range.end || '—'}  (含首日)`],
     ['生成时间', new Date().toLocaleString('zh-CN')],
+    ...(taskName ? [['巡检任务', taskName] as any[]] : []),
     [],
-    ['一、整体健康'],
+    ['一、巡检项目列表', `共 ${projectNames.length} 个项目`],
+    ...projectAoa,
+    [],
+    ['二、整体健康'],
     ['健康评分', '—'], // 资产趋势算完后回填
     ['平均 CPU 使用率', `${num(avgCpu)}%`],
     ['平均内存使用率', `${num(avgMem)}%`],
     ['平均磁盘使用率', `${num(avgDisk)}%`],
     [],
-    ['二、巡检规模'],
+    ['三、巡检规模'],
     ['总运行次数', '—'], // 各次运行 sheet 里看
     ['总采集资产数（result 行）', rows.length],
     ['正常采集', `${okCount} (${successRate})`],
     ['采集失败', failCount],
     [],
-    ['三、告警汇总'],
+    ['四、告警汇总'],
     ['告警总条数', totalAlerts],
     ['  其中严重告警', criticalAlerts],
     ['  其中预警告警', warnAlerts],
     ['告警资产占比', '—'], // 回填
     ['严重告警占比', '—'], // 回填
     [],
-    ['四、本报告 Sheet 说明'],
+    ['五、本报告 Sheet 说明'],
     ['概览', '本页'],
     ['各次运行', '每行 = 一次巡检运行的汇总(成功/失败/告警数)'],
     ['资产明细', mode.detail === 'latest'
@@ -316,11 +339,10 @@ function buildSheets(
       : '每行 = 单台资产的单次采集快照(指标明细)'],
     ['告警明细', mode.alert === 'agg'
       ? '每行 = 一台资产 × 一个指标的季度聚合(次数 / 最高值 / 首次末次)'
-      : '每行 = 一次告警(系统/IP/指标/级别/数值)'],
+      : '每行 = 一次告警(项目/IP/指标/级别/数值)'],
     ['资产趋势', '每行 = 一台资产的季度聚合(最高/最低/平均指标)'],
     ['按天趋势', '每行 = 一天的汇总(平均指标 + 告警数 + 采集资产数)'],
     [],
-    ['提示', '本报告由 云枢 OpsHub · 智能运维平台自动生成 · 数据采集走 Ansible / SSH'],
   ]
 
   // 按「标签」回填概览单元格 —— 不用下标,免得以后加一行就把别的值写错位置
@@ -371,7 +393,7 @@ function buildSheets(
   for (const r of rows) for (const k of Object.keys(r)) if (!DROP_DETAIL.has(k)) colsSet.add(k)
   // 排序:核心标识 → 操作系统 → CPU → 内存 → 磁盘 → 网络 → 进程/服务/安全 → 尾部基础列
   const ORDER = [
-    '巡检时间', '任务名称', 'ERP系统名称', '归属部门', '虚拟机IPv4', '状态',
+    '巡检时间', '任务名称', '项目简称', '归属部门', '虚拟机IPv4', '状态',
     '操作系统', '系统版本', 'CPU类型', '内核版本', 'SELinux状态', 'NTP偏差(ms)',
     'CPU核心数', 'CPU整体使用率', 'I/O等待', '单核最高使用率',
     '系统负载(1m)', '系统负载(5m)', '系统负载(15m)',
@@ -408,7 +430,7 @@ function buildSheets(
   if (mode.detail === 'latest') {
     const latestMap = new Map<string, any>()
     for (const r of sortedRows) {
-      const k = `${r['ERP系统名称'] || ''}__${r['虚拟机IPv4'] || ''}`
+      const k = `${r['项目简称'] || ''}__${r['虚拟机IPv4'] || ''}`
       const prev = latestMap.get(k)
       if (!prev || String(r['巡检时间'] || '') > String(prev['巡检时间'] || '')) latestMap.set(k, r)
     }
@@ -435,11 +457,11 @@ function buildSheets(
     failCount: number
   }>()
   for (const r of rows) {
-    const k = `${r['ERP系统名称']}__${r['虚拟机IPv4']}`
+    const k = `${r['项目简称']}__${r['虚拟机IPv4']}`
     let cur = assetMap.get(k)
     if (!cur) {
       cur = {
-        name: r['ERP系统名称'] || '',
+        name: r['项目简称'] || '',
         ip: r['虚拟机IPv4'] || '',
         department: r['归属部门'] || '',
         cpuMax: -Infinity, cpuMin: Infinity, cpuSum: 0, cpuCnt: 0,
@@ -463,7 +485,7 @@ function buildSheets(
       const items = String(r['告警项']).split(/[、，]/).filter(Boolean)
       cur.alertTotal += items.length
       // 通过 alerts sheet 关联级别较费,先粗略按 critical 数
-      const matchCrit = alerts.filter((a) => a['ERP系统名称'] === cur!.name && a['虚拟机IPv4'] === cur!.ip && a['级别'] === '严重').length
+      const matchCrit = alerts.filter((a) => a['项目简称'] === cur!.name && a['虚拟机IPv4'] === cur!.ip && a['级别'] === '严重').length
       cur.alertCritical = Math.max(cur.alertCritical, matchCrit)
       const t = r['巡检时间'] || ''
       if (!cur.firstAlertAt || t < cur.firstAlertAt) cur.firstAlertAt = t
@@ -471,7 +493,7 @@ function buildSheets(
     }
     if (r['状态'] === '失败') cur.failCount++
   }
-  const trendHeader = ['ERP系统名称', '归属部门', '虚拟机IPv4', '采集次数', '采集失败次数', 'CPU最高%', 'CPU最低%', 'CPU平均%', '内存最高%', '内存最低%', '内存平均%', '磁盘最高%', '磁盘最低%', '磁盘平均%', '告警总数', '严重告警数', '首次告警时间', '末次告警时间']
+  const trendHeader = ['项目简称', '归属部门', '虚拟机IPv4', '采集次数', '采集失败次数', 'CPU最高%', 'CPU最低%', 'CPU平均%', '内存最高%', '内存最低%', '内存平均%', '磁盘最高%', '磁盘最低%', '磁盘平均%', '告警总数', '严重告警数', '首次告警时间', '末次告警时间']
   const trendAoa: any[][] = [trendHeader]
   for (const a of Array.from(assetMap.values()).sort((x, y) => y.alertCritical - x.alertCritical || y.alertTotal - x.alertTotal)) {
     trendAoa.push([
@@ -543,7 +565,7 @@ function buildSheets(
 
   // 列宽
   const detailColWidths = detailCols.map((h) =>
-    h === 'ERP系统名称' ? 28 :
+    h === '项目简称' ? 28 :
     h === '虚拟机IPv4' ? 16 :
     h === '告警项' ? 50 :
     h === '巡检时间' ? 18 :
@@ -564,12 +586,12 @@ function buildSheets(
       note: string; developer: string
     }>()
     for (const a of alerts) {
-      const k = `${a['ERP系统名称'] || ''}__${a['虚拟机IPv4'] || ''}__${a['指标'] || ''}`
+      const k = `${a['项目简称'] || ''}__${a['虚拟机IPv4'] || ''}__${a['指标'] || ''}`
       const t = String(a['巡检时间'] || '')
       let cur = aggMap.get(k)
       if (!cur) {
         cur = {
-          name: a['ERP系统名称'] || '', dept: a['归属部门'] || '', ip: a['虚拟机IPv4'] || '',
+          name: a['项目简称'] || '', dept: a['归属部门'] || '', ip: a['虚拟机IPv4'] || '',
           cat: a['分类'] || '', metric: a['指标'] || '', level: a['级别'] || '',
           maxVal: -Infinity, cnt: 0, first: t, last: t,
           note: a['说明'] || '', developer: a['开发人员'] || '',
@@ -583,7 +605,7 @@ function buildSheets(
       if (t && (!cur.first || t < cur.first)) cur.first = t
       if (t && (!cur.last || t > cur.last)) cur.last = t
     }
-    const aggCols = ['ERP系统名称', '归属部门', '虚拟机IPv4', '指标', '分类', '级别',
+    const aggCols = ['项目简称', '归属部门', '虚拟机IPv4', '指标', '分类', '级别',
       '出现次数', '最高数值', '首次告警', '末次告警', '说明', '开发人员']
     const aggAoa: any[][] = [aggCols]
     const aggList = Array.from(aggMap.values()).sort((x, y) => {
@@ -605,7 +627,7 @@ function buildSheets(
     })
   }
 
-  const alertCols = ['ERP系统名称', '归属部门', '虚拟机IPv4', '巡检时间', '分类', '指标', '级别', '数值', '说明', '开发人员']
+  const alertCols = ['项目简称', '归属部门', '虚拟机IPv4', '巡检时间', '分类', '指标', '级别', '数值', '说明', '开发人员']
   const alertAoa: any[][] = [alertCols]
   const alertSorted = alerts.slice().sort((x, y) =>
     (x['级别'] === '严重' ? 0 : 1) - (y['级别'] === '严重' ? 0 : 1))
@@ -629,7 +651,7 @@ function assemble(p: {
   dayAoa: any[][]; dayColWidths: number[]
 }): SheetSpec[] {
   const alertColWidths = p.alertCols.map((h) =>
-    h === '说明' ? 50 : h === '开发人员' ? 20 : h === '虚拟机IPv4' ? 16 : h === 'ERP系统名称' ? 28 : 14)
+    h === '说明' ? 50 : h === '开发人员' ? 20 : h === '虚拟机IPv4' ? 16 : h === '项目简称' ? 28 : 14)
   return [
     { key: '概览', title: '概览', build: () => ({ aoa: p.overviewAoa, cols: [22, 50] }) },
     { key: '各次运行', title: '各次运行', build: () => ({ aoa: p.runsAoa, cols: p.runsColWidths }) },

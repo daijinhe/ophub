@@ -1709,7 +1709,13 @@ func InspectionExport(c *gin.Context) {
 	if recordID > 0 {
 		DB.Where("record_id = ?", recordID).Order("collected_at desc").Find(&results)
 	} else {
-		DB.Where("collected_at >= ? AND collected_at < ?", start, end).Order("collected_at desc").Find(&results)
+		// v1.7.29 修复：此前 taskId 只用于挑选指标列，结果行从没按任务过滤 ——
+		// 「按任务独立导出」实际上一直混着全部任务的数据。现在补上 task_id 过滤。
+		q := DB.Where("collected_at >= ? AND collected_at < ?", start, end)
+		if taskID > 0 {
+			q = q.Where("task_id = ?", taskID)
+		}
+		q.Order("collected_at desc").Find(&results)
 	}
 	results = enrichResults(results)
 	// 导出同样按当前告警规则重算，保证与页面/大屏口径一致
@@ -1725,6 +1731,39 @@ func InspectionExport(c *gin.Context) {
 		DB.Where("id IN ?", recIDs).Find(&recs)
 		for _, r := range recs {
 			recMap[r.ID] = r
+		}
+	}
+
+	// v1.7.29：报告的「项目简称 / 虚拟机IPv4 / 归属部门」三列联动资产列表 ——
+	// 按 AssetID 取 CMDB 当前值（用户在资产管理里改名/改部门后，报告跟着变），
+	// 资产已删除或字段为空时回退采集快照（r.AssetName 的第一段就是项目简称）。
+	type assetInfo struct{ project, ip, dept string }
+	assetInfoMap := map[uint]assetInfo{}
+	assetIDsSeen := map[uint]bool{}
+	var assetIDs []uint
+	for _, r := range results {
+		if r.AssetID > 0 && !assetIDsSeen[r.AssetID] {
+			assetIDsSeen[r.AssetID] = true
+			assetIDs = append(assetIDs, r.AssetID)
+		}
+	}
+	if len(assetIDs) > 0 {
+		var list []Asset
+		DB.Select("id", "name", "ip", "fields").Where("id IN ?", assetIDs).Find(&list)
+		for i := range list {
+			f := map[string]interface{}{}
+			if len(list[i].Fields) > 0 {
+				_ = json.Unmarshal(list[i].Fields, &f)
+			}
+			ai := assetInfo{
+				project: strings.TrimSpace(toStr(f["项目简称"])),
+				ip:      strings.TrimSpace(toStr(f["虚拟机IPv4"])),
+				dept:    strings.TrimSpace(toStr(f["归属部门"])),
+			}
+			if ai.ip == "" {
+				ai.ip = list[i].IP
+			}
+			assetInfoMap[list[i].ID] = ai
 		}
 	}
 
@@ -1751,12 +1790,28 @@ func InspectionExport(c *gin.Context) {
 			_ = json.Unmarshal(r.Alerts, &alerts)
 		}
 		rec := recMap[r.RecordID]
+		ai := assetInfoMap[r.AssetID]
+		projectName := ai.project
+		if projectName == "" {
+			// AssetName = 项目简称_环境_业务环境_IP，第一段即项目简称
+			if seg := strings.SplitN(r.AssetName, "_", 2); len(seg) > 0 {
+				projectName = strings.TrimSpace(seg[0])
+			}
+		}
+		ipVal := ai.ip
+		if ipVal == "" {
+			ipVal = r.IP
+		}
+		deptVal := ai.dept
+		if deptVal == "" {
+			deptVal = r.Department
+		}
 		row := gin.H{
 			"巡检时间":    rec.RunAt.Format("2006-01-02 15:04"),
 			"任务名称":    rec.TaskName,
-			"ERP系统名称": r.AssetName,
-			"归属部门":    r.Department,
-			"虚拟机IPv4": r.IP,
+			"项目简称":    projectName,
+			"归属部门":    deptVal,
+			"虚拟机IPv4": ipVal,
 			"状态":      map[string]string{"ok": "正常", "fail": "失败"}[r.Status],
 			"采集来源":    map[string]string{SrcAnsible: "ansible", SrcSSH: "ssh", SrcSimulated: "模拟"}[r.Source],
 			"告警项":     strings.Join(alertLabels(alerts), "、"),
@@ -1774,9 +1829,9 @@ func InspectionExport(c *gin.Context) {
 		// 都要按时间取首次/末次，缺了这一列就只能给出空时间列。
 		for _, a := range alerts {
 			alertRows = append(alertRows, gin.H{
-				"ERP系统名称": r.AssetName,
-				"归属部门":    r.Department,
-				"虚拟机IPv4": r.IP,
+				"项目简称":    projectName,
+				"归属部门":    deptVal,
+				"虚拟机IPv4": ipVal,
 				"巡检时间":    rec.RunAt.Format("2006-01-02 15:04"),
 				"分类":      CategoryLabel(categoryOfAlert(a)),
 				"指标":      a["metric"],

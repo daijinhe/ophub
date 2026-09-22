@@ -335,6 +335,7 @@ export default function InspectionRecords() {
   const [quarterYear, setQuarterYear] = useState<number>(new Date().getFullYear())
   const [quarter, setQuarter] = useState<1 | 2 | 3 | 4>(((new Date().getMonth()) / 3 | 0) + 1 as 1 | 2 | 3 | 4)
   const [quarterGenerating, setQuarterGenerating] = useState(false)
+  const [batchExporting, setBatchExporting] = useState(false)
   const [quarterReport, setQuarterReport] = useState<{
     filename: string
     sizeMB: number
@@ -423,6 +424,8 @@ export default function InspectionRecords() {
         year: quarterYear,
         quarter,
         taskId,
+        // 指定了任务时文件名带任务名、概览标注巡检任务（v1.7.29）
+        taskName: taskId != null ? tasks.find((t) => t.id === taskId)?.name : undefined,
         maxMB: 5,
       })
       downloadBlob(r.blob, r.filename)
@@ -454,6 +457,55 @@ export default function InspectionRecords() {
       message.error('季度报告生成失败：' + (e?.response?.data?.msg || e?.message || '未知错误'))
     } finally {
       setQuarterGenerating(false)
+    }
+  }
+
+  /**
+   * 按巡检任务分别导出（v1.7.29）：每个任务各生成一份独立的季度报告，
+   * 文件名 = 巡检季度报告_<任务名>_<年><季度>_<起止日期>.xlsx。
+   * 本季度没有任何巡检数据的任务自动跳过，不产出空报告。
+   */
+  const generatePerTaskReports = async () => {
+    if (!tasks.length) {
+      message.warning('暂无巡检任务，无法按任务导出')
+      return
+    }
+    setBatchExporting(true)
+    let okCount = 0
+    const skipped: string[] = []
+    const failed: string[] = []
+    try {
+      for (const t of tasks) {
+        try {
+          const r = await buildQuarterReportXlsx({
+            year: quarterYear,
+            quarter,
+            taskId: t.id,
+            taskName: t.name,
+            maxMB: 5,
+          })
+          if (r.stats.totalResults === 0) {
+            skipped.push(t.name)
+            continue
+          }
+          downloadBlob(r.blob, r.filename)
+          okCount++
+          // 浏览器对连续 download 有节流，留个小间隔保证每个文件都弹出来
+          await new Promise((res) => setTimeout(res, 400))
+        } catch (e: any) {
+          failed.push(t.name)
+        }
+      }
+      if (okCount === 0 && skipped.length === tasks.length) {
+        message.warning('所选季度内所有任务均无巡检数据，未生成报告')
+      } else if (failed.length) {
+        message.warning(`已导出 ${okCount} 份，失败 ${failed.length} 份：${failed.join('、')}。可单独重试失败的任务。`)
+      } else {
+        const skipNote = skipped.length ? `；${skipped.length} 个任务本季度无数据已跳过` : ''
+        message.success(`已按任务分别导出 ${okCount} 份季度报告${skipNote}`)
+      }
+    } finally {
+      setBatchExporting(false)
     }
   }
 
@@ -659,6 +711,22 @@ export default function InspectionRecords() {
           >
             生成季度报告 xlsx
           </Button>
+          <Popconfirm
+            title={`按任务分别导出`}
+            description={`将为每个巡检任务各生成一份独立的季度报告（共 ${tasks.length} 个任务，文件名带任务名）。继续？`}
+            okText="导出"
+            cancelText="取消"
+            onConfirm={generatePerTaskReports}
+            disabled={batchExporting || !tasks.length}
+          >
+            <Button
+              icon={<FileExcelOutlined />}
+              loading={batchExporting}
+              disabled={!tasks.length}
+            >
+              按任务分别导出（{tasks.length} 个任务）
+            </Button>
+          </Popconfirm>
         </Space>
         {quarterReport && (
           <Alert
