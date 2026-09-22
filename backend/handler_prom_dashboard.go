@@ -88,9 +88,10 @@ func promCollectLabels(sampleSets ...[]promSample) map[string]*promInstLabels {
 
 // promTrendPoint 趋势点
 type promTrendPoint struct {
-	TS  int64    `json:"ts"` // unix 秒
-	CPU *float64 `json:"cpu"`
-	Mem *float64 `json:"mem"`
+	TS   int64    `json:"ts"` // unix 秒
+	CPU  *float64 `json:"cpu"`
+	Mem  *float64 `json:"mem"`
+	Disk *float64 `json:"disk"`
 }
 
 // promAvg 三个资源均值（大屏仪表盘）
@@ -443,17 +444,22 @@ func promFleetTrend(ctx context.Context, cli *promClient, window, step int64) []
 	}
 	cpuSeries, err1 := cli.queryRange(ctx, promQLCPU(fmt.Sprintf("%ds", rw)), start, end, step)
 	memSeries, err2 := cli.queryRange(ctx, promQLMem, start, end, step)
-	if err1 != nil && err2 != nil {
+	diskSeries, err3 := cli.queryRange(ctx, promQLDisk, start, end, step)
+	if err1 != nil && err2 != nil && err3 != nil {
 		return []promTrendPoint{}
 	}
 	cpuByTs := promAvgByTs(cpuSeries)
 	memByTs := promAvgByTs(memSeries)
-	// 以 CPU 时间轴为基准对齐（内存可能缺点）
+	diskByTs := promAvgByTs(diskSeries)
+	// 以 CPU 时间轴为基准对齐（内存/磁盘可能缺点）
 	out := make([]promTrendPoint, 0, len(cpuByTs))
 	for ts, c := range cpuByTs {
 		p := promTrendPoint{TS: ts, CPU: c}
 		if m, ok := memByTs[ts]; ok {
 			p.Mem = m
+		}
+		if d, ok := diskByTs[ts]; ok {
+			p.Disk = d
 		}
 		out = append(out, p)
 	}
@@ -627,7 +633,7 @@ func PromReport(c *gin.Context) {
 
 	// 全集群汇总 + 趋势（窗口内全集群均值线）
 	resp.Fleet = promFleetSummary(rows)
-	resp.Trend = promTrendFromSeries(cpuSeries, memSeries)
+	resp.Trend = promTrendFromSeries(cpuSeries, memSeries, diskSeries)
 
 	OK(c, resp)
 }
@@ -747,15 +753,19 @@ func promFleetSummary(rows []promReportRow) promReportFleet {
 	return f
 }
 
-// promTrendFromSeries 报表趋势：CPU / 内存两组序列按时间戳取全集群均值
-func promTrendFromSeries(cpu, mem []promSeries) []promTrendPoint {
+// promTrendFromSeries 报表趋势：CPU / 内存 / 磁盘三组序列按时间戳取全集群均值
+func promTrendFromSeries(cpu, mem, disk []promSeries) []promTrendPoint {
 	cpuByTs := promAvgByTs(cpu)
 	memByTs := promAvgByTs(mem)
+	diskByTs := promAvgByTs(disk)
 	out := make([]promTrendPoint, 0, len(cpuByTs))
 	for ts, c := range cpuByTs {
 		p := promTrendPoint{TS: ts, CPU: c}
 		if m, ok := memByTs[ts]; ok {
 			p.Mem = m
+		}
+		if d, ok := diskByTs[ts]; ok {
+			p.Disk = d
 		}
 		out = append(out, p)
 	}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Alert,
+  AutoComplete,
   Button,
   Card,
   Col,
@@ -22,16 +23,21 @@ import {
 import {
   CloudDownloadOutlined,
   DatabaseOutlined,
+  DeleteOutlined,
+  PlusOutlined,
   ReloadOutlined,
   SaveOutlined,
   SettingOutlined,
+  StopOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons'
 import {
   getPromScreenConfig,
   promCollectNow,
+  promSnapshot,
   savePromScreenConfig,
   type PromCollectStatus,
+  type PromMaskRule,
   type PromScreenConfig,
   type PromScreenConfigResp,
 } from '../api/prometheus'
@@ -67,6 +73,22 @@ const SOURCE_CN: Record<string, string> = {
   realtime: '实时现算',
 }
 
+/** 屏蔽规则的指标口径 */
+const MASK_METRIC_OPTIONS = [
+  { value: 'all', label: '全部指标' },
+  { value: 'cpu', label: 'CPU' },
+  { value: 'mem', label: '内存' },
+  { value: 'disk', label: '磁盘' },
+  { value: 'offline', label: '离线（连通性）' },
+]
+const MASK_METRIC_CN: Record<string, string> = {
+  all: '全部指标',
+  cpu: 'CPU',
+  mem: '内存',
+  disk: '磁盘',
+  offline: '离线（连通性）',
+}
+
 /**
  * Prometheus 监控大屏 · 管理（v1.7.33）
  *
@@ -84,6 +106,12 @@ export default function PromScreenAdmin() {
   const [collectingId, setCollectingId] = useState<number | null>(null)
   const [form] = Form.useForm()
   const [tick, setTick] = useState(0)
+  // 屏蔽规则（v1.7.35）：本地编辑，点「保存配置」一起提交；保存后立即对快照生效
+  const [masks, setMasks] = useState<PromMaskRule[]>([])
+  const [hostOpts, setHostOpts] = useState<{ value: string; label: string }[]>([])
+  const [newTarget, setNewTarget] = useState('')
+  const [newMetric, setNewMetric] = useState<PromMaskRule['metric']>('all')
+  const [newNote, setNewNote] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -92,6 +120,7 @@ export default function PromScreenAdmin() {
       setCfg(r.config)
       setStatus(r.status || [])
       setNextAt(r.nextAt || 0)
+      setMasks(r.config.masks || [])
       form.setFieldsValue(r.config)
     } catch (e) {
       message.error('加载大屏配置失败:' + errMsg(e))
@@ -103,6 +132,20 @@ export default function PromScreenAdmin() {
   useEffect(() => {
     load()
   }, [load])
+
+  // 拉一次快照，给「屏蔽规则」的主机下拉提供候选（失败不阻塞配置加载）
+  useEffect(() => {
+    promSnapshot()
+      .then((s) => {
+        setHostOpts(
+          (s.data?.hosts || []).map((h) => ({
+            value: h.instance,
+            label: h.instance,
+          })),
+        )
+      })
+      .catch(() => undefined)
+  }, [])
 
   // 采集状态每 5 秒自刷新（自动采集开着时能看见时间在动）
   useEffect(() => {
@@ -134,6 +177,7 @@ export default function PromScreenAdmin() {
         ...vals,
         autoCollect: vals.autoCollect ? 1 : 0,
         showOffline: vals.showOffline ? 1 : 0,
+        masks,
       })
       message.success(r.msg || '已保存')
       setCfg(r.config)
@@ -143,7 +187,29 @@ export default function PromScreenAdmin() {
     } finally {
       setSaving(false)
     }
-  }, [form, load])
+  }, [form, load, masks])
+
+  const addMask = useCallback(() => {
+    const t = newTarget.trim()
+    if (!t) {
+      message.warning('请填写要屏蔽的主机（instance 或名称关键字）')
+      return
+    }
+    if (masks.some((m) => m.target === t && m.metric === newMetric)) {
+      message.info('该屏蔽规则已存在')
+      return
+    }
+    setMasks([...masks, { target: t, metric: newMetric, note: newNote.trim() || undefined }])
+    setNewTarget('')
+    setNewNote('')
+  }, [masks, newTarget, newMetric, newNote])
+
+  const removeMask = useCallback(
+    (t: string, m: string) => {
+      setMasks(masks.filter((x) => !(x.target === t && x.metric === m)))
+    },
+    [masks],
+  )
 
   const onCollect = useCallback(async (id: number) => {
     setCollectingId(id)
@@ -239,6 +305,52 @@ export default function PromScreenAdmin() {
       },
     ],
     [collectingId, onCollect],
+  )
+
+  const maskColumns = useMemo(
+    () => [
+      {
+        title: '目标（包含匹配）',
+        dataIndex: 'target',
+        key: 'target',
+        render: (v: string, r: PromMaskRule) => (
+          <div>
+            <div style={{ fontWeight: 600 }}>{v}</div>
+            {r.note && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {r.note}
+              </Text>
+            )}
+          </div>
+        ),
+      },
+      {
+        title: '屏蔽指标',
+        dataIndex: 'metric',
+        key: 'metric',
+        width: 140,
+        render: (v: string) => (
+          <Tag color={v === 'all' ? 'red' : 'geekblue'}>{MASK_METRIC_CN[v] || v}</Tag>
+        ),
+      },
+      {
+        title: '操作',
+        key: 'op',
+        width: 70,
+        render: (_: any, r: PromMaskRule) => (
+          <Tooltip title="删除该规则">
+            <Button
+              size="small"
+              type="text"
+              danger
+              icon={<DeleteOutlined />}
+              onClick={() => removeMask(r.target, r.metric)}
+            />
+          </Tooltip>
+        ),
+      },
+    ],
+    [removeMask],
   )
 
   return (
@@ -395,6 +507,55 @@ export default function PromScreenAdmin() {
               pagination={false}
               locale={{ emptyText: '暂无启用的数据源' }}
             />
+          </Card>
+
+          {/* 屏蔽规则（v1.7.35）：命中规则的主机指标不再进大屏「超阈值主机」面板 */}
+          <Card
+            size="small"
+            title={<span><StopOutlined /> 屏蔽规则（超阈值面板）</span>}
+            style={{ marginBottom: 12 }}
+            extra={<Tag color="red">{masks.length} 条</Tag>}
+          >
+            <Space.Compact style={{ width: '100%', marginBottom: 8 }}>
+              <AutoComplete
+                value={newTarget}
+                onChange={setNewTarget}
+                options={hostOpts}
+                placeholder="主机 instance（IP:端口）或名称关键字"
+                style={{ width: '46%' }}
+                filterOption={(input, option) =>
+                  String(option?.value || '').toLowerCase().includes(input.toLowerCase())
+                }
+              />
+              <Select
+                value={newMetric}
+                onChange={(v) => setNewMetric(v)}
+                options={MASK_METRIC_OPTIONS}
+                style={{ width: '24%' }}
+              />
+              <Input
+                value={newNote}
+                onChange={(e) => setNewNote(e.target.value)}
+                placeholder="备注（可选）"
+                style={{ width: '22%' }}
+                maxLength={50}
+                onPressEnter={addMask}
+              />
+              <Button type="primary" icon={<PlusOutlined />} onClick={addMask} title="添加屏蔽规则" />
+            </Space.Compact>
+            <Table
+              rowKey={(r) => `${r.target}|${r.metric}`}
+              size="small"
+              columns={maskColumns}
+              dataSource={masks}
+              pagination={false}
+              locale={{ emptyText: '暂无屏蔽规则 —— 大屏展示全部超阈值主机' }}
+            />
+            <Paragraph type="secondary" style={{ fontSize: 12, marginTop: 8, marginBottom: 0 }}>
+              命中规则的主机指标将从大屏「超阈值主机」面板隐藏（不再计数）。目标支持
+              instance（如 <code>198.51.100.31:9100</code>）或展示名关键字（如 和创利OA），
+              按「包含」匹配、不区分大小写；点「保存配置」后立即生效。
+            </Paragraph>
           </Card>
 
           <Card size="small" title="当前阈值速查">

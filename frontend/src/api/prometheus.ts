@@ -109,12 +109,21 @@ export interface PromCfgView {
   showOffline: number
   trendHours: number
   groupBy: 'system' | 'department' | 'env' | 'deployserver'
+  masks?: PromMaskRule[]
 }
 
 export interface PromTrendPoint {
   ts: number
   cpu?: number | null
   mem?: number | null
+  disk?: number | null
+}
+
+/** 屏蔽规则：命中 target 的主机指标不再进入大屏「超阈值主机」面板（v1.7.35） */
+export interface PromMaskRule {
+  target: string
+  metric: 'all' | 'cpu' | 'mem' | 'disk' | 'offline'
+  note?: string
 }
 
 export interface PromUsageDist {

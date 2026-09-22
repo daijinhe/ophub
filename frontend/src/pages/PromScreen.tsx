@@ -6,7 +6,6 @@ import {
   CloudDownloadOutlined,
   CloudServerOutlined,
   DashboardOutlined,
-  DatabaseOutlined,
   FireOutlined,
   FundOutlined,
   FullscreenOutlined,
@@ -520,7 +519,7 @@ function trendOption(trend: PromOverview['trend']) {
     backgroundColor: 'transparent',
     grid: { left: 50, right: 18, top: 30, bottom: 30 },
     tooltip: { ...TOOLTIP_BASE, trigger: 'axis' },
-    legend: { textStyle: { color: '#94a3b8' }, data: ['CPU', '内存'], top: 4 },
+    legend: { textStyle: { color: '#94a3b8' }, data: ['CPU', '内存', '磁盘'], top: 4 },
     xAxis: {
       type: 'category',
       data: trend.map((p) => dayjs(p.ts * 1000).format('HH:mm')),
@@ -552,6 +551,15 @@ function trendOption(trend: PromOverview['trend']) {
         data: trend.map((p) => p.mem ?? null),
         itemStyle: { color: '#a78bfa' },
         areaStyle: { color: 'rgba(167,139,250,0.12)' },
+      },
+      {
+        name: '磁盘',
+        type: 'line',
+        smooth: true,
+        showSymbol: false,
+        data: trend.map((p) => p.disk ?? null),
+        itemStyle: { color: '#22d3ee' },
+        areaStyle: { color: 'rgba(34,211,238,0.10)' },
       },
     ],
   }
@@ -993,8 +1001,8 @@ export default function PromScreen() {
               alignItems: 'stretch',
             }}
           >
-            {/* ===== 左栏：容量卡 + KPI + 资源健康分布 ===== */}
-            <div style={{ display: 'grid', gridTemplateRows: '96px 88px 88px 88px 88px 88px 1fr', gap: 10, minHeight: 0 }}>
+            {/* ===== 左栏：容量卡 + KPI×4 + 资源健康分布 + 趋势 ===== */}
+            <div style={{ display: 'grid', gridTemplateRows: '96px 88px 88px 88px 88px 1fr 236px', gap: 10, minHeight: 0 }}>
               {/* 容量卡：三列等分（目标 / 在线 / 离线） */}
               <div className="prom-panel" style={{ height: 96, padding: '0 14px', display: 'flex', alignItems: 'center' }}>
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
@@ -1050,13 +1058,6 @@ export default function PromScreen() {
                 value={`${overall}%`}
                 sub={`CPU ${avg?.cpu ?? 0}% · 内存 ${avg?.mem ?? 0}% · 磁盘 ${avg?.disk ?? 0}%`}
               />
-              <KpiRow
-                icon={<DatabaseOutlined />}
-                color="#38bdf8"
-                label="数据更新"
-                value={data.generatedAt ? data.generatedAt.slice(11) : '—'}
-                sub={`采集 ${data.collectMs ? data.collectMs + 'ms' : '—'} · 每 ${cfg?.intervalSec ?? 30}s ${cfg?.autoCollect === 1 ? '自动' : '（自动已关）'} · ${data.source === 'manual' ? '手动' : data.source === 'auto' ? '自动' : data.source === 'realtime' ? '实时' : '恢复'}`}
-              />
 
               {/* 资源健康分布饼图 */}
               <div className="prom-panel" style={{ display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%' }}>
@@ -1095,6 +1096,20 @@ export default function PromScreen() {
                       <b className="prom-num" style={{ flex: '0 0 auto', color: '#e2e8f0' }}>{x.v}</b>
                     </div>
                   ))}
+                </div>
+              </div>
+
+              {/* 资源使用率趋势（CPU/内存/磁盘，v1.7.35 由「数据更新」卡位改造而来；
+                  采集耗时/来源等信息已在页脚展示） */}
+              <div className="prom-panel" style={{ height: 236, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                <div className="prom-title">
+                  <FundOutlined /> 资源使用率趋势（近 {trendHours} 小时）
+                  <span style={{ marginLeft: 'auto', fontSize: 10, color: '#64748b', textTransform: 'none' }}>
+                    采集 {data.collectMs ? data.collectMs + 'ms' : '—'} · {data.generatedAt ? data.generatedAt.slice(11) : '—'}
+                  </span>
+                </div>
+                <div style={{ flex: 1, minHeight: 0 }}>
+                  <ReactECharts option={trendOpt} style={{ height: '100%', width: '100%' }} notMerge lazyUpdate />
                 </div>
               </div>
             </div>
@@ -1215,6 +1230,11 @@ export default function PromScreen() {
               · 采集时间：<span style={{ color: '#94a3b8', margin: '0 4px' }}>{data.generatedAt}</span>
             </>
           )}
+          {data?.collectMs ? (
+            <>
+              · 采集耗时：<span style={{ color: '#94a3b8', margin: '0 4px' }}>{data.collectMs}ms</span>
+            </>
+          ) : null}
           · 数据源：<span style={{ color: '#94a3b8', margin: '0 4px' }}>{dsName}</span>
           · 监控目标：<span style={{ color: '#94a3b8', margin: '0 4px' }}>{up?.total ?? 0} 台（在线 {up?.online ?? 0} / 离线 {up?.offline ?? 0}）</span>
           · 超阈值：<span style={{ color: issueStat.crit > 0 ? '#f87171' : '#94a3b8', margin: '0 4px' }}>

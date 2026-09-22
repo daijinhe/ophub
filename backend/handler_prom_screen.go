@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/datatypes"
 )
 
 // ============================================================================
@@ -32,25 +33,56 @@ import (
 // 配置模型
 // ---------------------------------------------------------------------------
 
+// promMaskRule 屏蔽规则（v1.7.35）：命中规则的主机+指标不再进入大屏「超阈值主机」面板。
+// 用于屏蔽「已知但暂不处理」的超阈值项（如磁盘长期偏高的备份机），让面板只留真正要关注的主机。
+type promMaskRule struct {
+	Target string `json:"target"` // 匹配串：对 instance（IP:端口）与展示名做「包含」匹配，不区分大小写
+	Metric string `json:"metric"` // all | cpu | mem | disk | offline
+	Note   string `json:"note,omitempty"`
+}
+
+// promParseMasks 落库 JSON → 规则数组（坏数据一律静默降级成空数组，不让大屏挂掉）
+func promParseMasks(raw datatypes.JSON) []promMaskRule {
+	out := []promMaskRule{}
+	if len(raw) == 0 {
+		return out
+	}
+	_ = json.Unmarshal([]byte(raw), &out)
+	return out
+}
+
+// promMasksToJSON 规则数组 → 落库 JSON（nil 也归一成 "[]"，避免库里出现 null）
+func promMasksToJSON(rules []promMaskRule) datatypes.JSON {
+	if rules == nil {
+		rules = []promMaskRule{}
+	}
+	b, err := json.Marshal(rules)
+	if err != nil {
+		return datatypes.JSON("[]")
+	}
+	return datatypes.JSON(b)
+}
+
 // PromScreenConfig 监控大屏配置（全局单例，id=1）
 type PromScreenConfig struct {
-	ID          uint      `gorm:"primaryKey" json:"id"`
-	Title       string    `gorm:"size:64" json:"title"`     // 大屏标题
-	AutoCollect int       `json:"autoCollect"`              // 1=开启定期采集
-	IntervalSec int       `json:"intervalSec"`              // 采集间隔（秒）
-	CPUWarn     float64   `json:"cpuWarn"`                  // CPU 关注阈值
-	CPUCrit     float64   `json:"cpuCrit"`                  // CPU 严重阈值
-	MemWarn     float64   `json:"memWarn"`                  // 内存 关注阈值
-	MemCrit     float64   `json:"memCrit"`                  // 内存 严重阈值
-	DiskWarn    float64   `json:"diskWarn"`                 // 磁盘 关注阈值
-	DiskCrit    float64   `json:"diskCrit"`                 // 磁盘 严重阈值
-	TopN        int       `json:"topN"`                     // TOP N
-	HostLimit   int       `json:"hostLimit"`                // 大屏主机列表最多展示多少台
-	ShowOffline int       `json:"showOffline"`              // 1=展示离线主机
-	TrendHours  int       `json:"trendHours"`               // 趋势窗口（小时）
-	GroupBy     string    `gorm:"size:16" json:"groupBy"`   // 分组维度：system|department|env|deployserver
-	Remark      string    `gorm:"size:255" json:"remark"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	ID          uint           `gorm:"primaryKey" json:"id"`
+	Title       string         `gorm:"size:64" json:"title"`   // 大屏标题
+	AutoCollect int            `json:"autoCollect"`            // 1=开启定期采集
+	IntervalSec int            `json:"intervalSec"`            // 采集间隔（秒）
+	CPUWarn     float64        `json:"cpuWarn"`                // CPU 关注阈值
+	CPUCrit     float64        `json:"cpuCrit"`                // CPU 严重阈值
+	MemWarn     float64        `json:"memWarn"`                // 内存 关注阈值
+	MemCrit     float64        `json:"memCrit"`                // 内存 严重阈值
+	DiskWarn    float64        `json:"diskWarn"`               // 磁盘 关注阈值
+	DiskCrit    float64        `json:"diskCrit"`               // 磁盘 严重阈值
+	TopN        int            `json:"topN"`                   // TOP N
+	HostLimit   int            `json:"hostLimit"`              // 大屏主机列表最多展示多少台
+	ShowOffline int            `json:"showOffline"`            // 1=展示离线主机
+	TrendHours  int            `json:"trendHours"`             // 趋势窗口（小时）
+	GroupBy     string         `gorm:"size:16" json:"groupBy"` // 分组维度：system|department|env|deployserver
+	Masks       datatypes.JSON `gorm:"type:text" json:"masks"` // 屏蔽规则（超阈值面板过滤，v1.7.35）
+	Remark      string         `gorm:"size:255" json:"remark"`
+	UpdatedAt   time.Time      `json:"updatedAt"`
 }
 
 // PromScreenSnapshot 最近一次采集快照落库（重启后可立即恢复大屏，不必等下一轮）
@@ -65,20 +97,21 @@ type PromScreenSnapshot struct {
 
 // promCfgView 下发给大屏的配置（只读视图，不含落库字段）
 type promCfgView struct {
-	Title       string  `json:"title"`
-	AutoCollect int     `json:"autoCollect"`
-	IntervalSec int     `json:"intervalSec"`
-	CPUWarn     float64 `json:"cpuWarn"`
-	CPUCrit     float64 `json:"cpuCrit"`
-	MemWarn     float64 `json:"memWarn"`
-	MemCrit     float64 `json:"memCrit"`
-	DiskWarn    float64 `json:"diskWarn"`
-	DiskCrit    float64 `json:"diskCrit"`
-	TopN        int     `json:"topN"`
-	HostLimit   int     `json:"hostLimit"`
-	ShowOffline int     `json:"showOffline"`
-	TrendHours  int     `json:"trendHours"`
-	GroupBy     string  `json:"groupBy"`
+	Title       string         `json:"title"`
+	AutoCollect int            `json:"autoCollect"`
+	IntervalSec int            `json:"intervalSec"`
+	CPUWarn     float64        `json:"cpuWarn"`
+	CPUCrit     float64        `json:"cpuCrit"`
+	MemWarn     float64        `json:"memWarn"`
+	MemCrit     float64        `json:"memCrit"`
+	DiskWarn    float64        `json:"diskWarn"`
+	DiskCrit    float64        `json:"diskCrit"`
+	TopN        int            `json:"topN"`
+	HostLimit   int            `json:"hostLimit"`
+	ShowOffline int            `json:"showOffline"`
+	TrendHours  int            `json:"trendHours"`
+	GroupBy     string         `json:"groupBy"`
+	Masks       []promMaskRule `json:"masks"`
 }
 
 // promIssue 超阈值条目（平台自算，不依赖 Prometheus 的 ALERTS）
@@ -152,6 +185,7 @@ func (c *PromScreenConfig) view() promCfgView {
 		ShowOffline: c.ShowOffline,
 		TrendHours:  c.TrendHours,
 		GroupBy:     c.GroupBy,
+		Masks:       promParseMasks(c.Masks),
 	}
 }
 
@@ -223,6 +257,54 @@ func promNormalizeConfig(c *PromScreenConfig) {
 	if c.ShowOffline != 0 {
 		c.ShowOffline = 1
 	}
+	// 屏蔽规则清洗：去空 target、metric 归一到白名单、条数上限 200
+	if rules := promParseMasks(c.Masks); len(rules) > 0 {
+		clean := make([]promMaskRule, 0, len(rules))
+		for _, r := range rules {
+			r.Target = strings.TrimSpace(r.Target)
+			r.Note = strings.TrimSpace(r.Note)
+			switch r.Metric {
+			case "cpu", "mem", "disk", "offline":
+			default:
+				r.Metric = "all"
+			}
+			if r.Target == "" {
+				continue
+			}
+			clean = append(clean, r)
+			if len(clean) >= 200 {
+				break
+			}
+		}
+		c.Masks = promMasksToJSON(clean)
+	} else {
+		c.Masks = datatypes.JSON("[]")
+	}
+}
+
+// promMasked 判断 (主机, 指标) 是否被屏蔽规则命中：
+// target 对 instance（IP:端口）与展示名做「包含」匹配，不区分大小写。
+// metric = all 表示该主机的所有指标（含离线连通性）都屏蔽。
+func promMasked(cfg *PromScreenConfig, metric, instance, name string) bool {
+	rules := promParseMasks(cfg.Masks)
+	if len(rules) == 0 {
+		return false
+	}
+	inst := strings.ToLower(instance)
+	nm := strings.ToLower(name)
+	for _, r := range rules {
+		if r.Metric != "all" && r.Metric != metric {
+			continue
+		}
+		t := strings.ToLower(strings.TrimSpace(r.Target))
+		if t == "" {
+			continue
+		}
+		if strings.Contains(inst, t) || strings.Contains(nm, t) {
+			return true
+		}
+	}
+	return false
 }
 
 var (
@@ -293,7 +375,8 @@ func promHostName(system, env, deploySvr, instance, hostname string) string {
 	return instance
 }
 
-// promBuildIssues 按阈值生成超阈值清单（离线单列为「连通性」严重项）
+// promBuildIssues 按阈值生成超阈值清单（离线单列为「连通性」严重项）。
+// v1.7.35：先过屏蔽规则 —— 命中的 (主机, 指标) 不进清单也不计入统计。
 func promBuildIssues(hosts []promHostStat, cfg *PromScreenConfig, limit int) ([]promIssue, promIssueStat) {
 	type item struct {
 		iss  promIssue
@@ -312,6 +395,9 @@ func promBuildIssues(hosts []promHostStat, cfg *PromScreenConfig, limit int) ([]
 			DeploySvr:  h.DeploySvr,
 		}
 		if !h.Up {
+			if promMasked(cfg, "offline", h.Instance, name) {
+				continue
+			}
 			iss := base
 			iss.Metric, iss.MetricCN = "offline", "连通性"
 			iss.Level, iss.LevelCN = "crit", "严重"
@@ -322,6 +408,9 @@ func promBuildIssues(hosts []promHostStat, cfg *PromScreenConfig, limit int) ([]
 		}
 		push := func(metric, cn string, v, warn, crit float64) {
 			if v < warn {
+				return
+			}
+			if promMasked(cfg, metric, h.Instance, name) {
 				return
 			}
 			iss := base
@@ -639,21 +728,22 @@ func jsonUnmarshalSnapshot(s string) (*promOverviewResp, error) {
 
 // promScreenCfgBody 保存大屏配置的请求体（开关类字段用指针区分「未传」与「显式 0」）
 type promScreenCfgBody struct {
-	Title       string  `json:"title"`
-	AutoCollect *int    `json:"autoCollect"`
-	IntervalSec int     `json:"intervalSec"`
-	CPUWarn     float64 `json:"cpuWarn"`
-	CPUCrit     float64 `json:"cpuCrit"`
-	MemWarn     float64 `json:"memWarn"`
-	MemCrit     float64 `json:"memCrit"`
-	DiskWarn    float64 `json:"diskWarn"`
-	DiskCrit    float64 `json:"diskCrit"`
-	TopN        int     `json:"topN"`
-	HostLimit   int     `json:"hostLimit"`
-	ShowOffline *int    `json:"showOffline"`
-	TrendHours  int     `json:"trendHours"`
-	GroupBy     string  `json:"groupBy"`
-	Remark      string  `json:"remark"`
+	Title       string         `json:"title"`
+	AutoCollect *int           `json:"autoCollect"`
+	IntervalSec int            `json:"intervalSec"`
+	CPUWarn     float64        `json:"cpuWarn"`
+	CPUCrit     float64        `json:"cpuCrit"`
+	MemWarn     float64        `json:"memWarn"`
+	MemCrit     float64        `json:"memCrit"`
+	DiskWarn    float64        `json:"diskWarn"`
+	DiskCrit    float64        `json:"diskCrit"`
+	TopN        int            `json:"topN"`
+	HostLimit   int            `json:"hostLimit"`
+	ShowOffline *int           `json:"showOffline"`
+	TrendHours  int            `json:"trendHours"`
+	GroupBy     string         `json:"groupBy"`
+	Masks       *[]promMaskRule `json:"masks"` // 指针：nil=未传（保持原值），传了=整体覆盖
+	Remark      string         `json:"remark"`
 }
 
 type promCollectStatus struct {
@@ -834,6 +924,9 @@ func PromSaveScreenConfig(c *gin.Context) {
 	old.HostLimit = body.HostLimit
 	old.TrendHours = body.TrendHours
 	old.GroupBy = body.GroupBy
+	if body.Masks != nil {
+		old.Masks = promMasksToJSON(*body.Masks)
+	}
 	if body.Remark != "" {
 		old.Remark = body.Remark
 	}
@@ -841,5 +934,20 @@ func PromSaveScreenConfig(c *gin.Context) {
 		Fail(c, http.StatusInternalServerError, 1, "保存失败："+err.Error())
 		return
 	}
-	OK(c, gin.H{"msg": "已保存，下一轮采集生效", "config": old})
+	// 屏蔽规则不必等下一轮采集：立即对内存快照重算超阈值清单（阈值类字段照旧等下一轮）
+	promReapplyMasks(old)
+	OK(c, gin.H{"msg": "已保存，屏蔽规则立即生效；其它配置下一轮采集生效", "config": old})
+}
+
+// promReapplyMasks 按最新配置重算所有内存快照的超阈值清单（保存屏蔽规则后立刻可见）
+func promReapplyMasks(cfg *PromScreenConfig) {
+	promSnapMu.Lock()
+	defer promSnapMu.Unlock()
+	for _, s := range promSnaps {
+		if s == nil {
+			continue
+		}
+		s.Issues, s.IssueStat = promBuildIssues(s.Hosts, cfg, 100)
+		s.Config = cfg.view()
+	}
 }
