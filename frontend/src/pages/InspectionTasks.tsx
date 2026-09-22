@@ -19,6 +19,7 @@ import {
   Divider,
   Alert,
   Segmented,
+  Checkbox,
 } from 'antd'
 import {
   PlusOutlined,
@@ -28,6 +29,8 @@ import {
   EyeOutlined,
   FundOutlined,
   ReloadOutlined,
+  DownOutlined,
+  UpOutlined,
 } from '@ant-design/icons'
 import { useAuth } from '../store/AuthContext'
 import { useNavigate } from 'react-router-dom'
@@ -61,7 +64,11 @@ export default function InspectionTasks() {
   const [editing, setEditing] = useState<InspectionTask | null>(null)
   const [runningId, setRunningId] = useState<number | null>(null)
   const [catalog, setCatalog] = useState<InspectionCatalog>({ groups: [], metrics: [], categories: [] })
+  // 采集分类的选中集合（cats）：既有**分类 key**（= 整类全选）也有**单指标 key**（子项级选择），
+  // 两种混用直接提交给后端；导出/明细按它裁剪列。
   const [cats, setCats] = useState<string[]>([])
+  // 展开状态：哪些分类卡片被展开显示了子项
+  const [expandedCats, setExpandedCats] = useState<string[]>([])
   const [categories, setCategories] = useState<any[]>([])
   const [remotes, setRemotes] = useState<any[]>([])
   // 平台采集通道（v1.7.20）：巡检采集与资源校准/中间件捕捉共用同一条通道，
@@ -420,11 +427,44 @@ export default function InspectionTasks() {
     },
   ]
 
-  const toggleCat = (key: string) => {
-    const n = cats.includes(key) ? cats.filter((k) => k !== key) : [...cats, key]
+  // ---------- 采集分类选择（整类 + 子项级，v1.7.30） ----------
+  const metricKeysOf = (g: any): string[] => (g.metrics || []).map((m: any) => m.key)
+
+  /** 该分类是否整类选中：存了组 key，或全部子项都被单独勾上 */
+  const isGroupFull = (g: any) =>
+    cats.includes(g.key) || metricKeysOf(g).every((k: string) => cats.includes(k))
+  /** 该分类是否部分选中（只勾了部分子项） */
+  const isGroupPartial = (g: any) =>
+    !isGroupFull(g) && metricKeysOf(g).some((k: string) => cats.includes(k))
+
+  /** 点卡片 = 整类勾/去勾。勾时把零散子项归一成组 key，去勾时组 key 和子项全清 */
+  const toggleCat = (g: any) => {
+    let n: string[]
+    if (isGroupFull(g)) {
+      n = cats.filter((k) => k !== g.key && !metricKeysOf(g).includes(k))
+    } else {
+      n = [...cats.filter((k) => !metricKeysOf(g).includes(k)), g.key]
+    }
     setCats(n)
     form.setFieldValue('metrics', n)
   }
+
+  /** 勾单个子项：整类 key 存在时先拆散成全部子项再翻转；
+   *  全部子项勾齐时归一化回组 key（避免存一长串等价 id） */
+  const toggleMetric = (g: any, mk: string) => {
+    let n = cats.includes(g.key)
+      ? [...cats.filter((k) => k !== g.key), ...metricKeysOf(g)]
+      : [...cats]
+    n = n.includes(mk) ? n.filter((k) => k !== mk) : [...n, mk]
+    if (metricKeysOf(g).every((k: string) => n.includes(k))) {
+      n = [...n.filter((k) => !metricKeysOf(g).includes(k)), g.key]
+    }
+    setCats(n)
+    form.setFieldValue('metrics', n)
+  }
+
+  const toggleExpand = (key: string) =>
+    setExpandedCats((s) => (s.includes(key) ? s.filter((k) => k !== key) : [...s, key]))
 
   // 切换「按分类」的单选/多选：多选切单选时只保留第一个，
   // 否则会出现「界面是单选、值却是多个」的脏状态，提交后与所见不符。
@@ -604,56 +644,121 @@ export default function InspectionTasks() {
             }}
           </Form.Item>
 
-          <Form.Item label="采集分类（可自定义，默认全选八类）" required>
-            <div style={{ display: 'flex', gap: 12, marginBottom: 8 }}>
-              <Button size="small" onClick={() => { const all = (catalog.groups || []).map((g: any) => g.key); setCats(all); form.setFieldValue('metrics', all) }}>
+          <Form.Item label="采集分类（点卡片整类勾选；点箭头展开可单独勾选子项）" required>
+            <div style={{ display: 'flex', gap: 12, marginBottom: 8, alignItems: 'center' }}>
+              <Button size="small" onClick={() => { const all = (catalog.groups || []).map((g: any) => g.key); setExpandedCats([]); setCats(all); form.setFieldValue('metrics', all) }}>
                 全选
               </Button>
               <Button size="small" onClick={() => { setCats([]); form.setFieldValue('metrics', []) }}>
                 清空
               </Button>
+              <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
+                只勾部分子项时分类显示 <Tag color="orange" style={{ margin: 0, fontSize: 11 }}>x/N 项</Tag>；全部勾齐自动归并为整类
+              </span>
             </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
               {(catalog.groups || []).map((g: any) => {
-                const checked = cats.includes(g.key)
+                const full = isGroupFull(g)
+                const partial = isGroupPartial(g)
+                const expanded = expandedCats.includes(g.key)
+                const selCount = full
+                  ? (g.metrics || []).length
+                  : metricKeysOf(g).filter((k: string) => cats.includes(k)).length
                 return (
                   <div
                     key={g.key}
-                    onClick={() => toggleCat(g.key)}
+                    data-cat={g.key}
                     style={{
-                      cursor: 'pointer',
-                      border: `1px solid ${checked ? '#38bdf8' : 'var(--border-soft)'}`,
-                      background: checked ? 'rgba(56,189,248,0.12)' : 'transparent',
+                      border: `1px solid ${full ? '#38bdf8' : partial ? '#f59e0b' : 'var(--border-soft)'}`,
+                      background: full
+                        ? 'rgba(56,189,248,0.12)'
+                        : partial
+                        ? 'rgba(245,158,11,0.08)'
+                        : 'transparent',
                       borderRadius: 10,
                       padding: '8px 12px',
-                      minWidth: 200,
+                      width: expanded ? '100%' : 220,
                       transition: 'all .15s',
                     }}
                   >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {/* 头部：点复选块/标题 = 整类勾选；点箭头 = 展开子项（互不干扰） */}
+                    <div
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}
+                      onClick={() => toggleCat(g)}
+                    >
                       <span
                         style={{
                           width: 14,
                           height: 14,
+                          flexShrink: 0,
                           borderRadius: 4,
-                          border: `1px solid ${checked ? '#38bdf8' : '#64748b'}`,
-                          background: checked ? '#38bdf8' : 'transparent',
+                          border: `1px solid ${full || partial ? '#38bdf8' : '#64748b'}`,
+                          background: full ? '#38bdf8' : partial ? 'rgba(56,189,248,0.4)' : 'transparent',
+                          position: 'relative',
                         }}
-                      />
-                      <span style={{ fontWeight: 600 }}>{g.label}</span>
-                      <Tag color={checked ? 'cyan' : 'default'} style={{ margin: 0, fontSize: 11 }}>
-                        {g.metrics.length} 项
+                      >
+                        {/* 半选态的短横 */}
+                        {partial && (
+                          <span
+                            style={{
+                              position: 'absolute', left: 2, right: 2, top: '50%',
+                              height: 2, transform: 'translateY(-1px)', background: '#38bdf8', borderRadius: 1,
+                            }}
+                          />
+                        )}
+                      </span>
+                      <span style={{ fontWeight: 600, flex: 1 }}>{g.label}</span>
+                      <Tag color={full ? 'cyan' : partial ? 'orange' : 'default'} style={{ margin: 0, fontSize: 11 }}>
+                        {full ? `${(g.metrics || []).length} 项` : `${selCount}/${(g.metrics || []).length} 项`}
                       </Tag>
+                      <span
+                        style={{
+                          color: 'var(--text-secondary)', fontSize: 11, padding: '0 2px',
+                          cursor: 'pointer', flexShrink: 0,
+                        }}
+                        onClick={(e) => { e.stopPropagation(); toggleExpand(g.key) }}
+                        title={expanded ? '收起子项' : '展开子项'}
+                      >
+                        {expanded ? <UpOutlined /> : <DownOutlined />}
+                      </span>
                     </div>
-                    <div style={{ color: 'var(--text-secondary)', fontSize: 11, marginTop: 4 }}>
-                      {CAT_DESC[g.key] || g.key}
-                    </div>
+                    {!expanded && (
+                      <div style={{ color: 'var(--text-secondary)', fontSize: 11, marginTop: 4 }}>
+                        {CAT_DESC[g.key] || g.key}
+                      </div>
+                    )}
+                    {expanded && (
+                      <div
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+                          gap: '4px 12px',
+                          marginTop: 8,
+                          padding: '8px 10px',
+                          background: 'rgba(0,0,0,0.15)',
+                          borderRadius: 8,
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {(g.metrics || []).map((m: any) => (
+                          <Checkbox
+                            key={m.key}
+                            checked={full || cats.includes(m.key)}
+                            onChange={() => toggleMetric(g, m.key)}
+                            style={{ fontSize: 12 }}
+                            title={m.note || m.label}
+                          >
+                            {m.label}
+                          </Checkbox>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )
               })}
             </div>
             {cats.length === 0 && (
-              <div style={{ color: '#ef4444', fontSize: 12, marginTop: 6 }}>请至少选择一个采集分类</div>
+              <div style={{ color: '#ef4444', fontSize: 12, marginTop: 6 }}>请至少选择一个采集分类或子项</div>
             )}
             <Form.Item name="metrics" noStyle>
               <Input type="hidden" />

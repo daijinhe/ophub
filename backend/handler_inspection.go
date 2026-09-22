@@ -36,10 +36,15 @@ func mustJSON(v interface{}) []byte {
 	return b
 }
 
-// taskCategories 返回任务采集的分类（默认全部六类）
+// taskCategories 返回任务声明的采集范围（v1.7.30+）。
+// 列表里可以是**分类 key**（如 "cpu"，= 该分类全部指标）或**单个指标 key**（如 "cpu_usage"），
+// 两种混用；空列表 = 未声明，回退全部分类（兼容老任务）。
+// ⚠ 历史 bug：此前这里只有一个空代码块 `if len(task.Metrics) > 0 {}`，Metrics 从未被
+// 反序列化，任务上选的采集分类对导出/采集一直不生效（恒为全部八类）。
 func taskCategories(task *InspectionTask) []string {
 	var cats []string
 	if len(task.Metrics) > 0 {
+		_ = json.Unmarshal(task.Metrics, &cats)
 	}
 	if len(cats) == 0 {
 		cats = DefaultCategories()
@@ -1767,13 +1772,17 @@ func InspectionExport(c *gin.Context) {
 		}
 	}
 
-	// 列：基础列 + 按分类过滤的指标列
+	// 列：基础列 + 按采集范围过滤的指标列。
+	// cats 里既有分类 key 也有单指标 key（v1.7.30 子项级选择）：
+	//   分类 key 命中 → 该分类全部指标；否则单指标 key 命中 → 只收这一个。
 	metricCols := []MetricDef{}
 	for _, g := range MetricGroups {
-		if !containsStr(cats, g.Key) {
-			continue
+		groupSel := containsStr(cats, g.Key)
+		for _, m := range g.Metrics {
+			if groupSel || containsStr(cats, m.Key) {
+				metricCols = append(metricCols, m)
+			}
 		}
-		metricCols = append(metricCols, g.Metrics...)
 	}
 
 	rows := make([]gin.H, 0, len(results))
