@@ -1650,6 +1650,12 @@ func InspectionExport(c *gin.Context) {
 		_ = json.Unmarshal(r.Data, &data)
 		flat := resolveFlat(data)
 		var alerts []map[string]interface{}
+		// 告警必须取「重算后」的 r.Alerts（rerouteAlerts 已按当前规则写回）。
+		// v1.7.27 修复：此前这里只声明不赋值，导出的「告警项」列恒为空、
+		// alerts 数组恒为 0 条，季度报告的「告警明细」Sheet 因此永远是空表。
+		if len(r.Alerts) > 0 {
+			_ = json.Unmarshal(r.Alerts, &alerts)
+		}
 		rec := recMap[r.RecordID]
 		row := gin.H{
 			"巡检时间":    rec.RunAt.Format("2006-01-02 15:04"),
@@ -1670,11 +1676,14 @@ func InspectionExport(c *gin.Context) {
 		}
 		rows = append(rows, row)
 
+		// 告警行带上「巡检时间」：季度报告的「告警明细」Sheet 与「按资产+指标聚合」
+		// 都要按时间取首次/末次，缺了这一列就只能给出空时间列。
 		for _, a := range alerts {
 			alertRows = append(alertRows, gin.H{
 				"ERP系统名称": r.AssetName,
 				"归属部门":    r.Department,
 				"虚拟机IPv4": r.IP,
+				"巡检时间":    rec.RunAt.Format("2006-01-02 15:04"),
 				"分类":      CategoryLabel(categoryOfAlert(a)),
 				"指标":      a["metric"],
 				"级别":      map[string]string{"critical": "严重", "warning": "预警"}[a["level"].(string)],

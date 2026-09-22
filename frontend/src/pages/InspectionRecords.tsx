@@ -341,6 +341,7 @@ export default function InspectionRecords() {
     sizeBytes: number
     degraded: boolean
     droppedSheets: string[]
+    compactedNotes: string[]
     stats: { totalResults: number; totalAlerts: number; totalRecords: number; quarterStart: string; quarterEnd: string }
   } | null>(null)
 
@@ -431,6 +432,7 @@ export default function InspectionRecords() {
         sizeBytes: r.sizeBytes,
         degraded: r.degraded,
         droppedSheets: r.droppedSheets,
+        compactedNotes: r.compactedNotes,
         stats: {
           totalResults: r.stats.totalResults,
           totalAlerts: r.stats.totalAlerts,
@@ -439,10 +441,12 @@ export default function InspectionRecords() {
           quarterEnd: r.stats.quarterEnd,
         },
       })
-      if (r.degraded) {
+      if (r.droppedSheets.length > 0) {
         message.warning(
-          `已生成 ${fmtBytes(r.sizeBytes)} —— 自动降级丢掉了: ${r.droppedSheets.join('、')}。如需完整内容请缩小范围（如指定任务）。`
+          `已生成 ${fmtBytes(r.sizeBytes)} —— 为保 ≤5MB 丢掉了 Sheet: ${r.droppedSheets.join('、')}。如需完整内容请缩小范围（如指定任务）。`
         )
+      } else if (r.degraded) {
+        message.info(`已生成 ${fmtBytes(r.sizeBytes)} —— 为保 ≤5MB，资产明细/告警明细已按季度聚合（6 个 Sheet 都在）`)
       } else {
         message.success(`已生成 ${fmtBytes(r.sizeBytes)}（${r.stats.totalResults} 个采集 · ${r.stats.totalAlerts} 个告警）`)
       }
@@ -674,7 +678,12 @@ export default function InspectionRecords() {
                 <span style={{ color: 'var(--text-secondary)' }}>
                   季度 {quarterReport.stats.quarterStart} ~ {quarterReport.stats.quarterEnd} · 采集 {quarterReport.stats.totalResults} 条 · 运行 {quarterReport.stats.totalRecords} 次 · 告警 {quarterReport.stats.totalAlerts} 条
                 </span>
-                {quarterReport.degraded && (
+                {quarterReport.degraded && !quarterReport.droppedSheets.length && (
+                  <Tooltip title={quarterReport.compactedNotes.join('；')}>
+                    <Tag color="blue">已压缩: 资产明细/告警明细按季度聚合（6 个 Sheet 都在）</Tag>
+                  </Tooltip>
+                )}
+                {quarterReport.droppedSheets.length > 0 && (
                   <Tooltip title="为保证 ≤ 5MB，自动丢掉了部分 Sheet；如需完整数据请缩小筛选范围（如指定任务）。">
                     <Tag color="orange">已降级: 丢 {quarterReport.droppedSheets.join('、')}</Tag>
                   </Tooltip>

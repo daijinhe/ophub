@@ -18,16 +18,32 @@
 import * as XLSX from 'xlsx'
 import { getExport } from '../api/inspection'
 
-// 单 sheet 行数 / 字节数经验值(xlsx 是 zip 压缩,SheetJS 写出来大约 50~80 字节/行;
-// 这里给的是「保守阈值」—— 实际更小,但宁可估大也不要估小导致漏掉降级)。
-const ROW_BYTES_ESTIMATE = 80
-
 export interface QuarterReportOptions {
   year: number
   quarter: 1 | 2 | 3 | 4
   taskId?: number
   /** 5MB 硬上限 */
   maxMB?: number
+}
+
+/**
+ * Sheet 装配模式 —— 5MB 不够时**先压缩、再丢弃**。
+ *
+ * v1.7.27 实测：300 台 × 12 次（3607 行 / 13232 条告警）的真实 xlsx 是
+ * 「资产明细 9.4MB + 告警明细 5.7MB」，按老逻辑（超了就整表丢）会产出
+ * 一个只有「概览+各次运行」的 23KB 空壳 —— 用户要的资产明细/告警明细全没了。
+ * 所以降级顺序改成：
+ *   ① 全量（小数据量直接过）
+ *   ② 压缩：资产明细 → 每台资产只留最新一次快照；告警明细 → 按「资产+指标」聚合
+ *   ③ 还超才丢 Sheet，且每一步都用**真实写出的字节**判断（估算公式误差可达 20 倍）
+ */
+export interface SheetMode {
+  /** 资产明细：full=每次采集一行；latest=每台资产只保留最新一次 */
+  detail: 'full' | 'latest'
+  /** 告警明细：full=每条告警一行；agg=按「资产+指标」聚合 */
+  alert: 'full' | 'agg'
+  /** 告警明细最多保留的行数（兜底截断；0/undefined=不限） */
+  alertLimit?: number
 }
 
 export interface QuarterReportResult {
@@ -39,6 +55,8 @@ export interface QuarterReportResult {
   degraded: boolean
   /** 因为超 5MB 被丢弃的 sheet 名(顺序就是被丢的顺序) */
   droppedSheets: string[]
+  /** 被压缩过的 sheet 说明(没丢,只是聚合了) */
+  compactedNotes: string[]
   stats: {
     quarterStart: string
     quarterEnd: string
@@ -102,25 +120,6 @@ function parseMetric(v: any): number {
   return m ? Number(m[0]) : NaN
 }
 
-/**
- * 估一行平均字节 — 简单用「AOA 中最长行」转字符串后的字节数作为代表,
- * 实际 SheetJS 会更小(zip + sharedStrings),所以这是**保守估计**。
- */
-function estimateBytes(ws: { aoa: any[][] }): number {
-  if (!ws.aoa || ws.aoa.length === 0) return 200 // 空表也给点兜底
-  let max = 0
-  for (const row of ws.aoa) {
-    let len = 0
-    for (const cell of row) {
-      const s = cell === null || cell === undefined ? '' : String(cell)
-      len += s.length * 3 // UTF-8 中文按 3 字节估
-    }
-    if (len > max) max = len
-  }
-  // 表头 + 表体 + 列宽描述 ≈ 行数 × max
-  return ws.aoa.length * Math.max(max, ROW_BYTES_ESTIMATE) + 1024
-}
-
 /** 真正写到 xlsx,返回 Blob + 字节 */
 function writeWorkbook(builders: SheetSpec[]): { blob: Blob; bytes: number; keptKeys: string[] } {
   const wb = XLSX.utils.book_new()
@@ -156,46 +155,58 @@ export async function buildQuarterReportXlsx(opts: QuarterReportOptions): Promis
   const range = data.range || {}
   const summary = data.summary || {}
 
-  // 2. 派生各 sheet 的 AOA
-  const specs = buildSheets(rows, alerts, summary, range, opts.year, opts.quarter)
+  // 2. 派生各 sheet 的 AOA（先按「全量」装配）
+  const makeSpecs = (mode: SheetMode) =>
+    buildSheets(rows, alerts, summary, range, opts.year, opts.quarter, mode)
 
-  // 3. 估算字节 — 超限就按优先级丢 sheet
-  let estimate = specs.reduce((sum, s) => sum + estimateBytes({ aoa: s.build().aoa }), 0)
-  // SheetJS + zip 压缩会让实际文件比估算小,这里给个 1.5x 安全系数
-  estimate = Math.ceil(estimate * 1.5)
-
-  // 降级顺序:按天趋势 → 资产明细 → 资产趋势 → 告警明细(一般到不了最后一步)
-  const DROP_ORDER = ['按天趋势', '资产明细', '资产趋势', '告警明细']
-  let specsKept = specs.slice()
+  // 3. 写 → **实测**字节。
+  //    不再用「行数 × 估算行宽」的公式：300 台量级下估算 15MB、真实 15MB 虽然碰巧接近，
+  //    但 50 台量级下估算能差 20 倍，会把明明能装下的 sheet 白白丢掉。
+  //    直接写一次再量，最多多花几百毫秒，换来的判断是准的。
+  const DROP_ORDER = ['按天趋势', '资产趋势', '资产明细', '告警明细']
+  let mode: SheetMode = { detail: 'full', alert: 'full' }
+  let specsKept = makeSpecs(mode)
   let dropped: string[] = []
-  let degraded = false
-  for (const k of DROP_ORDER) {
-    if (estimate <= maxBytes) break
-    const idx = specsKept.findIndex((s) => s.key === k)
-    if (idx >= 0) {
-      // 同步丢掉对应的 sheet,但实际估算里也要重算
-      const removed = specsKept.splice(idx, 1)[0]
-      dropped.push(removed.key)
-      estimate = specsKept.reduce((sum, s) => sum + estimateBytes({ aoa: s.build().aoa }), 0)
-      estimate = Math.ceil(estimate * 1.5)
-      degraded = true
-    }
-  }
-
-  // 4. 真正写出来 + 字节检查(估算是估算,实际以写出来为准)
+  let compactedNotes: string[] = []
   let result = writeWorkbook(specsKept)
-  // 如果实际字节还是超,继续丢 sheet(实测兜底)
-  let safety = 0
-  while (result.bytes > maxBytes && safety < DROP_ORDER.length) {
-    const k = DROP_ORDER[safety]
-    if (specsKept.findIndex((s) => s.key === k) >= 0) {
+  let degraded = false
+
+  if (result.bytes > maxBytes) {
+    // ① 先压缩两张大表(不丢 sheet) —— 保住用户最关心的资产明细 / 告警明细
+    mode = { detail: 'latest', alert: 'agg' }
+    const compactSpecs = makeSpecs(mode)
+    const compactRes = writeWorkbook(compactSpecs)
+    compactedNotes = [
+      '资产明细：每台资产只保留季度内最新一次快照（逐次波动见「资产趋势」）',
+      '告警明细：按「资产 + 指标」聚合（次数 / 最高值 / 首次末次时间）',
+    ]
+    degraded = true
+    specsKept = compactSpecs
+    result = compactRes
+
+    // ② 压缩后仍超 → 才按优先级丢 sheet,每丢一次实测一次
+    for (const k of DROP_ORDER) {
+      if (result.bytes <= maxBytes) break
       const idx = specsKept.findIndex((s) => s.key === k)
-      const removed = specsKept.splice(idx, 1)[0]
-      dropped.push(removed.key)
+      if (idx < 0) continue
+      dropped.push(specsKept.splice(idx, 1)[0].key)
       result = writeWorkbook(specsKept)
-      degraded = true
     }
-    safety++
+
+    // ③ 极端兜底：告警明细按「严重优先」逐级截断,保证文件一定 ≤ maxMB
+    let guard = 0
+    let limit = 5000
+    while (result.bytes > maxBytes && guard < 6) {
+      limit = Math.max(200, Math.floor(limit / 2))
+      mode = { ...mode, alertLimit: limit }
+      specsKept = makeSpecs(mode)
+      result = writeWorkbook(specsKept)
+      compactedNotes = [
+        '资产明细：每台资产只保留季度内最新一次快照（逐次波动见「资产趋势」）',
+        `告警明细：按「资产 + 指标」聚合后仍超限，已按严重优先截断至 ${limit} 行`,
+      ]
+      guard++
+    }
   }
 
   const filename = `巡检季度报告_${opts.year}${QUARTER_LABEL[opts.quarter]}_${(range.start || '').replace(/-/g, '')}-${(range.end || '').replace(/-/g, '')}.xlsx`
@@ -228,6 +239,7 @@ export async function buildQuarterReportXlsx(opts: QuarterReportOptions): Promis
     sizeMB: result.bytes / 1024 / 1024,
     degraded,
     droppedSheets: dropped,
+    compactedNotes,
     stats: {
       quarterStart: range.start || '',
       quarterEnd: range.end || '',
@@ -251,7 +263,8 @@ function buildSheets(
   summary: any,
   range: any,
   year: number,
-  quarter: number
+  quarter: number,
+  mode: SheetMode = { detail: 'full', alert: 'full' }
 ): SheetSpec[] {
   // ---- 概览 sheet ----
   const totalAlerts = alerts.length
@@ -260,20 +273,15 @@ function buildSheets(
   const okCount = rows.filter((r) => r['状态'] === '正常').length
   const failCount = rows.filter((r) => r['状态'] === '失败').length
   const successRate = rows.length > 0 ? ((okCount / rows.length) * 100).toFixed(1) + '%' : '—'
-  // 健康评分 = 100 - 平均CPU*0.3 - 平均内存*0.3 - 平均磁盘*0.4 - 告警数(严重5x预警1x)
   const avgCpu = Number(summary.avgCpu || 0)
   const avgMem = Number(summary.avgMem || 0)
   const avgDisk = Number(summary.avgDisk || 0)
-  const healthScore = Math.max(
-    0,
-    Math.min(
-      100,
-      Math.round(
-        100 - avgCpu * 0.3 - avgMem * 0.3 - avgDisk * 0.4 - criticalAlerts * 5 - warnAlerts
-      )
-    )
-  )
-  const healthColor = healthScore >= 85 ? '良好' : healthScore >= 65 ? '关注' : '风险'
+  // 健康评分(占位,真正的分数在「资产趋势」算完后回填 —— 见下方 setOverview)
+  // ⚠ 旧公式把「告警条数」直接当扣分项(严重×5 + 预警×1),300 台 × 一个季度
+  //   一万多条告警时必然算出 0 分,所有季度都是 0,完全失去区分度。
+  //   改成**比率口径**:资源水位扣分 + 告警资产占比扣分 + 严重告警占比扣分。
+  let healthScore = 0
+  const healthColorOf = (s: number) => (s >= 85 ? '良好' : s >= 65 ? '关注' : '风险')
 
   const overviewAoa: any[][] = [
     [`${year} 年 ${QUARTER_LABEL[quarter]} 智能巡检季度报告`],
@@ -282,7 +290,7 @@ function buildSheets(
     ['生成时间', new Date().toLocaleString('zh-CN')],
     [],
     ['一、整体健康'],
-    ['健康评分', `${healthScore} 分 (${healthColor})`],
+    ['健康评分', '—'], // 资产趋势算完后回填
     ['平均 CPU 使用率', `${num(avgCpu)}%`],
     ['平均内存使用率', `${num(avgMem)}%`],
     ['平均磁盘使用率', `${num(avgDisk)}%`],
@@ -297,25 +305,36 @@ function buildSheets(
     ['告警总条数', totalAlerts],
     ['  其中严重告警', criticalAlerts],
     ['  其中预警告警', warnAlerts],
+    ['告警资产占比', '—'], // 回填
+    ['严重告警占比', '—'], // 回填
     [],
     ['四、本报告 Sheet 说明'],
     ['概览', '本页'],
     ['各次运行', '每行 = 一次巡检运行的汇总(成功/失败/告警数)'],
-    ['资产明细', '每行 = 单台资产的单次采集快照(指标明细)'],
-    ['告警明细', '每行 = 一次告警(系统/IP/指标/级别/数值)'],
+    ['资产明细', mode.detail === 'latest'
+      ? '每行 = 一台资产（季度内最新一次快照；逐次波动见「资产趋势」）'
+      : '每行 = 单台资产的单次采集快照(指标明细)'],
+    ['告警明细', mode.alert === 'agg'
+      ? '每行 = 一台资产 × 一个指标的季度聚合(次数 / 最高值 / 首次末次)'
+      : '每行 = 一次告警(系统/IP/指标/级别/数值)'],
     ['资产趋势', '每行 = 一台资产的季度聚合(最高/最低/平均指标)'],
     ['按天趋势', '每行 = 一天的汇总(平均指标 + 告警数 + 采集资产数)'],
     [],
     ['提示', '本报告由 云枢 OpsHub · 智能运维平台自动生成 · 数据采集走 Ansible / SSH'],
   ]
 
-  // 运行时回填总运行次数
+  // 按「标签」回填概览单元格 —— 不用下标,免得以后加一行就把别的值写错位置
+  const setOverview = (label: string, value: any) => {
+    for (const row of overviewAoa) {
+      if (row && row[0] === label) { row[1] = value; return }
+    }
+  }
   const runsMap = new Map<string, number>()
   for (const r of rows) {
     const k = `${r['巡检时间']}__${r['任务名称']}`
     runsMap.set(k, (runsMap.get(k) || 0) + 1)
   }
-  overviewAoa[12][1] = String(runsMap.size)
+  setOverview('总运行次数', String(runsMap.size))
 
   // ---- 各次运行 sheet ----
   const runsHeader = ['巡检时间', '任务名称', '总资产数', '成功', '失败', '告警条数', '采集来源']
@@ -383,18 +402,24 @@ function buildSheets(
     return 0
   })
 
+  // 压缩模式:每台资产只保留「季度内最新一次」快照 —— 300 台 × 12 次时能把
+  // 3600 行压到 300 行(9.4MB → 0.8MB),而逐次波动在「资产趋势」里依然完整。
+  let detailRows = sortedRows
+  if (mode.detail === 'latest') {
+    const latestMap = new Map<string, any>()
+    for (const r of sortedRows) {
+      const k = `${r['ERP系统名称'] || ''}__${r['虚拟机IPv4'] || ''}`
+      const prev = latestMap.get(k)
+      if (!prev || String(r['巡检时间'] || '') > String(prev['巡检时间'] || '')) latestMap.set(k, r)
+    }
+    detailRows = Array.from(latestMap.values())
+  }
+
   const detailAoa: any[][] = [detailCols]
-  for (const r of sortedRows) {
+  for (const r of detailRows) {
     const row: any[] = []
     for (const col of detailCols) row.push(r[col] ?? '')
     detailAoa.push(row)
-  }
-
-  // ---- 告警明细 sheet ----
-  const alertCols = ['ERP系统名称', '归属部门', '虚拟机IPv4', '巡检时间', '分类', '指标', '级别', '数值', '说明', '开发人员']
-  const alertAoa: any[][] = [alertCols]
-  for (const a of alerts) {
-    alertAoa.push(alertCols.map((c) => a[c] ?? ''))
   }
 
   // ---- 资产趋势 sheet(按资产聚合) ----
@@ -427,7 +452,7 @@ function buildSheets(
       assetMap.set(k, cur)
     }
     // ⚠ 后端 fmtVal 加了单位后缀("100.0%"/"15.6GB"),直接 Number() 拿 NaN,
-// 必须用 parseMetric 剥掉尾部单位再转
+    //   必须用 parseMetric 剥掉尾部单位再转
     const cpu = parseMetric(r['CPU整体使用率'])
     if (isFinite(cpu)) { cur.cpuMax = Math.max(cur.cpuMax, cpu); cur.cpuMin = Math.min(cur.cpuMin, cpu); cur.cpuSum += cpu; cur.cpuCnt++ }
     const mem = parseMetric(r['内存使用率'])
@@ -438,7 +463,7 @@ function buildSheets(
       const items = String(r['告警项']).split(/[、，]/).filter(Boolean)
       cur.alertTotal += items.length
       // 通过 alerts sheet 关联级别较费,先粗略按 critical 数
-      const matchCrit = alerts.filter((a) => a['ERP系统名称'] === cur.name && a['虚拟机IPv4'] === cur.ip && a['级别'] === '严重').length
+      const matchCrit = alerts.filter((a) => a['ERP系统名称'] === cur!.name && a['虚拟机IPv4'] === cur!.ip && a['级别'] === '严重').length
       cur.alertCritical = Math.max(cur.alertCritical, matchCrit)
       const t = r['巡检时间'] || ''
       if (!cur.firstAlertAt || t < cur.firstAlertAt) cur.firstAlertAt = t
@@ -466,6 +491,19 @@ function buildSheets(
       a.lastAlertAt || '—',
     ])
   }
+
+  // ---- 健康评分(比率口径,见概览处的注释)----
+  const assetTotal = assetMap.size
+  const alertAssetCount = Array.from(assetMap.values()).filter((a) => a.alertTotal > 0).length
+  const alertAssetRatio = assetTotal ? alertAssetCount / assetTotal : 0
+  const critRatio = totalAlerts ? criticalAlerts / totalAlerts : 0
+  const resourcePenalty = (avgCpu * 0.3 + avgMem * 0.3 + avgDisk * 0.4) * 0.6 // 资源水位最多扣 ~60 分
+  healthScore = Math.max(0, Math.min(100, Math.round(
+    100 - resourcePenalty - alertAssetRatio * 20 - critRatio * 20
+  )))
+  setOverview('健康评分', `${healthScore} 分 (${healthColorOf(healthScore)})`)
+  setOverview('告警资产占比', `${(alertAssetRatio * 100).toFixed(1)}%（${alertAssetCount}/${assetTotal} 台）`)
+  setOverview('严重告警占比', `${(critRatio * 100).toFixed(1)}%（${criticalAlerts}/${totalAlerts}）`)
 
   // ---- 按天趋势 sheet(按日期聚合) ----
   const dayMap = new Map<string, { total: number; ok: number; fail: number; alerts: number; cpuSum: number; cpuCnt: number; memSum: number; memCnt: number; diskSum: number; diskCnt: number }>()
@@ -513,17 +551,92 @@ function buildSheets(
     14
   )
   const runsColWidths = [18, 28, 14, 10, 10, 12, 14]
-  const alertColWidths = alertCols.map((h) => h === '说明' ? 50 : h === '开发人员' ? 20 : h === '虚拟机IPv4' ? 16 : h === 'ERP系统名称' ? 28 : 14)
   const trendColWidths = [28, 22, 16, 12, 14, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 14, 18, 18]
   const dayColWidths = [14, 14, 12, 12, 12, 12, 12, 12]
 
+  // ---- 告警明细 sheet ----
+  if (mode.alert === 'agg') {
+    // 聚合模式:按「资产 + 指标」合并 —— 13232 条压到约 2~3 千行(5.7MB → 1MB 级)。
+    // 级别取出现过的最高档,数值取峰值,时间给首次/末次,便于判断「是一直有还是偶发」。
+    const aggMap = new Map<string, {
+      name: string; dept: string; ip: string; cat: string; metric: string
+      level: string; maxVal: number; cnt: number; first: string; last: string
+      note: string; developer: string
+    }>()
+    for (const a of alerts) {
+      const k = `${a['ERP系统名称'] || ''}__${a['虚拟机IPv4'] || ''}__${a['指标'] || ''}`
+      const t = String(a['巡检时间'] || '')
+      let cur = aggMap.get(k)
+      if (!cur) {
+        cur = {
+          name: a['ERP系统名称'] || '', dept: a['归属部门'] || '', ip: a['虚拟机IPv4'] || '',
+          cat: a['分类'] || '', metric: a['指标'] || '', level: a['级别'] || '',
+          maxVal: -Infinity, cnt: 0, first: t, last: t,
+          note: a['说明'] || '', developer: a['开发人员'] || '',
+        }
+        aggMap.set(k, cur)
+      }
+      cur.cnt++
+      if (a['级别'] === '严重') cur.level = '严重'
+      const v = parseMetric(a['数值'])
+      if (isFinite(v)) cur.maxVal = Math.max(cur.maxVal, v)
+      if (t && (!cur.first || t < cur.first)) cur.first = t
+      if (t && (!cur.last || t > cur.last)) cur.last = t
+    }
+    const aggCols = ['ERP系统名称', '归属部门', '虚拟机IPv4', '指标', '分类', '级别',
+      '出现次数', '最高数值', '首次告警', '末次告警', '说明', '开发人员']
+    const aggAoa: any[][] = [aggCols]
+    const aggList = Array.from(aggMap.values()).sort((x, y) => {
+      const lv = (x.level === '严重' ? 0 : 1) - (y.level === '严重' ? 0 : 1)
+      if (lv !== 0) return lv
+      return y.cnt - x.cnt
+    })
+    const limited = mode.alertLimit && mode.alertLimit > 0 ? aggList.slice(0, mode.alertLimit) : aggList
+    for (const a of limited) {
+      aggAoa.push([
+        a.name, a.dept, a.ip, a.metric, a.cat, a.level, a.cnt,
+        isFinite(a.maxVal) ? String(a.maxVal) : '—',
+        a.first || '—', a.last || '—', a.note, a.developer,
+      ])
+    }
+    return assemble({
+      overviewAoa, runsAoa, runsColWidths, detailAoa, detailCols, detailColWidths,
+      alertAoa: aggAoa, alertCols: aggCols, trendAoa, trendColWidths, dayAoa, dayColWidths,
+    })
+  }
+
+  const alertCols = ['ERP系统名称', '归属部门', '虚拟机IPv4', '巡检时间', '分类', '指标', '级别', '数值', '说明', '开发人员']
+  const alertAoa: any[][] = [alertCols]
+  const alertSorted = alerts.slice().sort((x, y) =>
+    (x['级别'] === '严重' ? 0 : 1) - (y['级别'] === '严重' ? 0 : 1))
+  const alertUsed = mode.alertLimit && mode.alertLimit > 0 ? alertSorted.slice(0, mode.alertLimit) : alertSorted
+  for (const a of alertUsed) {
+    alertAoa.push(alertCols.map((c) => a[c] ?? ''))
+  }
+  return assemble({
+    overviewAoa, runsAoa, runsColWidths, detailAoa, detailCols, detailColWidths,
+    alertAoa, alertCols, trendAoa, trendColWidths, dayAoa, dayColWidths,
+  })
+}
+
+/** 把 6 张表按固定顺序装成 SheetSpec[] */
+function assemble(p: {
+  overviewAoa: any[][]
+  runsAoa: any[][]; runsColWidths: number[]
+  detailAoa: any[][]; detailCols: string[]; detailColWidths: number[]
+  alertAoa: any[][]; alertCols: string[]
+  trendAoa: any[][]; trendColWidths: number[]
+  dayAoa: any[][]; dayColWidths: number[]
+}): SheetSpec[] {
+  const alertColWidths = p.alertCols.map((h) =>
+    h === '说明' ? 50 : h === '开发人员' ? 20 : h === '虚拟机IPv4' ? 16 : h === 'ERP系统名称' ? 28 : 14)
   return [
-    { key: '概览', title: '概览', build: () => ({ aoa: overviewAoa, cols: [22, 50] }) },
-    { key: '各次运行', title: '各次运行', build: () => ({ aoa: runsAoa, cols: runsColWidths }) },
-    { key: '资产明细', title: '资产明细', build: () => ({ aoa: detailAoa, cols: detailColWidths }) },
-    { key: '告警明细', title: '告警明细', build: () => ({ aoa: alertAoa, cols: alertColWidths }) },
-    { key: '资产趋势', title: '资产趋势', build: () => ({ aoa: trendAoa, cols: trendColWidths }) },
-    { key: '按天趋势', title: '按天趋势', build: () => ({ aoa: dayAoa, cols: dayColWidths }) },
+    { key: '概览', title: '概览', build: () => ({ aoa: p.overviewAoa, cols: [22, 50] }) },
+    { key: '各次运行', title: '各次运行', build: () => ({ aoa: p.runsAoa, cols: p.runsColWidths }) },
+    { key: '资产明细', title: '资产明细', build: () => ({ aoa: p.detailAoa, cols: p.detailColWidths }) },
+    { key: '告警明细', title: '告警明细', build: () => ({ aoa: p.alertAoa, cols: alertColWidths }) },
+    { key: '资产趋势', title: '资产趋势', build: () => ({ aoa: p.trendAoa, cols: p.trendColWidths }) },
+    { key: '按天趋势', title: '按天趋势', build: () => ({ aoa: p.dayAoa, cols: p.dayColWidths }) },
   ]
 }
 
