@@ -20,18 +20,20 @@ import {
   Typography,
   message,
 } from 'antd'
+import type { MenuProps } from 'antd'
 import type { DataNode } from 'antd/es/tree'
 import {
   CloudServerOutlined,
   CodeOutlined,
+  CopyOutlined,
   DeleteOutlined,
   EditOutlined,
   EyeOutlined,
   FileAddOutlined,
   FileTextOutlined,
   FolderAddOutlined,
+  FolderOpenOutlined,
   FolderOutlined,
-  MoreOutlined,
   QuestionCircleOutlined,
   ReloadOutlined,
   SaveOutlined,
@@ -51,6 +53,9 @@ const { Title, Text, Paragraph } = Typography
 const { TextArea } = Input
 
 const ROOT_DEFAULT = '/data/jenkins_home/scripts/Java_Start_Stop_SH'
+
+/** 树内「正在新建」临时节点的 key */
+const DRAFT_KEY = '__ophub_draft__'
 
 /** 友好的字节数显示 */
 function fmtBytes(n: number): string {
@@ -89,6 +94,16 @@ function errMsg(e: any, fallback = '操作失败'): string {
  *
  * 写路径强制落在「允许根」之下,由后端 normalizeScriptPath 兜底;
  * 客户端不做严格解析,只把"用户输入"原样下发 —— 后端验证失败会回 400 + 详细原因。
+ *
+ * v1.8.1 改造(用户反馈「悬浮 … 按钮太低级」):
+ *   - 节点悬浮「…」按钮 → 删除;改为**右键上下文菜单**:
+ *       目录:新建子目录 / 新建文件 / 刷新此目录 / 复制路径 / 删除目录
+ *       文件:打开 / 复制路径 / 删除文件
+ *       树空白处:新建目录 / 新建文件 / 刷新目录树
+ *   - 「新建」不再弹 Modal,而是在目标节点下插入一个**树内输入框**(VSCode 风格),
+ *     回车确认、Esc 取消、失焦(空则取消,非空则提交)。
+ *   - 整树刷新会保留已展开层级(按路径长度逐层回填 children),
+ *     否则新建后已展开的目录会被清空。
  */
 export default function JavaScriptManager() {
   const { hasPerm } = useAuth()
@@ -100,8 +115,10 @@ export default function JavaScriptManager() {
   // 左侧目录树(antd Tree 的 DataNode 形态,children 按需加载)
   const [treeData, setTreeData] = useState<DataNode[]>([])
   const [treeLoading, setTreeLoading] = useState(false)
-  // 目录树刷新计数器 —— 删除/新建后 +1 让 root 重新加载
+  // 目录树刷新计数器 —— 删除/新建后 +1 让树重新加载
   const [treeVersion, setTreeVersion] = useState(0)
+  // 展开状态的快照(refreshTree 内部读它,避免把 expandedKeys 列进依赖造成递归刷新)
+  const expandedRef = useRef<React.Key[]>([])
 
   // 当前选中的文件(在 view/edit 模式之间共享)
   const [selectedFile, setSelectedFile] = useState<ScriptDirEntry | null>(null)
@@ -109,42 +126,151 @@ export default function JavaScriptManager() {
   // 编辑器状态(view/edit + dirty + 内容)
   const [editor, setEditor] = useEditorState()
 
-  // 新建子目录 / 新建脚本 的目标父目录(默认 = 根)
-  const [createDirOpen, setCreateDirOpen] = useState(false)
-  const [createDirParent, setCreateDirParent] = useState<string | null>(null)
-  const [createFileOpen, setCreateFileOpen] = useState(false)
-  const [createFileParent, setCreateFileParent] = useState<string | null>(null)
+  // 展开的目录 key（= 目录完整路径）。受控：刷新树后要保持展开状态。
+  const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([])
+
+  // v1.8.1：就地新建 —— 右键目录 →「新建子目录 / 新建文件」，树内直接出现输入框，
+  // 回车确认、Esc 取消（VSCode 风格）。不再用弹窗 + 悬浮「…」按钮。
+  // parentKey = null 表示建在根目录。
+  const [draft, setDraft] = useState<DraftState | null>(null)
+  useEffect(() => {
+    expandedRef.current = expandedKeys
+  }, [expandedKeys])
 
   // 帮助文档抽屉
   const [helpOpen, setHelpOpen] = useState(false)
 
-  /* ---------- 新建子目录 ---------- */
-  const onCreateDir = async (vals: { name: string }) => {
-    const parent = createDirParent || rootPath
+  /* ---------- 复制路径到剪贴板 ---------- */
+  const copyText = useCallback(async (text: string) => {
     try {
-      await createScriptDir('local', undefined, rootPath, vals.name, parent)
-      message.success('目录已创建:' + vals.name)
-      setCreateDirOpen(false)
-      // 整树重载（目录最多百余项，代价可忽略）
-      setTreeVersion((v) => v + 1)
-    } catch (e) {
-      message.error('创建失败:' + errMsg(e))
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+      } else {
+        // http 环境 Clipboard API 不可用 → 回退 execCommand
+        const ta = document.createElement('textarea')
+        ta.value = text
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.select()
+        document.execCommand('copy')
+        document.body.removeChild(ta)
+      }
+      message.success('已复制:' + text)
+    } catch {
+      message.info(text)
     }
-  }
+  }, [])
 
-  /* ---------- 新建脚本文件 ---------- */
-  const onCreateFile = async (vals: { name: string; content?: string }) => {
-    const parent = createFileParent || rootPath
-    const fullPath = `${parent.replace(/\/+$/, '')}/${vals.name}`
+  /* ---------- 重新拉取某个目录的子节点(右键「刷新」) ---------- */
+  const reloadDir = useCallback(
+    async (dirPath: string) => {
+      try {
+        const r = await listScripts('local', undefined, dirPath, rootPath)
+        const items = (r.items || []).filter((it) => !it.name.startsWith('.'))
+            setTreeData((orig) =>
+              updateChildren(
+                orig,
+                dirPath,
+                items.map((it) => toDataNode(it)),
+              ),
+            )
+      } catch (e) {
+        message.error('刷新目录失败:' + errMsg(e))
+      }
+    },
+    [rootPath],
+  )
+
+  /* ---------- 整树刷新(保持已展开层级) ---------- */
+  const refreshTree = useCallback(async () => {
+    setTreeLoading(true)
     try {
-      await createScriptFile('local', undefined, fullPath, vals.content || '', rootPath)
-      message.success('脚本已创建:' + vals.name)
-      setCreateFileOpen(false)
-      setTreeVersion((v) => v + 1)
+      const r = await listScripts('local', undefined, rootPath)
+      const items = (r.items || []).filter((it) => !it.name.startsWith('.'))
+      let nodes: DataNode[] = items.map((it) => toDataNode(it))
+      // 整树重建会冲掉已加载的 children → 按路径从短到长逐层补回,保持展开视图
+      const keys = [...expandedRef.current].sort(
+        (a, b) => String(a).length - String(b).length,
+      )
+      for (const k of keys) {
+        try {
+          const rr = await listScripts('local', undefined, String(k), rootPath)
+          const ci = (rr.items || []).filter((it) => !it.name.startsWith('.'))
+          nodes = updateChildren(nodes, String(k), ci.map((it) => toDataNode(it)))
+        } catch {
+          /* 单个目录失败不打断整体刷新 */
+        }
+      }
+      setTreeData(nodes)
     } catch (e) {
-      message.error('创建失败:' + errMsg(e))
+      message.error('加载脚本目录失败:' + errMsg(e))
+      setTreeData([])
+    } finally {
+      setTreeLoading(false)
     }
-  }
+  }, [rootPath])
+
+  /**
+   * ---------- 就地新建:在目标目录下插一个输入框(v1.8.1) ----------
+   * parentKey = null → 建在根目录;否则先确保该目录已展开且子节点已加载。
+   */
+  const startDraft = useCallback(
+    async (parentPath: string, parentKey: string | null, type: 'dir' | 'file') => {
+      if (parentKey) {
+        setExpandedKeys((prev) =>
+          prev.includes(parentKey) ? prev : [...prev, parentKey],
+        )
+        const n = findNode(treeData, parentKey)
+        if (n && (!n.children || n.children.length === 0)) {
+          try {
+            const r = await listScripts('local', undefined, parentPath, rootPath)
+            const items = (r.items || []).filter((it) => !it.name.startsWith('.'))
+            setTreeData((orig) =>
+              updateChildren(
+                orig,
+                parentKey,
+                items.map((it) => toDataNode(it)),
+              ),
+            )
+          } catch (e) {
+            message.error('读取目录失败:' + errMsg(e))
+          }
+        }
+      }
+      setDraft({ parentKey, parentPath, type })
+    },
+    [treeData, rootPath],
+  )
+
+  /** 提交新建(回车 / 失焦) */
+  const submitDraft = useCallback(
+    async (name: string) => {
+      const d = draft
+      if (!d) return
+      setDraft(null)
+      try {
+        if (d.type === 'dir') {
+          await createScriptDir('local', undefined, rootPath, name, d.parentPath)
+        } else {
+          const full = `${d.parentPath.replace(/\/+$/, '')}/${name}`
+          await createScriptFile('local', undefined, full, '', rootPath)
+        }
+        message.success((d.type === 'dir' ? '目录已创建: ' : '文件已创建: ') + name)
+        if (d.parentKey) {
+          setExpandedKeys((prev) =>
+            prev.includes(d.parentKey as string)
+              ? prev
+              : [...prev, d.parentKey as string],
+          )
+        }
+        await refreshTree()
+      } catch (e) {
+        message.error('创建失败:' + errMsg(e))
+      }
+    },
+    [draft, rootPath, refreshTree],
+  )
 
   /* ---------- 删除条目(目录/文件 自适应) ---------- */
   const onDelete = async (entry: ScriptDirEntry) => {
@@ -182,45 +308,34 @@ export default function JavaScriptManager() {
     })
   }
 
-  /* ---------- 节点操作回调(传给树节点右侧的「…」菜单) ---------- */
-  const nodeActs = useMemo<NodeActions | undefined>(
-    () =>
-      canManage
-        ? {
-            canManage: true,
-            onDelete,
-            onCreateDir: (parent: string) => {
-              setCreateDirParent(parent)
-              setCreateDirOpen(true)
-            },
-            onCreateFile: (parent: string) => {
-              setCreateFileParent(parent)
-              setCreateFileOpen(true)
-            },
-          }
-        : undefined,
+  /* ---------- 右键菜单 / 就地新建 的动作集合 ---------- */
+  const nodeActs: NodeActions = useMemo(
+    () => ({
+      canManage,
+      onDraft: (parentPath, parentKey, type) => {
+        void startDraft(parentPath, parentKey, type)
+      },
+      onDelete,
+      onOpen: (entry) => {
+        void openFile(entry)
+      },
+      onReload: (dirPath) => {
+        void reloadDir(dirPath)
+      },
+      onCopy: (text) => {
+        void copyText(text)
+      },
+      onRefreshAll: () => {
+        void refreshTree()
+      },
+    }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [canManage, rootPath],
+    [canManage, startDraft, reloadDir, refreshTree, copyText],
   )
 
-  /* ---------- 加载根目录下的顶层节点 ---------- */
-  const loadRoot = useCallback(async () => {
-    setTreeLoading(true)
-    try {
-      const r = await listScripts('local', undefined, rootPath)
-      const items = (r.items || []).filter((it) => !it.name.startsWith('.'))
-      setTreeData(items.map((it) => toDataNode(it, rootPath, nodeActs)))
-    } catch (e) {
-      message.error('加载脚本目录失败:' + errMsg(e))
-      setTreeData([])
-    } finally {
-      setTreeLoading(false)
-    }
-  }, [rootPath, nodeActs])
-
   useEffect(() => {
-    loadRoot()
-  }, [loadRoot, treeVersion])
+    refreshTree()
+  }, [refreshTree, treeVersion])
 
   /* ---------- 节点展开时按需加载其子节点 ---------- */
   const onLoadData = useCallback(
@@ -229,7 +344,7 @@ export default function JavaScriptManager() {
       try {
         const r = await listScripts('local', undefined, path, rootPath)
         const items = (r.items || []).filter((it) => !it.name.startsWith('.'))
-        const children = items.map((it) => toDataNode(it, rootPath, nodeActs))
+        const children = items.map((it) => toDataNode(it))
         setTreeData((orig) => updateChildren(orig, node.key as string, children))
       } catch (e) {
         message.error('加载子目录失败:' + errMsg(e))
@@ -380,7 +495,7 @@ export default function JavaScriptManager() {
           <CodeOutlined style={{ marginRight: 8 }} />
           Java 启停脚本管理
         </Title>
-        <Tag color="purple">v1.8.0</Tag>
+        <Tag color="purple">v1.8.1</Tag>
         <div style={{ flex: 1 }} />
         <Tooltip title="查看使用说明">
           <Button icon={<QuestionCircleOutlined />} onClick={() => setHelpOpen(true)}>
@@ -413,19 +528,13 @@ export default function JavaScriptManager() {
                   <Button
                     icon={<FolderAddOutlined />}
                     type="primary"
-                    onClick={() => {
-                      setCreateDirParent(rootPath)
-                      setCreateDirOpen(true)
-                    }}
+                    onClick={() => void startDraft(rootPath, null, 'dir')}
                   >
                     新建目录
                   </Button>
                   <Button
                     icon={<FileAddOutlined />}
-                    onClick={() => {
-                      setCreateFileParent(rootPath)
-                      setCreateFileOpen(true)
-                    }}
+                    onClick={() => void startDraft(rootPath, null, 'file')}
                   >
                     新建脚本
                   </Button>
@@ -450,15 +559,20 @@ export default function JavaScriptManager() {
             extra={
               canManage ? (
                 <Space size={4}>
-                  <Tooltip title="在根下新建">
+                  <Tooltip title="在根目录下新建目录">
                     <Button
                       size="small"
                       type="text"
                       icon={<FolderAddOutlined />}
-                      onClick={() => {
-                        setCreateDirParent(rootPath)
-                        setCreateDirOpen(true)
-                      }}
+                      onClick={() => void startDraft(rootPath, null, 'dir')}
+                    />
+                  </Tooltip>
+                  <Tooltip title="刷新目录树">
+                    <Button
+                      size="small"
+                      type="text"
+                      icon={<ReloadOutlined />}
+                      onClick={() => setTreeVersion((v) => v + 1)}
                     />
                   </Tooltip>
                 </Space>
@@ -469,9 +583,9 @@ export default function JavaScriptManager() {
               <div style={{ padding: 24, textAlign: 'center' }}>
                 <Spin />
               </div>
-            ) : treeData.length === 0 ? (
+            ) : treeData.length === 0 && !draft ? (
               <Empty
-                description="暂无条目"
+                description="暂无条目 —— 右键空白处可新建"
                 imageStyle={{ height: 80 }}
                 style={{ padding: 16 }}
               >
@@ -480,19 +594,13 @@ export default function JavaScriptManager() {
                     <Button
                       type="primary"
                       icon={<FolderAddOutlined />}
-                      onClick={() => {
-                        setCreateDirParent(rootPath)
-                        setCreateDirOpen(true)
-                      }}
+                      onClick={() => void startDraft(rootPath, null, 'dir')}
                     >
                       新建目录
                     </Button>
                     <Button
                       icon={<FileAddOutlined />}
-                      onClick={() => {
-                        setCreateFileParent(rootPath)
-                        setCreateFileOpen(true)
-                      }}
+                      onClick={() => void startDraft(rootPath, null, 'file')}
                     >
                       新建脚本
                     </Button>
@@ -502,18 +610,15 @@ export default function JavaScriptManager() {
             ) : (
               <ScriptTreeView
                 treeData={treeData}
+                draft={draft}
+                acts={nodeActs}
+                rootPath={rootPath}
+                expandedKeys={expandedKeys}
+                onExpand={setExpandedKeys}
                 onLoadData={onLoadData}
                 onSelect={onTreeSelect}
-                onDelete={canManage ? onDelete : undefined}
-                onCreateDir={(parent) => {
-                  setCreateDirParent(parent)
-                  setCreateDirOpen(true)
-                }}
-                onCreateFile={(parent) => {
-                  setCreateFileParent(parent)
-                  setCreateFileOpen(true)
-                }}
-                canManage={canManage}
+                onDraftSubmit={submitDraft}
+                onDraftCancel={() => setDraft(null)}
               />
             )}
           </Card>
@@ -552,20 +657,7 @@ export default function JavaScriptManager() {
         </Col>
       </Row>
 
-      {/* 新建目录 */}
-      <CreateDirModal
-        open={createDirOpen}
-        onCancel={() => setCreateDirOpen(false)}
-        onSubmit={onCreateDir}
-        parentPath={createDirParent}
-      />
-      {/* 新建脚本 */}
-      <CreateFileModal
-        open={createFileOpen}
-        onCancel={() => setCreateFileOpen(false)}
-        onSubmit={onCreateFile}
-        parentPath={createFileParent}
-      />
+      {/* 新建目录 / 新建文件:v1.8.1 起改为树内就地输入,不再用弹窗 */}
       {/* 帮助 */}
       <Drawer
         open={helpOpen}
@@ -597,13 +689,17 @@ export default function JavaScriptManager() {
           </pre>
         </Paragraph>
         <Paragraph>
-          <strong>使用流程(v1.8.0+):</strong>
+          <strong>使用流程(v1.8.1+):</strong>
           <ol>
             <li>左侧目录树 <strong>双击文件夹</strong>展开子目录,单击文件名进入只读预览</li>
             <li>
-              <strong>悬浮任意节点</strong> → 点右侧「<strong>…</strong>」菜单 →
-              可在该目录下「<strong>新建子目录</strong>」「<strong>新建文件</strong>」或删除该节点
-              (v1.8.0 起<strong>不再局限于根目录</strong>)
+              <strong>右键任意目录</strong> → 菜单选「<strong>新建子目录</strong>」或
+              「<strong>新建文件</strong>」→ 该目录下直接出现输入框:
+              填名称后<strong>回车</strong>确认、<strong>Esc</strong> 取消(任意层级都支持)
+            </li>
+            <li>
+              <strong>右键文件</strong> → 打开 / 复制路径 / 删除;
+              <strong>右键空白处</strong> → 在根目录下新建目录或脚本、刷新整棵树
             </li>
             <li>点顶部「<strong>编辑</strong>」按钮 → 进入编辑态</li>
             <li>改完点「保存」回到只读态;不想改了点「取消」回退</li>
@@ -644,100 +740,229 @@ export default function JavaScriptManager() {
  * 子组件
  * ========================================================================== */
 
-/** 树节点上的操作回调（v1.8.0：任意目录下新建子目录/文件 + 删除） */
+/** 树节点的右键菜单 / 就地新建动作集合（v1.8.1） */
 interface NodeActions {
   canManage: boolean
+  /** 在 parentPath 下就地新建;parentKey = null 表示根目录 */
+  onDraft: (parentPath: string, parentKey: string | null, type: 'dir' | 'file') => void
   onDelete: (entry: ScriptDirEntry) => void
-  onCreateDir: (parent: string) => void
-  onCreateFile: (parent: string) => void
+  onOpen: (entry: ScriptDirEntry) => void
+  onReload: (dirPath: string) => void
+  onCopy: (text: string) => void
+  onRefreshAll: () => void
 }
 
-/** 把后端返回的 ScriptDirEntry 转成 antd Tree 的 DataNode */
-function toDataNode(
-  it: ScriptDirEntry,
-  root: string,
-  acts?: NodeActions,
-): DataNode & {
+/** 就地新建状态:在哪个目录下新建、建目录还是文件 */
+interface DraftState {
+  parentKey: string | null
+  parentPath: string
+  type: 'dir' | 'file'
+}
+
+/** 把后端返回的 ScriptDirEntry 转成 antd Tree 的 DataNode
+ *  (title 交给 Tree 的 titleRender 渲染 —— 这样右键菜单永远拿到最新的回调) */
+function toDataNode(it: ScriptDirEntry): DataNode & {
   entry: ScriptDirEntry
   path: string
 } {
-  const path = it.path
-  const title = (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 6,
-        fontSize: 13,
-        padding: '2px 0',
-      }}
-    >
-      {it.isDir ? (
-        <FolderOutlined style={{ color: '#f59e0b' }} />
-      ) : (
-        <FileTextOutlined style={{ color: '#6366f1' }} />
-      )}
-      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-        {it.name}
-      </span>
-      {!it.isDir && (
-        <Text type="secondary" style={{ fontSize: 11 }}>
-          {fmtBytes(it.size)}
-        </Text>
-      )}
-      {acts?.canManage && <NodeActionsMenu entry={it} acts={acts} />}
-    </div>
-  )
   return {
-    key: path,
-    title,
+    key: it.path,
     isLeaf: !it.isDir,
-    path,
+    path: it.path,
     entry: it,
     // 目录节点的 children 留空数组(loadData 触发后填)
     children: it.isDir ? [] : undefined,
   }
 }
 
-/** 节点右侧悬浮操作菜单（点击展开，不触发树选中） */
-function NodeActionsMenu({
-  entry,
-  acts,
-}: {
-  entry: ScriptDirEntry
-  acts: NodeActions
-}) {
-  const items: { key: string; icon: React.ReactNode; label: string; danger?: boolean }[] = []
-  if (entry.isDir) {
-    items.push({ key: 'mkdir', icon: <FolderAddOutlined />, label: '新建子目录' })
-    items.push({ key: 'mkfile', icon: <FileAddOutlined />, label: '新建文件' })
+/** 右键菜单点击后分发 */
+function runMenuAction(key: string, e: ScriptDirEntry, acts: NodeActions) {
+  switch (key) {
+    case 'mkdir':
+      acts.onDraft(e.path, e.path, 'dir')
+      break
+    case 'mkfile':
+      acts.onDraft(e.path, e.path, 'file')
+      break
+    case 'open':
+      acts.onOpen(e)
+      break
+    case 'reload':
+      acts.onReload(e.path)
+      break
+    case 'copy':
+      acts.onCopy(e.path)
+      break
+    case 'del':
+      acts.onDelete(e)
+      break
   }
-  items.push({ key: 'del', icon: <DeleteOutlined />, label: '删除', danger: true })
+}
+
+/** 节点的右键菜单项:目录 → 新建子目录/新建文件/刷新/复制路径/删除;
+ *  文件 → 打开/复制路径/删除。删除只在有管理权限时出现。 */
+function nodeMenuItems(e: ScriptDirEntry, acts: NodeActions): MenuProps['items'] {
+  if (e.isDir) {
+    return [
+      ...(acts.canManage
+        ? [
+            { key: 'mkdir', icon: <FolderAddOutlined />, label: '新建子目录' },
+            { key: 'mkfile', icon: <FileAddOutlined />, label: '新建文件' },
+            { type: 'divider' as const },
+          ]
+        : []),
+      { key: 'reload', icon: <ReloadOutlined />, label: '刷新此目录' },
+      { key: 'copy', icon: <CopyOutlined />, label: '复制路径' },
+      ...(acts.canManage
+        ? [
+            { type: 'divider' as const },
+            { key: 'del', icon: <DeleteOutlined />, label: '删除目录', danger: true },
+          ]
+        : []),
+    ]
+  }
+  return [
+    { key: 'open', icon: <EyeOutlined />, label: '打开' },
+    { key: 'copy', icon: <CopyOutlined />, label: '复制路径' },
+    ...(acts.canManage
+      ? [
+          { type: 'divider' as const },
+          { key: 'del', icon: <DeleteOutlined />, label: '删除文件', danger: true },
+        ]
+      : []),
+  ]
+}
+
+/** 单个节点的标题:外层包 Dropdown(trigger=contextMenu) → 右键该节点弹菜单。
+ *  ⚠️ onContextMenu 里 stopPropagation:避免冒泡到树的空白处菜单(否则两个菜单一起弹)。 */
+function renderNodeTitle(node: any, acts: NodeActions, expanded: React.Key[]) {
+  if (node.key === DRAFT_KEY) return null // 正常走不到:draft 由外层 renderTitle 处理
+  const e = node.entry as ScriptDirEntry
+  if (!e) return <span>{String(node.key)}</span>
+  const isOpen = expanded.includes(node.key)
   return (
     <Dropdown
-      trigger={['click']}
+      trigger={['contextMenu']}
       menu={{
-        items,
+        items: nodeMenuItems(e, acts),
         onClick: ({ key, domEvent }) => {
           domEvent.stopPropagation()
-          if (key === 'mkdir') acts.onCreateDir(entry.path)
-          else if (key === 'mkfile') acts.onCreateFile(entry.path)
-          else if (key === 'del') acts.onDelete(entry)
+          runMenuAction(key, e, acts)
         },
       }}
     >
-      <Button
-        type="text"
-        size="small"
-        icon={<MoreOutlined style={{ color: '#94a3b8' }} />}
-        onClick={(e) => {
-          e.stopPropagation()
-          e.preventDefault()
+      <div
+        className="script-node"
+        data-path={e.path}
+        onContextMenu={(ev) => ev.stopPropagation()}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          fontSize: 13,
+          padding: '2px 0',
         }}
-        className="script-node-more"
-        data-node-more="1"
-      />
+      >
+        {e.isDir ? (
+          isOpen ? (
+            <FolderOpenOutlined style={{ color: '#f59e0b' }} />
+          ) : (
+            <FolderOutlined style={{ color: '#f59e0b' }} />
+          )
+        ) : (
+          <FileTextOutlined style={{ color: '#6366f1' }} />
+        )}
+        <span
+          style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+        >
+          {e.name}
+        </span>
+        {!e.isDir && (
+          <Text type="secondary" style={{ fontSize: 11 }}>
+            {fmtBytes(e.size)}
+          </Text>
+        )}
+      </div>
     </Dropdown>
+  )
+}
+
+/** 树内就地新建的输入框:回车确认 / Esc 取消 / 失焦(空则取消、非空则提交) */
+function DraftInput(props: {
+  type: 'dir' | 'file'
+  onSubmit: (name: string) => void
+  onCancel: () => void
+}) {
+  const [v, setV] = useState('')
+  const [err, setErr] = useState('')
+  // 防止「回车提交 → 卸载 → blur 再提交一次」的重复触发
+  const done = useRef(false)
+  const submit = () => {
+    if (done.current) return
+    const name = v.trim()
+    if (!name) {
+      done.current = true
+      props.onCancel()
+      return
+    }
+    if (!/^[\p{L}\p{N}_.-]+$/u.test(name)) {
+      setErr('只能包含中文/字母/数字/下划线/中划线/点')
+      return
+    }
+    done.current = true
+    props.onSubmit(name)
+  }
+  const cancel = () => {
+    if (done.current) return
+    done.current = true
+    props.onCancel()
+  }
+  return (
+    <span
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '1px 0' }}
+      onClick={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.stopPropagation()}
+    >
+      {props.type === 'dir' ? (
+        <FolderAddOutlined style={{ color: '#f59e0b' }} />
+      ) : (
+        <FileAddOutlined style={{ color: '#6366f1' }} />
+      )}
+      <Input
+        size="small"
+        autoFocus
+        value={v}
+        status={err ? 'error' : undefined}
+        placeholder={props.type === 'dir' ? '目录名,回车确认' : '文件名,如 start.sh'}
+        onChange={(e) => {
+          setV(e.target.value)
+          if (err) setErr('')
+        }}
+        onPressEnter={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          submit()
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') {
+            e.preventDefault()
+            e.stopPropagation()
+            cancel()
+          }
+        }}
+        onBlur={() => {
+          if (!v.trim()) cancel()
+          else submit()
+        }}
+        style={{ width: 190, height: 22, fontSize: 12 }}
+      />
+      {err && (
+        <Text type="danger" style={{ fontSize: 11 }}>
+          {err}
+        </Text>
+      )}
+    </span>
   )
 }
 
@@ -775,24 +1000,78 @@ function countTreeNodes(nodes: DataNode[]): number {
 
 /** 目录树
  *
- * v1.7.25 改造(用户反馈"双击文件夹展开,不要 [+] 按钮"):
- *   - expandAction="doubleClick"  →  双击节点才展开,单击只选中
- *   - CSS 隐藏 .ant-tree-switcher  →  彻底去掉左侧 [+]/[-] 三角
- *   - showLine 保留连线(展示层级),只把开关按钮本身抹掉
+ * v1.7.25:expandAction="doubleClick" + CSS 隐藏 [+]/[-] 开关(用户要求不要三角按钮)。
+ * v1.8.1:去掉节点悬浮「…」按钮,改为——
+ *   - 右键任意节点 → 上下文菜单(目录:新建子目录/新建文件/刷新/复制路径/删除;
+ *     文件:打开/复制路径/删除)
+ *   - 右键树空白处 → 在根目录下新建目录/新建文件、刷新
+ *   - 「新建」不再弹窗,而是在目标节点下插入一个输入框(VSCode 风格),
+ *     回车确认、Esc 取消。
  */
 function ScriptTreeView(props: {
   treeData: DataNode[]
+  draft: DraftState | null
+  acts: NodeActions
+  rootPath: string
+  expandedKeys: React.Key[]
+  onExpand: (keys: React.Key[]) => void
   onLoadData: (node: any) => Promise<void>
   onSelect: (keys: React.Key[], info: any) => void
-  onDelete?: (entry: ScriptDirEntry) => void
-  onCreateDir: (parent: string) => void
-  onCreateFile: (parent: string) => void
-  canManage: boolean
+  onDraftSubmit: (name: string) => void
+  onDraftCancel: () => void
 }) {
+  const { treeData, draft, acts, rootPath, onDraftSubmit, onDraftCancel } = props
+
+  // 把「正在新建」的临时节点插到目标父节点下
+  const displayData = useMemo<DataNode[]>(() => {
+    if (!draft) return treeData
+    const dn: DataNode & { draftType: 'dir' | 'file'; [k: string]: any } = {
+      key: DRAFT_KEY,
+      isLeaf: true,
+      selectable: false,
+      draftType: draft.type,
+      onDraftSubmit,
+      onDraftCancel,
+    }
+    if (!draft.parentKey) return [...treeData, dn]
+    const hit = findNode(treeData, draft.parentKey)
+    // 父节点不在树里(极端情况:刚被删) → 退回根目录
+    if (!hit) return [...treeData, dn]
+    return insertDraftNode(treeData, draft.parentKey, dn)
+  }, [treeData, draft, onDraftSubmit, onDraftCancel])
+
+  // ⚠️ draft 输入框的 props 走闭包,不依赖 Tree 把自定义字段透传给 titleRender
+  const renderTitle = useCallback(
+    (node: any) => {
+      if (node?.key === DRAFT_KEY && draft) {
+        return (
+          <DraftInput
+            type={draft.type}
+            onSubmit={onDraftSubmit}
+            onCancel={onDraftCancel}
+          />
+        )
+      }
+      return renderNodeTitle(node, acts, props.expandedKeys)
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [acts, props.expandedKeys, draft, onDraftSubmit, onDraftCancel],
+  )
+
+  // 空白处右键菜单(节点上右键会被 stopPropagation 拦掉,不会走到这里)
+  const blankItems: MenuProps['items'] = [
+    ...(acts.canManage
+      ? [
+          { key: 'mkdir', icon: <FolderAddOutlined />, label: '新建目录' },
+          { key: 'mkfile', icon: <FileAddOutlined />, label: '新建文件' },
+          { type: 'divider' as const },
+        ]
+      : []),
+    { key: 'refresh', icon: <ReloadOutlined />, label: '刷新目录树' },
+  ]
+
   return (
     <>
-      {/* 用 className 精准定位到本组件的 Tree,
-          * 把开关按钮折叠掉(只显示文字 + 连线)。 */}
       <style>{`
         .script-tree-no-switcher .ant-tree-switcher {
           width: 0 !important;
@@ -806,29 +1085,69 @@ function ScriptTreeView(props: {
         .script-tree-no-switcher .ant-tree-node-content-wrapper {
           flex: 1;
         }
-        /* 节点「…」操作按钮:悬浮才显示(v1.8.0 任意目录下新建/删除) */
-        .script-node-more {
-          opacity: 0;
-          transition: opacity 0.15s ease;
-        }
-        .ant-tree-node-content-wrapper:hover .script-node-more,
-        .script-node-more.ant-dropdown-open {
-          opacity: 1;
+        /* v1.8.1:节点标题给足高度,右键热区更友好 */
+        .script-tree-no-switcher .script-node {
+          min-height: 24px;
         }
       `}</style>
-      <Tree
-        className="script-tree-no-switcher"
-        treeData={props.treeData}
-        loadData={props.onLoadData}
-        onSelect={props.onSelect}
-        expandAction="doubleClick"
-        showLine={{ showLeafIcon: false }}
-        blockNode
-        defaultExpandAll={false}
-        style={{ padding: 6 }}
-      />
+      <Dropdown
+        trigger={['contextMenu']}
+        menu={{
+          items: blankItems,
+          onClick: ({ key }) => {
+            if (key === 'mkdir') acts.onDraft(rootPath, null, 'dir')
+            else if (key === 'mkfile') acts.onDraft(rootPath, null, 'file')
+            else if (key === 'refresh') acts.onRefreshAll()
+          },
+        }}
+      >
+        <div style={{ minHeight: 120 }}>
+          <Tree
+            className="script-tree-no-switcher"
+            treeData={displayData}
+            expandedKeys={props.expandedKeys}
+            onExpand={props.onExpand}
+            loadData={props.onLoadData}
+            onSelect={props.onSelect}
+            titleRender={renderTitle}
+            expandAction="doubleClick"
+            showLine={{ showLeafIcon: false }}
+            blockNode
+            style={{ padding: 6 }}
+          />
+        </div>
+      </Dropdown>
     </>
   )
+}
+
+/** 在指定父节点下追加一个子节点(draft 输入框用) */
+function insertDraftNode(
+  nodes: DataNode[],
+  parentKey: string,
+  dn: DataNode,
+): DataNode[] {
+  return nodes.map((n) => {
+    if (n.key === parentKey) {
+      return { ...n, children: [...(n.children || []), dn] }
+    }
+    if (n.children && n.children.length > 0) {
+      return { ...n, children: insertDraftNode(n.children, parentKey, dn) }
+    }
+    return n
+  })
+}
+
+/** 按 key 查找节点(用于判断目录子节点是否已加载) */
+function findNode(nodes: DataNode[], key: string): DataNode | null {
+  for (const n of nodes) {
+    if (n.key === key) return n
+    if (n.children && n.children.length > 0) {
+      const hit = findNode(n.children, key)
+      if (hit) return hit
+    }
+  }
+  return null
 }
 
 /** 编辑器面板:view / edit 两态 */
@@ -948,98 +1267,6 @@ function EditorPanel(props: {
   )
 }
 
-/** 新建目录(任意父目录) */
-function CreateDirModal(props: {
-  open: boolean
-  onCancel: () => void
-  onSubmit: (v: { name: string }) => void
-  parentPath: string | null
-}) {
-  const [form] = Form.useForm<{ name: string }>()
-  useEffect(() => {
-    if (props.open) form.resetFields()
-  }, [props.open, form])
-  const parent = props.parentPath || ROOT_DEFAULT
-  return (
-    <Modal
-      title="新建目录"
-      open={props.open}
-      onCancel={props.onCancel}
-      onOk={() => form.submit()}
-      okText="创建"
-      cancelText="取消"
-      destroyOnClose
-    >
-      <Paragraph type="secondary">
-        将创建在 <code>{parent}/&lt;目录名&gt;</code> 下
-      </Paragraph>
-      <Form form={form} layout="vertical" onFinish={props.onSubmit}>
-        <Form.Item
-          name="name"
-          label="目录名"
-          rules={[
-            { required: true, message: '请填写目录名' },
-            {
-              pattern: /^[\p{L}\p{N}_.-]+$/u,
-              message: '只能包含字母/数字/下划线/中划线/点(支持中文)',
-            },
-          ]}
-        >
-          <Input placeholder="order-service 或 中文服务名" autoFocus />
-        </Form.Item>
-      </Form>
-    </Modal>
-  )
-}
-
-/** 新建脚本文件(任意父目录) */
-function CreateFileModal(props: {
-  open: boolean
-  onCancel: () => void
-  onSubmit: (v: { name: string; content?: string }) => void
-  parentPath: string | null
-}) {
-  const [form] = Form.useForm<{ name: string; content?: string }>()
-  useEffect(() => {
-    if (props.open) form.resetFields()
-  }, [props.open, form])
-  const parent = props.parentPath || ROOT_DEFAULT
-  return (
-    <Modal
-      title={`在「${parent}」下新建脚本`}
-      open={props.open}
-      onCancel={props.onCancel}
-      onOk={() => form.submit()}
-      okText="创建"
-      cancelText="取消"
-      destroyOnClose
-      width={640}
-    >
-      <Form form={form} layout="vertical" onFinish={props.onSubmit}>
-        <Form.Item
-          name="name"
-          label="文件名"
-          rules={[
-            { required: true, message: '请填写文件名' },
-            {
-              pattern: /^[\p{L}\p{N}_.-]+$/u,
-              message: '只能包含字母/数字/下划线/中划线/点(支持中文)',
-            },
-          ]}
-        >
-          <Input placeholder="start.sh" />
-        </Form.Item>
-        <Form.Item name="content" label="初始内容(可选)">
-          <TextArea
-            rows={8}
-            placeholder="#!/bin/bash&#10;# 启动脚本&#10;..."
-            style={{ fontFamily: 'monospace', fontSize: 12 }}
-          />
-        </Form.Item>
-      </Form>
-    </Modal>
-  )
-}
 
 /* ============================================================================
  * useEditorState —— 编辑器状态
