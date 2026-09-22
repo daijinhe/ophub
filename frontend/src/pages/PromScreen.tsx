@@ -96,7 +96,9 @@ const styles = `
   font-size: 13px; letter-spacing: 2px; color: #7dd3fc;
   padding: 8px 12px; border-bottom: 1px solid rgba(56,189,248,0.15);
   display: flex; align-items: center; gap: 6px; text-transform: uppercase; height: 34px;
+  white-space: nowrap; flex-wrap: nowrap; min-width: 0;
 }
+.prom-title > span { flex-shrink: 0; }
 .prom-num { font-variant-numeric: tabular-nums; font-weight: 700; letter-spacing: 1px; }
 .prom-blink { animation: screenBlink 1.6s ease-in-out infinite; }
 .prom-empty { color: #475569; display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; }
@@ -1059,54 +1061,52 @@ export default function PromScreen() {
                 sub={`CPU ${avg?.cpu ?? 0}% · 内存 ${avg?.mem ?? 0}% · 磁盘 ${avg?.disk ?? 0}%`}
               />
 
-              {/* 资源健康分布饼图 */}
+              {/* 资源健康分布：左环形图 + 右图例（横排，图例不滚动） */}
               <div className="prom-panel" style={{ display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%' }}>
                 <div className="prom-title"><DashboardOutlined /> 资源健康分布</div>
-                <div style={{ flex: '1 1 auto', minHeight: 0, position: 'relative' }}>
-                  <ReactECharts option={distOpt} style={{ height: '100%', width: '100%' }} notMerge lazyUpdate />
+                <div style={{ flex: '1 1 auto', minHeight: 0, display: 'flex', alignItems: 'stretch', padding: '4px 12px 10px', gap: 6 }}>
+                  <div style={{ position: 'relative', width: 138, alignSelf: 'stretch', flex: '0 0 auto' }}>
+                    <ReactECharts option={distOpt} style={{ height: '100%', width: '100%' }} notMerge lazyUpdate />
+                    <div
+                      style={{
+                        position: 'absolute', inset: 0, pointerEvents: 'none',
+                        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                      }}
+                    >
+                      <div className="prom-num" style={{ fontSize: 18, lineHeight: 1, color: distTotal > 0 ? '#e2e8f0' : '#475569' }}>
+                        {distTotal}
+                      </div>
+                      <div style={{ fontSize: 9, color: '#64748b', letterSpacing: 1, marginTop: 2 }}>台</div>
+                    </div>
+                  </div>
                   <div
                     style={{
-                      position: 'absolute', inset: 0, pointerEvents: 'none',
-                      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                      flex: '1 1 auto', minWidth: 0, display: 'flex', flexDirection: 'column',
+                      justifyContent: 'center', gap: 7, paddingLeft: 4,
                     }}
                   >
-                    <div className="prom-num" style={{ fontSize: 20, lineHeight: 1, color: distTotal > 0 ? '#e2e8f0' : '#475569' }}>
-                      {distTotal}
-                    </div>
-                    <div style={{ fontSize: 9, color: '#64748b', letterSpacing: 1, marginTop: 3 }}>台</div>
+                    {[
+                      { name: '正常', v: data.usageDist.low, color: DIST_COLORS['正常'] },
+                      { name: '关注', v: data.usageDist.mid, color: DIST_COLORS['关注'] },
+                      { name: '预警', v: data.usageDist.high, color: DIST_COLORS['预警'] },
+                      { name: '严重', v: data.usageDist.crit, color: DIST_COLORS['严重'] },
+                      { name: '离线', v: data.usageDist.none, color: DIST_COLORS['离线'] },
+                    ].map((x) => (
+                      <div key={x.name} title={`${x.name} · ${x.v} 台`} style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12 }}>
+                        <i style={{ width: 8, height: 8, borderRadius: 2, flex: '0 0 auto', background: x.color }} />
+                        <span style={{ flex: '1 1 auto', minWidth: 0, color: '#cbd5e1', lineHeight: 1.2 }}>{x.name}</span>
+                        <b className="prom-num" style={{ flex: '0 0 auto', color: '#e2e8f0' }}>{x.v}</b>
+                      </div>
+                    ))}
                   </div>
-                </div>
-                <div
-                  className="prom-thin"
-                  style={{
-                    flex: '0 1 auto', maxHeight: '48%', overflowY: 'auto',
-                    padding: '0 18px 18px', display: 'flex', flexDirection: 'column', gap: 3,
-                  }}
-                >
-                  {[
-                    { name: '正常', v: data.usageDist.low, color: DIST_COLORS['正常'] },
-                    { name: '关注', v: data.usageDist.mid, color: DIST_COLORS['关注'] },
-                    { name: '预警', v: data.usageDist.high, color: DIST_COLORS['预警'] },
-                    { name: '严重', v: data.usageDist.crit, color: DIST_COLORS['严重'] },
-                    { name: '离线', v: data.usageDist.none, color: DIST_COLORS['离线'] },
-                  ].map((x) => (
-                    <div key={x.name} title={`${x.name} · ${x.v} 台`} style={{ display: 'flex', alignItems: 'baseline', gap: 6, fontSize: 11 }}>
-                      <i style={{ width: 8, height: 8, borderRadius: 2, flex: '0 0 auto', alignSelf: 'center', background: x.color }} />
-                      <span style={{ flex: '1 1 auto', minWidth: 0, color: '#cbd5e1', lineHeight: 1.3 }}>{x.name}</span>
-                      <b className="prom-num" style={{ flex: '0 0 auto', color: '#e2e8f0' }}>{x.v}</b>
-                    </div>
-                  ))}
                 </div>
               </div>
 
               {/* 资源使用率趋势（CPU/内存/磁盘，v1.7.35 由「数据更新」卡位改造而来；
-                  采集耗时/来源等信息已在页脚展示） */}
+                  采集耗时/时间只在页脚展示，标题不再重复拼接，避免窄栏换行） */}
               <div className="prom-panel" style={{ height: 236, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
                 <div className="prom-title">
                   <FundOutlined /> 资源使用率趋势（近 {trendHours} 小时）
-                  <span style={{ marginLeft: 'auto', fontSize: 10, color: '#64748b', textTransform: 'none' }}>
-                    采集 {data.collectMs ? data.collectMs + 'ms' : '—'} · {data.generatedAt ? data.generatedAt.slice(11) : '—'}
-                  </span>
                 </div>
                 <div style={{ flex: 1, minHeight: 0 }}>
                   <ReactECharts option={trendOpt} style={{ height: '100%', width: '100%' }} notMerge lazyUpdate />
