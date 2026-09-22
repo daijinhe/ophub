@@ -43,6 +43,10 @@ export interface PromSeries {
 export interface PromHostStat {
   instance: string
   hostname: string
+  department: string
+  system: string
+  env: string
+  deployserver: string
   up: boolean
   cpu: number
   mem: number
@@ -59,6 +63,10 @@ export interface PromAlertItem {
 export interface PromTopEntry {
   instance: string
   hostname: string
+  department: string
+  system: string
+  env: string
+  deployserver: string
   value: number
 }
 
@@ -68,10 +76,19 @@ export interface PromTrendPoint {
   mem?: number | null
 }
 
+export interface PromUsageDist {
+  low: number
+  mid: number
+  high: number
+  crit: number
+  none: number
+}
+
 export interface PromOverview {
   generatedAt: string
   up: { total: number; online: number; offline: number }
   avg: { cpu: number; mem: number; disk: number }
+  usageDist: PromUsageDist
   trend: PromTrendPoint[]
   hosts: PromHostStat[]
   alerts: PromAlertItem[]
@@ -82,6 +99,10 @@ export interface PromOverview {
 export interface PromReportRow {
   instance: string
   hostname: string
+  department: string
+  system: string
+  env: string
+  deployserver: string
   cpuAvg: number
   cpuMax: number
   memAvg: number

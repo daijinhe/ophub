@@ -24,12 +24,66 @@ import (
 
 // promHostStat 单台主机实时资源
 type promHostStat struct {
-	Instance string  `json:"instance"`
-	Hostname string  `json:"hostname"`
-	Up       bool    `json:"up"`
-	CPU      float64 `json:"cpu"`
-	Mem      float64 `json:"mem"`
-	Disk     float64 `json:"disk"`
+	Instance   string  `json:"instance"`
+	Hostname   string  `json:"hostname"`
+	Department string  `json:"department"` // target label: department → 所属部门
+	System     string  `json:"system"`     // target label: system → 项目名
+	Env        string  `json:"env"`        // target label: env → 环境
+	DeploySvr  string  `json:"deployserver"` // target label: deployserver → 业务环境
+	Up         bool    `json:"up"`
+	CPU        float64 `json:"cpu"`
+	Mem        float64 `json:"mem"`
+	Disk       float64 `json:"disk"`
+}
+
+// promUsageDist 资源健康分布（按主机 max(CPU,内存,磁盘) 分档；离线/无数据归 none）
+type promUsageDist struct {
+	Low  int `json:"low"`  // < 80 正常
+	Mid  int `json:"mid"`  // 80 ~ 90 关注
+	High int `json:"high"` // 90 ~ 95 预警
+	Crit int `json:"crit"` // >= 95 严重
+	None int `json:"none"` // 离线 / 无数据
+}
+
+// promInstLabels 实例业务标签（来自 Prometheus target labels）
+type promInstLabels struct {
+	Department string
+	System     string
+	Env        string
+	DeploySvr  string
+}
+
+// promCollectLabels 从若干组样本的 metric 标签里抽取业务标签，按 instance 归并。
+// node_exporter 的所有序列都带 target 注入的 department/system/env/deployserver 标签，
+// up 与 node_uname_info 是最便宜的两路来源。
+func promCollectLabels(sampleSets ...[]promSample) map[string]*promInstLabels {
+	out := map[string]*promInstLabels{}
+	for _, ss := range sampleSets {
+		for _, s := range ss {
+			inst := s.Metric["instance"]
+			if inst == "" {
+				continue
+			}
+			l := out[inst]
+			if l == nil {
+				l = &promInstLabels{}
+				out[inst] = l
+			}
+			if l.Department == "" {
+				l.Department = s.Metric["department"]
+			}
+			if l.System == "" {
+				l.System = s.Metric["system"]
+			}
+			if l.Env == "" {
+				l.Env = s.Metric["env"]
+			}
+			if l.DeploySvr == "" {
+				l.DeploySvr = s.Metric["deployserver"]
+			}
+		}
+	}
+	return out
 }
 
 // promAlertItem 告警条目
@@ -56,9 +110,13 @@ type promAvg struct {
 
 // promTopEntry TOP5 条目
 type promTopEntry struct {
-	Instance string  `json:"instance"`
-	Hostname string  `json:"hostname"`
-	Value    float64 `json:"value"`
+	Instance   string  `json:"instance"`
+	Hostname   string  `json:"hostname"`
+	Department string  `json:"department"`
+	System     string  `json:"system"`
+	Env        string  `json:"env"`
+	DeploySvr  string  `json:"deployserver"`
+	Value      float64 `json:"value"`
 }
 
 // promOverviewResp 大屏聚合响应
@@ -66,6 +124,7 @@ type promOverviewResp struct {
 	GeneratedAt string           `json:"generatedAt"`
 	Up          promUpStat       `json:"up"`
 	Avg         promAvg          `json:"avg"`
+	UsageDist   promUsageDist    `json:"usageDist"`
 	Trend       []promTrendPoint `json:"trend"`
 	Hosts       []promHostStat   `json:"hosts"`
 	Alerts      []promAlertItem  `json:"alerts"`
@@ -127,6 +186,9 @@ func PromOverview(c *gin.Context) {
 		}
 	}
 
+	// ---- 2.5 业务标签（department/system/env/deployserver，target labels） ----
+	instLabels := promCollectLabels(upSamples, unameSamples)
+
 	// ---- 3. 实时资源（CPU / 内存 / 磁盘 per instance） ----
 	cpuMap := promCurrentMap(ctx, cli, promQLCPU("5m"))
 	memMap := promCurrentMap(ctx, cli, promQLMem)
@@ -140,14 +202,22 @@ func PromOverview(c *gin.Context) {
 			return
 		}
 		seen[inst] = true
-		hosts = append(hosts, promHostStat{
+		lb := instLabels[inst]
+		h := promHostStat{
 			Instance: inst,
 			Hostname: hostnames[inst],
 			Up:       upMap[inst],
 			CPU:      cpuMap[inst],
 			Mem:      memMap[inst],
 			Disk:     diskMap[inst],
-		})
+		}
+		if lb != nil {
+			h.Department = lb.Department
+			h.System = lb.System
+			h.Env = lb.Env
+			h.DeploySvr = lb.DeploySvr
+		}
+		hosts = append(hosts, h)
 	}
 	for inst := range upMap {
 		addHost(inst)
@@ -167,6 +237,9 @@ func PromOverview(c *gin.Context) {
 	// 资源均值（只统计在线且有值的）
 	out.Avg = promAvgOf(hosts)
 
+	// 资源健康分布（正常/关注/预警/严重/离线）
+	out.UsageDist = promUsageDistOf(hosts)
+
 	// ---- 4. 告警（firing） ----
 	alertSamples, _ := cli.query(ctx, `ALERTS{alertstate="firing"}`, "")
 	for _, s := range alertSamples {
@@ -181,9 +254,9 @@ func PromOverview(c *gin.Context) {
 
 	// ---- 5. TOP5（CPU / 内存 / 磁盘） ----
 	out.Top = promTopSets{
-		CPU:  promTopN(hosts, func(h promHostStat) float64 { return h.CPU }),
-		Mem:  promTopN(hosts, func(h promHostStat) float64 { return h.Mem }),
-		Disk: promTopN(hosts, func(h promHostStat) float64 { return h.Disk }),
+		CPU:  promTopN(hosts, instLabels, func(h promHostStat) float64 { return h.CPU }),
+		Mem:  promTopN(hosts, instLabels, func(h promHostStat) float64 { return h.Mem }),
+		Disk: promTopN(hosts, instLabels, func(h promHostStat) float64 { return h.Disk }),
 	}
 
 	// ---- 6. 24h 趋势（15m 步长，全集群均值） ----
@@ -241,8 +314,35 @@ func promAvgOf(hosts []promHostStat) promAvg {
 	return avg
 }
 
+// promUsageDistOf 资源健康分布：按主机 max(CPU,内存,磁盘) 分档
+func promUsageDistOf(hosts []promHostStat) promUsageDist {
+	d := promUsageDist{}
+	for _, h := range hosts {
+		m := h.CPU
+		if h.Mem > m {
+			m = h.Mem
+		}
+		if h.Disk > m {
+			m = h.Disk
+		}
+		switch {
+		case !h.Up || m <= 0:
+			d.None++
+		case m >= 95:
+			d.Crit++
+		case m >= 90:
+			d.High++
+		case m >= 80:
+			d.Mid++
+		default:
+			d.Low++
+		}
+	}
+	return d
+}
+
 // promTopN 按指定字段取前 5（过滤 0 值与离线）
-func promTopN(hosts []promHostStat, pick func(promHostStat) float64) []promTopEntry {
+func promTopN(hosts []promHostStat, labels map[string]*promInstLabels, pick func(promHostStat) float64) []promTopEntry {
 	ups := make([]promHostStat, 0, len(hosts))
 	for _, h := range hosts {
 		if h.Up && pick(h) > 0 {
@@ -255,11 +355,18 @@ func promTopN(hosts []promHostStat, pick func(promHostStat) float64) []promTopEn
 	}
 	out := make([]promTopEntry, 0, len(ups))
 	for _, h := range ups {
-		out = append(out, promTopEntry{
+		e := promTopEntry{
 			Instance: h.Instance,
 			Hostname: h.Hostname,
 			Value:    round1(pick(h)),
-		})
+		}
+		if lb := labels[h.Instance]; lb != nil {
+			e.Department = lb.Department
+			e.System = lb.System
+			e.Env = lb.Env
+			e.DeploySvr = lb.DeploySvr
+		}
+		out = append(out, e)
 	}
 	return out
 }
@@ -319,14 +426,18 @@ func promAvgByTs(series []promSeries) map[int64]*float64 {
 
 // promReportRow 报表中的一台主机
 type promReportRow struct {
-	Instance string  `json:"instance"`
-	Hostname string  `json:"hostname"`
-	CPUAvg   float64 `json:"cpuAvg"`
-	CPUMax   float64 `json:"cpuMax"`
-	MemAvg   float64 `json:"memAvg"`
-	MemMax   float64 `json:"memMax"`
-	DiskAvg  float64 `json:"diskAvg"`
-	DiskMax  float64 `json:"diskMax"`
+	Instance   string  `json:"instance"`
+	Hostname   string  `json:"hostname"`
+	Department string  `json:"department"` // 所属部门
+	System     string  `json:"system"`     // 项目名
+	Env        string  `json:"env"`        // 环境
+	DeploySvr  string  `json:"deployserver"` // 业务环境
+	CPUAvg     float64 `json:"cpuAvg"`
+	CPUMax     float64 `json:"cpuMax"`
+	MemAvg     float64 `json:"memAvg"`
+	MemMax     float64 `json:"memMax"`
+	DiskAvg    float64 `json:"diskAvg"`
+	DiskMax    float64 `json:"diskMax"`
 }
 
 // promReportResp 报表响应
@@ -429,7 +540,11 @@ func PromReport(c *gin.Context) {
 		}
 	}
 
-	rows := promAggregateRows(cpuSeries, memSeries, diskSeries, hostnames)
+	// 业务标签（department/system/env/deployserver）：up 最便宜且覆盖全部 target
+	upSamples, _ := cli.query(ctx, "up", "")
+	instLabels := promCollectLabels(upSamples, unameSamples)
+
+	rows := promAggregateRows(cpuSeries, memSeries, diskSeries, hostnames, instLabels)
 	resp := promReportResp{
 		Period:   period,
 		PeriodCN: periodCN,
@@ -450,7 +565,7 @@ func PromReport(c *gin.Context) {
 }
 
 // promAggregateRows 三组矩阵序列 → 每主机均值/峰值（按 CPU 峰值降序）
-func promAggregateRows(cpu, mem, disk []promSeries, hostnames map[string]string) []promReportRow {
+func promAggregateRows(cpu, mem, disk []promSeries, hostnames map[string]string, labels map[string]*promInstLabels) []promReportRow {
 	cpuAgg := promPerInstanceAgg(cpu)
 	memAgg := promPerInstanceAgg(mem)
 	diskAgg := promPerInstanceAgg(disk)
@@ -467,6 +582,12 @@ func promAggregateRows(cpu, mem, disk []promSeries, hostnames map[string]string)
 	rows := make([]promReportRow, 0, len(instSet))
 	for inst := range instSet {
 		r := promReportRow{Instance: inst, Hostname: hostnames[inst]}
+		if lb := labels[inst]; lb != nil {
+			r.Department = lb.Department
+			r.System = lb.System
+			r.Env = lb.Env
+			r.DeploySvr = lb.DeploySvr
+		}
 		if a := cpuAgg[inst]; a != nil {
 			r.CPUAvg, r.CPUMax = round1(a.avg), round1(a.max)
 		}

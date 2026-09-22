@@ -31,6 +31,25 @@ INSTANCES = [
 ]
 UP_FLAGS = [1, 1, 1, 1, 1, 0]  # legacy-old 离线
 
+# 业务标签（模拟 Prometheus target relabel 注入的 department/system/env/deployserver）
+BIZ_LABELS = [
+    {"department": "财务部", "system": "ERP系统", "env": "生产环境", "deployserver": "应用服务器"},
+    {"department": "财务部", "system": "ERP系统", "env": "生产环境", "deployserver": "Web服务器"},
+    {"department": "供应链部", "system": "WMS系统", "env": "生产环境", "deployserver": "应用服务器"},
+    {"department": "供应链部", "system": "WMS系统", "env": "测试环境", "deployserver": "数据库服务器"},
+    {"department": "信息技术部", "system": "OA系统", "env": "生产环境", "deployserver": "数据库服务器"},
+    {"department": "信息技术部", "system": "遗留系统", "env": "测试环境", "deployserver": "应用服务器"},
+]
+
+
+def mlabels(i, **kw):
+    """第 i 台主机的完整 metric 标签（instance + job + 业务标签）。"""
+    inst, host = INSTANCES[i]
+    d = {"instance": inst, "job": "node"}
+    d.update(BIZ_LABELS[i])
+    d.update(kw)
+    return d
+
 METRIC_NAMES = [
     "node_cpu_seconds_total",
     "node_memory_MemAvailable_bytes",
@@ -126,8 +145,8 @@ class Handler(BaseHTTPRequestHandler):
             kind = classify(query)
             if kind == "up":
                 result = [
-                    {"metric": {"instance": inst, "job": "node"}, "value": [now, str(v)]}
-                    for (inst, _), v in zip(INSTANCES, UP_FLAGS)
+                    {"metric": mlabels(i), "value": [now, str(v)]}
+                    for i, v in enumerate(UP_FLAGS)
                 ]
             elif kind == "alerts":
                 result = [
@@ -144,13 +163,13 @@ class Handler(BaseHTTPRequestHandler):
                 ]
             elif kind == "uname":
                 result = [
-                    {"metric": {"instance": inst, "job": "node", "nodename": host}, "value": [now, "1"]}
-                    for inst, host in INSTANCES
+                    {"metric": mlabels(i, nodename=host), "value": [now, "1"]}
+                    for i, (_, host) in enumerate(INSTANCES)
                 ]
             elif kind in ("cpu", "mem", "disk"):
                 result = [
-                    {"metric": {"instance": inst, "job": "node"}, "value": [now, "%.3f" % vec_value(kind, i, now)]}
-                    for i, (inst, _) in enumerate(INSTANCES)
+                    {"metric": mlabels(i), "value": [now, "%.3f" % vec_value(kind, i, now)]}
+                    for i in range(len(INSTANCES))
                     if UP_FLAGS[i] == 1
                 ]
             else:
@@ -175,7 +194,7 @@ class Handler(BaseHTTPRequestHandler):
                 # up 等其它查询也给一份平线，避免前端报错
                 kind = "cpu"
             series = []
-            for i, (inst, _) in enumerate(INSTANCES):
+            for i in range(len(INSTANCES)):
                 if UP_FLAGS[i] == 0:
                     continue
                 vals = []
@@ -183,7 +202,7 @@ class Handler(BaseHTTPRequestHandler):
                 while ts <= end:
                     vals.append([ts, "%.3f" % vec_value(kind, i, ts)])
                     ts += step
-                series.append({"metric": {"instance": inst, "job": "node"}, "values": vals})
+                series.append({"metric": mlabels(i), "values": vals})
             self._send({"status": "success", "data": {"resultType": "matrix", "result": series}})
             return
 

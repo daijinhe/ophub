@@ -226,19 +226,28 @@ export default function PromReportPage() {
         ['峰值≥90% 的主机数', report.fleet.alertHit],
       ]
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(overview), '报告概览')
-      // Sheet2 主机资源明细
-      const header = ['实例', '主机名', 'CPU均值%', 'CPU峰值%', '内存均值%', '内存峰值%', '磁盘均值%', '磁盘峰值%', '峰值风险']
-      const body = report.rows.map((r) => [
-        r.instance,
-        r.hostname || '',
-        r.cpuAvg,
-        r.cpuMax,
-        r.memAvg,
-        r.memMax,
-        r.diskAvg,
-        r.diskMax,
-        Math.max(r.cpuMax, r.memMax, r.diskMax) >= 90 ? '高' : Math.max(r.cpuMax, r.memMax, r.diskMax) >= 80 ? '中' : '正常',
-      ])
+      // Sheet2 主机资源明细（列顺序：所属部门 项目名 虚拟机IPv4 环境 业务环境 + 6 项指标 + 风险）
+      const header = [
+        '所属部门', '项目名', '虚拟机IPv4', '环境', '业务环境',
+        'CPU均值%', 'CPU峰值%', '内存均值%', '内存峰值%', '磁盘均值%', '磁盘峰值%', '风险',
+      ]
+      const body = report.rows.map((r) => {
+        const m = Math.max(r.cpuMax, r.memMax, r.diskMax)
+        return [
+          r.department || '',
+          r.system || '',
+          r.instance,
+          r.env || '',
+          r.deployserver || '',
+          r.cpuAvg,
+          r.cpuMax,
+          r.memAvg,
+          r.memMax,
+          r.diskAvg,
+          r.diskMax,
+          m >= 90 ? '高' : m >= 80 ? '中' : '正常',
+        ]
+      })
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([header, ...body]), '主机资源明细')
       // Sheet3 趋势数据
       const trendHeader = ['时间', 'CPU使用率%(全集群均值)', '内存使用率%(全集群均值)']
@@ -273,11 +282,14 @@ export default function PromReportPage() {
     }
   }, [report])
 
-  /* ---------- 明细表 ---------- */
+  /* ---------- 明细表（列顺序与导出 Excel 完全一致） ---------- */
   const columns = useMemo(
     () => [
-      { title: '实例', dataIndex: 'instance', width: 190, ellipsis: true },
-      { title: '主机名', dataIndex: 'hostname', width: 160, ellipsis: true, render: (v: string) => v || '—' },
+      { title: '所属部门', dataIndex: 'department', width: 110, ellipsis: true, render: (v: string) => v || '—' },
+      { title: '项目名', dataIndex: 'system', width: 130, ellipsis: true, render: (v: string) => v || '—' },
+      { title: '虚拟机IPv4', dataIndex: 'instance', width: 160, ellipsis: true },
+      { title: '环境', dataIndex: 'env', width: 100, ellipsis: true, render: (v: string) => v || '—' },
+      { title: '业务环境', dataIndex: 'deployserver', width: 120, ellipsis: true, render: (v: string) => v || '—' },
       {
         title: 'CPU 均值',
         dataIndex: 'cpuAvg',
@@ -477,7 +489,7 @@ export default function PromReportPage() {
               columns={columns}
               dataSource={report.rows}
               pagination={{ pageSize: 20, showSizeChanger: true }}
-              scroll={{ x: 1100 }}
+              scroll={{ x: 1300 }}
             />
           </Card>
         </>
