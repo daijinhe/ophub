@@ -78,10 +78,15 @@ func NormalizeSchedule(t *InspectionTask) {
 
 // InspectionTask 巡检任务
 type InspectionTask struct {
-	ID              uint           `gorm:"primaryKey" json:"id"`
-	Name            string         `gorm:"size:128" json:"name"`                 // 任务名称
-	ScopeType       string         `gorm:"size:16;default:all" json:"scopeType"` // all | category | selected
-	CategoryID      *uint          `json:"categoryId"`                           // 按分类时生效
+	ID        uint   `gorm:"primaryKey" json:"id"`
+	Name      string `gorm:"size:128" json:"name"`                 // 任务名称
+	ScopeType string `gorm:"size:16;default:all" json:"scopeType"` // all | category | selected
+	// CategoryID 单选分类（v1.7.27- 的老口径，保留兼容历史任务）
+	CategoryID *uint `json:"categoryId"`
+	// CategoryIDs 多选分类（v1.7.28+）。与 CategoryID 取并集后展开子树，
+	// 空数组 = 未选；两者都为空时「按分类」范围会明确报错，不退化成全量资产。
+	// 分类树任意层级都可选，选父级即自动包含其全部子孙（与「全部子分类资产」语义一致）。
+	CategoryIDs     datatypes.JSON `json:"categoryIds"`
 	AssetIDs        datatypes.JSON `json:"assetIds"`                             // 选中资产 id 列表（scopeType=selected）
 	Metrics         datatypes.JSON `json:"metrics"`                              // 采集指标 key 列表（可自定义）
 	Freq            string         `gorm:"size:16;default:manual" json:"freq"`   // 调度频率

@@ -135,25 +135,70 @@ func applyPath(cat *Category) {
 	cat.Path = "/0/" + strconv.Itoa(int(cat.ID))
 }
 
-// collectSubtreeIDs 收集分类及其所有子孙的分类 ID
-func collectSubtreeIDs(rootID uint) []uint {
-	var cats []Category
-	DB.Find(&cats)
-	var root *Category
-	for i := range cats {
-		if cats[i].ID == rootID {
-			root = &cats[i]
-			break
-		}
+// existingCategoryIDs 过滤出分类表里真实存在的分类 ID：保持入参顺序、去重、丢弃 0。
+// 任务保存时用它把「已被删除的分类」剔掉，避免存下一批永远匹配不到资产的幽灵 ID。
+func existingCategoryIDs(ids []uint) []uint {
+	out := []uint{}
+	if len(ids) == 0 {
+		return out
 	}
-	if root == nil {
+	var cats []Category
+	DB.Select("id").Find(&cats)
+	has := map[uint]bool{}
+	for _, c := range cats {
+		has[c.ID] = true
+	}
+	seen := map[uint]bool{}
+	for _, id := range ids {
+		if id == 0 || seen[id] || !has[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
+
+// collectSubtreeIDs 收集分类及其所有子孙的分类 ID（单选口径，保留给历史调用点）
+func collectSubtreeIDs(rootID uint) []uint {
+	return collectSubtreesIDs([]uint{rootID})
+}
+
+// collectSubtreesIDs 收集多个分类（各自含其全部子孙）的并集分类 ID。
+//
+// 用途：巡检任务「按分类」支持任意层级的多选 —— 每个选中节点都按「本节点 + 全部子孙」
+// 展开，多个节点之间做并集去重（选父级又选其子级不会重复，也不会漏）。
+// 不存在的分类 ID 直接跳过（任务保存后分类被删掉时不至于整体失败）。
+func collectSubtreesIDs(rootIDs []uint) []uint {
+	if len(rootIDs) == 0 {
 		return []uint{}
 	}
-	ids := []uint{root.ID}
-	for _, c := range cats {
-		if c.Path == root.Path || strings.HasPrefix(c.Path, root.Path+"/") {
-			ids = append(ids, c.ID)
+	var cats []Category
+	DB.Find(&cats)
+	if len(cats) == 0 {
+		return []uint{}
+	}
+	byID := map[uint]*Category{}
+	for i := range cats {
+		byID[cats[i].ID] = &cats[i]
+	}
+	seen := map[uint]bool{}
+	out := []uint{}
+	for _, rid := range rootIDs {
+		root, ok := byID[rid]
+		if !ok {
+			continue
+		}
+		for i := range cats {
+			c := &cats[i]
+			if seen[c.ID] {
+				continue
+			}
+			if c.Path == root.Path || strings.HasPrefix(c.Path, root.Path+"/") {
+				seen[c.ID] = true
+				out = append(out, c.ID)
+			}
 		}
 	}
-	return ids
+	return out
 }

@@ -28,7 +28,10 @@ export interface InspectionTask {
   id: number
   name: string
   scopeType: string
+  /** @deprecated 单选分类（老口径）。新任务一律写 categoryIds，此字段仅用于读历史任务。 */
   categoryId?: number | null
+  /** 按分类时生效：任意层级的分类 ID 列表（单选=1 个、多选=多个），选父级自动含全部子孙 */
+  categoryIds?: number[]
   assetIds?: number[]
   metrics?: string[] // 存储的是选中的采集分类键
   categories?: string[]

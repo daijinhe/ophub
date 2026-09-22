@@ -129,14 +129,95 @@ func nextMonthRun(from time.Time, monthDay, hh, mm int) *time.Time {
 	return nil
 }
 
+// parseCategoryIDList 解析任务的分类 id 列表，兼容三种写法（解析不出的元素跳过，不整体失败）：
+//
+//	[1,2]                     —— 标准口径
+//	[{"value":1},{...}]       —— antd TreeSelect 在 treeCheckStrictly（父子不联动）下
+//	                             onChange 回传的是带 halfChecked 的对象数组
+//	["1","2"]                 —— 字符串数字（手工调接口 / 老前端）
+//
+// 参数用 []byte 而不是 datatypes.JSON：datatypes.JSON 的底层类型就是 []byte，
+// 这样调用方直接传进来即可，不必为本函数多引一个包。
+func parseCategoryIDList(raw []byte) []uint {
+	if len(raw) == 0 {
+		return nil
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil
+	}
+	out := make([]uint, 0, len(items))
+	for _, it := range items {
+		var n uint
+		if err := json.Unmarshal(it, &n); err == nil {
+			if n > 0 {
+				out = append(out, n)
+			}
+			continue
+		}
+		var s string
+		if err := json.Unmarshal(it, &s); err == nil {
+			if v, err := strconv.ParseUint(strings.TrimSpace(s), 10, 64); err == nil && v > 0 {
+				out = append(out, uint(v))
+			}
+			continue
+		}
+		var obj struct {
+			Value uint `json:"value"`
+		}
+		if err := json.Unmarshal(it, &obj); err == nil && obj.Value > 0 {
+			out = append(out, obj.Value)
+		}
+	}
+	return out
+}
+
+// taskCategoryRoots 提取任务「按分类」范围下的根分类 ID：单选字段与多选字段取并集。
+// 历史上的任务只有 CategoryID；v1.7.28+ 前端写 CategoryIDs。两者都读，保证老任务行为不变。
+func taskCategoryRoots(task *InspectionTask) []uint {
+	var roots []uint
+	if task.CategoryID != nil && *task.CategoryID > 0 {
+		roots = append(roots, *task.CategoryID)
+	}
+	roots = append(roots, parseCategoryIDList(task.CategoryIDs)...)
+	return roots
+}
+
+// normalizeTaskCategoryScope 归一化任务「按分类」范围的分类字段，并做保存前校验。
+//
+//   - 单选 CategoryID 与多选 CategoryIDs 先取并集，再剔掉已被删除的分类；
+//   - 校验通过后统一写入 CategoryIDs，并把老的 CategoryID 置空 —— 避免「单选老值」残留，
+//     下次只改多选时旧分类会幽灵般复活（并集语义下必然发生）；
+//   - 切换到 all / selected 时清空两个分类字段，防止范围切回来时旧分类意外还原；
+//   - 按分类却一个有效分类都没有时明确报错，不退化成全量资产。
+func normalizeTaskCategoryScope(t *InspectionTask) error {
+	if t.ScopeType != "category" {
+		t.CategoryID = nil
+		t.CategoryIDs = nil
+		return nil
+	}
+	roots := existingCategoryIDs(taskCategoryRoots(t))
+	if len(roots) == 0 {
+		return fmt.Errorf("巡检范围为「按分类」时，必须至少选择一个有效分类")
+	}
+	t.CategoryID = nil
+	t.CategoryIDs = mustJSON(roots)
+	return nil
+}
+
 func resolveTaskAssets(task *InspectionTask) ([]Asset, error) {
 	q := DB.Model(&Asset{})
 	switch task.ScopeType {
 	case "category":
-		if task.CategoryID != nil {
-			ids := collectSubtreeIDs(*task.CategoryID)
-			q = q.Where("category_id IN ?", ids)
+		// 任意层级（单选或多选）的分类：每个根节点展开为「自身 + 全部子孙」后取并集。
+		// 一个都没解析到必须显式报错 —— 否则会静默退化成「全量资产」，
+		// 与「指定资产」范围踩过的是同一个坑（选中 1 个子类却巡检全库）。
+		roots := taskCategoryRoots(task)
+		ids := collectSubtreesIDs(roots)
+		if len(ids) == 0 {
+			return nil, fmt.Errorf("任务范围是「按分类」，但没有解析到任何可用分类（分类可能已被删除，请重新选择后保存任务）")
 		}
+		q = q.Where("category_id IN ?", ids)
 	case "selected":
 		// v1.7.20 修复：此前这里是个空代码块 —— task.AssetIDs 从未被解析进 ids，
 		// 于是「指定资产」范围静默退化成「全量资产」（选中 1 台却巡检全库），
@@ -392,11 +473,15 @@ func ListInspectionTasks(c *gin.Context) {
 			nodeName = nodes[*t.RemoteNodeID]
 		}
 		var cats []string
+		// categoryRoots 是「按分类」范围真正生效的根分类（单选 + 多选并集），
+		// 前端拿它回填 TreeSelect，也能在列表里显示成具体分类名。
+		catRoots := taskCategoryRoots(&t)
 		out = append(out, gin.H{
 			"id":              t.ID,
 			"name":            t.Name,
 			"scopeType":       t.ScopeType,
 			"categoryId":      t.CategoryID,
+			"categoryIds":     catRoots,
 			"assetIds":        json.RawMessage(t.AssetIDs),
 			"metrics":         json.RawMessage(t.Metrics),
 			"categories":      cats,
@@ -429,6 +514,10 @@ func CreateInspectionTask(c *gin.Context) {
 	}
 	if body.ScopeType == "" {
 		body.ScopeType = "all"
+	}
+	if err := normalizeTaskCategoryScope(&body); err != nil {
+		Fail(c, http.StatusBadRequest, 400, err.Error())
+		return
 	}
 	if len(body.Metrics) == 0 {
 		body.Metrics = mustJSON(DefaultCategories())
@@ -468,6 +557,11 @@ func UpdateInspectionTask(c *gin.Context) {
 	}
 	task.ScopeType = body.ScopeType
 	task.CategoryID = body.CategoryID
+	task.CategoryIDs = body.CategoryIDs
+	if err := normalizeTaskCategoryScope(&task); err != nil {
+		Fail(c, http.StatusBadRequest, 400, err.Error())
+		return
+	}
 	task.AssetIDs = body.AssetIDs
 	if len(body.Metrics) > 0 {
 		task.Metrics = body.Metrics

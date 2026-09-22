@@ -18,6 +18,7 @@ import {
   Spin,
   Divider,
   Alert,
+  Segmented,
 } from 'antd'
 import {
   PlusOutlined,
@@ -68,6 +69,8 @@ export default function InspectionTasks() {
   const [runnerMode, setRunnerMode] = useState<{ effective: string; mode: string } | null>(null)
   const [assets, setAssets] = useState<any[]>([])
   const [selectedKeys, setSelectedKeys] = useState<number[]>([])
+  // 「按分类」的选择模式：single=任选一个层级；multi=任选多个层级（可跨层混选）
+  const [catMode, setCatMode] = useState<'single' | 'multi'>('multi')
   const [form] = Form.useForm()
 
   const canManage = hasPerm('inspection:manage')
@@ -112,6 +115,34 @@ export default function InspectionTasks() {
     [catalog]
   )
 
+  // 分类树 → 扁平 id→名称 映射（列表里把分类 ID 显示成人能看懂的名字）
+  const catNameById = useMemo(() => {
+    const m = new Map<number, string>()
+    const walk = (ns: any[]) =>
+      (ns || []).forEach((n: any) => {
+        m.set(n.id, n.name)
+        if (n.children && n.children.length) walk(n.children)
+      })
+    walk(categories)
+    return m
+  }, [categories])
+
+  // ⚠ antd TreeSelect 在 treeCheckStrictly（父子不联动）下，onChange 回传的是
+  //   [{ label, value, halfChecked }, ...] 这种对象数组（为了携带半选信息），
+  //   而不是纯 value 数组。后端只认纯分类 id 数组，所以：
+  //     toCatIds   —— 提交前把对象/数字统一抽成 number[]
+  //     toCatValue —— 回填时按模式还原成 TreeSelect 期望的形态（多选=对象数组 / 单选=单个 id）
+  const toCatIds = (v: any): number[] =>
+    (Array.isArray(v) ? v : v == null ? [] : [v])
+      .map((x: any) => (x && typeof x === 'object' ? x.value : x))
+      .filter((x: any) => x != null && x !== '')
+      .map((x: any) => Number(x))
+
+  const toCatValue = (ids: number[], mode: 'single' | 'multi'): any =>
+    mode === 'multi'
+      ? ids.map((id) => ({ value: id, label: catNameById.get(id) || `#${id}` }))
+      : ids
+
   // 调度参数缺省值：新建时给一套「拿就能用」的配置；
   // 后端 NormalizeSchedule 会再夹一次合法区间，这里只负责界面初始状态。
   const defaultSchedule = {
@@ -127,10 +158,12 @@ export default function InspectionTasks() {
     setEditing(null)
     const dc = defaultCats
     setCats(dc)
+    setCatMode('multi')
     form.resetFields()
     form.setFieldsValue({
       name: '',
       scopeType: 'all',
+      categoryIds: [],
       freq: 'manual',
       scheduleEnabled: false,
       metrics: dc,
@@ -148,11 +181,20 @@ export default function InspectionTasks() {
       ? t.metrics
       : defaultCats) as string[]
     setCats(base)
+    // 分类范围：优先读新的多选字段，回退到历史单选字段
+    const catIds = (t.categoryIds && t.categoryIds.length
+      ? t.categoryIds
+      : t.categoryId
+      ? [t.categoryId]
+      : []) as number[]
+    // 多选/单选只是「界面交互模式」，按已选个数还原；只有一个分类时用单选更直观
+    const mode: 'single' | 'multi' = catIds.length > 1 ? 'multi' : 'single'
+    setCatMode(mode)
     form.resetFields()
     form.setFieldsValue({
       name: t.name,
       scopeType: t.scopeType,
-      categoryId: t.categoryId,
+      categoryIds: toCatValue(catIds, mode),
       assetIds: t.assetIds,
       freq: t.freq,
       intervalMin: t.intervalMin ?? defaultSchedule.intervalMin,
@@ -175,10 +217,18 @@ export default function InspectionTasks() {
       message.error('请至少选择一个采集分类')
       return
     }
+    const isCategory = v.scopeType === 'category'
+    const catIds = isCategory ? toCatIds(v.categoryIds) : []
+    if (isCategory && !catIds.length) {
+      message.error('请至少选择一个分类')
+      return
+    }
     const body = {
       name: v.name,
       scopeType: v.scopeType,
-      categoryId: v.categoryId || null,
+      // 后端统一把分类写进 categoryIds（单选也只是长度为 1 的数组），categoryId 只读不写
+      categoryId: null,
+      categoryIds: catIds,
       assetIds: v.assetIds || [],
       freq: v.freq,
       intervalMin: v.intervalMin,
@@ -254,9 +304,28 @@ export default function InspectionTasks() {
     {
       title: '巡检范围',
       dataIndex: 'scopeType',
-      render: (s: string) => {
+      render: (s: string, r: InspectionTask) => {
         const o = ScopeOptions.find((x) => x.value === s)
-        return <Tag color="blue">{o?.label || s}</Tag>
+        const catIds =
+          r.categoryIds && r.categoryIds.length
+            ? r.categoryIds
+            : r.categoryId
+            ? [r.categoryId]
+            : []
+        return (
+          <Space size={[4, 4]} wrap>
+            <Tag color="blue">
+              {o?.label || s}
+              {s === 'category' && catIds.length > 1 ? `（${catIds.length} 个）` : ''}
+            </Tag>
+            {s === 'category' &&
+              catIds.map((id: number) => (
+                <Tag key={id} color="geekblue">
+                  {catNameById.get(id) || `#${id}`}
+                </Tag>
+              ))}
+          </Space>
+        )
       },
     },
     {
@@ -357,6 +426,15 @@ export default function InspectionTasks() {
     form.setFieldValue('metrics', n)
   }
 
+  // 切换「按分类」的单选/多选：多选切单选时只保留第一个，
+  // 否则会出现「界面是单选、值却是多个」的脏状态，提交后与所见不符。
+  const switchCatMode = (m: 'single' | 'multi') => {
+    setCatMode(m)
+    let ids = toCatIds(form.getFieldValue('categoryIds'))
+    if (m === 'single') ids = ids.slice(0, 1)
+    form.setFieldValue('categoryIds', toCatValue(ids, m))
+  }
+
   // 资产分类树 → TreeSelect treeData（支持任意层级子分类选择）
   const buildCategoryTree = (list: any[]): any[] =>
     (list || []).map((c: any) => ({
@@ -452,17 +530,58 @@ export default function InspectionTasks() {
               const st = getFieldValue('scopeType')
               if (st === 'category')
                 return (
-                  <Form.Item name="categoryId" label="选择分类" rules={[{ required: true, message: '请选择分类' }]}>
-                    <TreeSelect
-                      placeholder="选择任意层级分类（自动包含其全部子分类资产）"
-                      allowClear
-                      showSearch
-                      treeNodeFilterProp="title"
-                      treeDefaultExpandAll
-                      treeData={buildCategoryTree(categories)}
-                      style={{ width: '100%' }}
-                    />
-                  </Form.Item>
+                  <div>
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 10,
+                        marginBottom: 8,
+                        flexWrap: 'wrap',
+                      }}
+                    >
+                      <span style={{ fontSize: 13 }}>选择方式</span>
+                      <Segmented
+                        size="small"
+                        value={catMode}
+                        onChange={(v) => switchCatMode(v as 'single' | 'multi')}
+                        options={[
+                          { label: '多选', value: 'multi' },
+                          { label: '单选', value: 'single' },
+                        ]}
+                      />
+                      <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
+                        分类树任意层级都可选，可跨层级多选；选中父级即覆盖其全部子分类的资产
+                      </span>
+                    </div>
+                    <Form.Item
+                      name="categoryIds"
+                      label="选择分类"
+                      rules={[{ required: true, message: '请选择分类' }]}
+                    >
+                      <TreeSelect
+                        multiple={catMode === 'multi'}
+                        treeCheckable={catMode === 'multi'}
+                        // 父子不联动：勾哪个层级就只提交哪个层级。
+                        // 联动（antd 默认）下勾一个父级会连带勾满它全部子孙，多选标签瞬间爆成
+                        // 几十个；再反选某个子级又会把父级从值里踢掉 —— 与后端「选父级 = 覆盖
+                        // 整棵子树」的口径不一致，反而容易误操作。父子都勾也无所谓，后端做并集去重。
+                        treeCheckStrictly={catMode === 'multi'}
+                        placeholder={
+                          catMode === 'multi'
+                            ? '可跨层级选多个分类（自动包含各自全部子分类资产）'
+                            : '选择任意层级分类（自动包含其全部子分类资产）'
+                        }
+                        allowClear
+                        showSearch
+                        treeNodeFilterProp="title"
+                        treeDefaultExpandAll
+                        treeData={buildCategoryTree(categories)}
+                        style={{ width: '100%' }}
+                        maxTagCount="responsive"
+                      />
+                    </Form.Item>
+                  </div>
                 )
               if (st === 'selected')
                 return (
