@@ -152,7 +152,6 @@ function BrandBadge({ type, size = 16 }: { type: string; size?: number }) {
 export default function MiddlewareOps() {
   const { message, modal } = App.useApp()
   const { hasPerm } = useAuth()
-  const canManage = hasPerm('mwops:manage')
 
   const [profiles, setProfiles] = useState<MwOpsProfile[]>([])
   const [instances, setInstances] = useState<MwInstance[]>([])
@@ -775,10 +774,13 @@ export default function MiddlewareOps() {
         const running = r.status === 'running'
         return (
           <Space size={4} wrap>
-            <Button size="small" icon={<SyncOutlined />} loading={busyId === r.id} onClick={() => doCheck(r)}>
-              检测
-            </Button>
-            {canManage &&
+            {/* 单个「检测」与「批量检测」同属检测动作，按 mwops:exec 收口 */}
+            {hasPerm('mwops:exec') && (
+              <Button size="small" icon={<SyncOutlined />} loading={busyId === r.id} onClick={() => doCheck(r)}>
+                检测
+              </Button>
+            )}
+            {hasPerm('mwops:exec') &&
               (running ? (
                 <Button size="small" danger icon={<PoweroffOutlined />} onClick={() => doAction(r, 'stop')}>
                   停止
@@ -788,7 +790,7 @@ export default function MiddlewareOps() {
                   启动
                 </Button>
               ))}
-            {canManage && (
+            {hasPerm('mwops:exec') && (
               <Button size="small" icon={<ReloadIcon />} onClick={() => doAction(r, 'restart')}>
                 重启
               </Button>
@@ -800,14 +802,18 @@ export default function MiddlewareOps() {
               menu={{
                 items: [
                   { key: 'detail', icon: <ProfileOutlined />, label: '进程 / 状态详情' },
-                  ...(canManage
+                  ...(hasPerm('mwops:exec')
+                    ? [{ key: 'reload', icon: <ThunderboltOutlined />, label: '重载配置' }]
+                    : []),
+                  ...(hasPerm('mwops:update')
                     ? [
-                        { key: 'reload', icon: <ThunderboltOutlined />, label: '重载配置' },
                         { key: 'profile', icon: <SettingOutlined />, label: '类型档案' },
                         { type: 'divider' as const },
                         { key: 'edit', icon: <EditOutlined />, label: '编辑实例' },
-                        { key: 'delete', icon: <DeleteOutlined />, label: '删除纳管', danger: true },
                       ]
+                    : []),
+                  ...(hasPerm('mwops:delete')
+                    ? [{ key: 'delete', icon: <DeleteOutlined />, label: '删除纳管', danger: true }]
                     : []),
                 ],
                 onClick: ({ key }) => {
@@ -899,35 +905,41 @@ export default function MiddlewareOps() {
 
         <div className="glass mw-panel">
           <Space wrap style={{ marginBottom: 12 }}>
-            <Button
-              type="primary"
-              icon={<HistoryOutlined />}
-              loading={syncLoading}
-              disabled={!canManage}
-              onClick={async () => {
-                setSyncLoading(true)
-                try {
-                  const r = await syncMwOpsFromDeploy()
-                  message.success(
-                    `已从部署记录同步：新增 ${r.created}，更新 ${r.updated}，跳过 ${r.skipped}，失败 ${r.failed}（扫描 ${r.jobCount} 条成功记录）`,
-                  )
-                  load()
-                  loadProfiles()
-                } catch (e: any) {
-                  message.error(e?.response?.data?.msg || '同步失败')
-                } finally {
-                  setSyncLoading(false)
-                }
-              }}
-            >
-              从部署记录同步
-            </Button>
-            <Button icon={<SyncOutlined />} loading={batchLoading} onClick={doBatchCheck}>
-              {selectedKeys.length ? `检测选中 ${selectedKeys.length} 个` : '批量检测全部'}
-            </Button>
-            <Button type="primary" icon={<PlusOutlined />} disabled={!canManage} onClick={openCreate}>
-              新增实例
-            </Button>
+            {/* 同步以「从部署记录导入/新增纳管实例」为主，mwops 无 :sync 动作码，按语义最接近的 mwops:create 收口 */}
+            {hasPerm('mwops:create') && (
+              <Button
+                type="primary"
+                icon={<HistoryOutlined />}
+                loading={syncLoading}
+                onClick={async () => {
+                  setSyncLoading(true)
+                  try {
+                    const r = await syncMwOpsFromDeploy()
+                    message.success(
+                      `已从部署记录同步：新增 ${r.created}，更新 ${r.updated}，跳过 ${r.skipped}，失败 ${r.failed}（扫描 ${r.jobCount} 条成功记录）`,
+                    )
+                    load()
+                    loadProfiles()
+                  } catch (e: any) {
+                    message.error(e?.response?.data?.msg || '同步失败')
+                  } finally {
+                    setSyncLoading(false)
+                  }
+                }}
+              >
+                从部署记录同步
+              </Button>
+            )}
+            {hasPerm('mwops:exec') && (
+              <Button icon={<SyncOutlined />} loading={batchLoading} onClick={doBatchCheck}>
+                {selectedKeys.length ? `检测选中 ${selectedKeys.length} 个` : '批量检测全部'}
+              </Button>
+            )}
+            {hasPerm('mwops:create') && (
+              <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+                新增实例
+              </Button>
+            )}
             <Input.Search
               allowClear
               placeholder="关键字（实例名 / IP / 路径 / 备注）"
@@ -1047,7 +1059,7 @@ export default function MiddlewareOps() {
                 { title: 'CPU%', dataIndex: 'cpu', width: 70 },
                 { title: 'MEM%', dataIndex: 'mem', width: 70 },
                 { title: '启动命令', dataIndex: 'args', render: (v) => <span style={MONO}>{v}</span> },
-                ...(canManage
+                ...(hasPerm('mwops:exec')
                   ? [
                       {
                         title: '操作',
@@ -1211,44 +1223,53 @@ export default function MiddlewareOps() {
                     placeholder={cfg.loadingFile ? '读取中…' : '（文件为空或不存在）'}
                   />
                   <Space style={{ marginTop: 10 }} wrap>
-                    <Button
-                      type="primary"
-                      icon={<SaveOutlined />}
-                      loading={cfg.saving}
-                      disabled={!canManage || cfg.loadingFile}
-                      onClick={() => submitCfg(true, false)}
-                    >
-                      保存并校验
-                    </Button>
-                    <Button
-                      icon={<ThunderboltOutlined />}
-                      loading={cfg.saving}
-                      disabled={!canManage || cfg.loadingFile}
-                      onClick={() => submitCfg(true, true)}
-                    >
-                      保存 · 校验 · 重载
-                    </Button>
-                    <Button
-                      icon={<SaveOutlined />}
-                      loading={cfg.saving}
-                      disabled={!canManage || cfg.loadingFile}
-                      onClick={() => submitCfg(false, false)}
-                    >
-                      仅保存
-                    </Button>
+                    {hasPerm('mwops:update') && (
+                      <Button
+                        type="primary"
+                        icon={<SaveOutlined />}
+                        loading={cfg.saving}
+                        disabled={cfg.loadingFile}
+                        onClick={() => submitCfg(true, false)}
+                      >
+                        保存并校验
+                      </Button>
+                    )}
+                    {/* 「保存 · 校验 · 重载」以保存为主题动作（重载是保存的附带效果），按 mwops:update 收口 */}
+                    {hasPerm('mwops:update') && (
+                      <Button
+                        icon={<ThunderboltOutlined />}
+                        loading={cfg.saving}
+                        disabled={cfg.loadingFile}
+                        onClick={() => submitCfg(true, true)}
+                      >
+                        保存 · 校验 · 重载
+                      </Button>
+                    )}
+                    {hasPerm('mwops:update') && (
+                      <Button
+                        icon={<SaveOutlined />}
+                        loading={cfg.saving}
+                        disabled={cfg.loadingFile}
+                        onClick={() => submitCfg(false, false)}
+                      >
+                        仅保存
+                      </Button>
+                    )}
                     <Button icon={<RollbackOutlined />} disabled={cfg.loadingFile} onClick={() => loadConfigFile(cfg.inst!, cfg.activePath)}>
                       放弃修改
                     </Button>
-                    <Popconfirm
-                      title="确认从备份还原？"
-                      description={`将用 ${cfg.activePath}.ophub.bak 覆盖当前文件并重新校验。`}
-                      onConfirm={doRestore}
-                      okButtonProps={{ danger: true }}
-                    >
-                      <Button danger icon={<HistoryOutlined />} loading={cfg.saving} disabled={!canManage}>
-                        还原备份
-                      </Button>
-                    </Popconfirm>
+                    {hasPerm('mwops:update') && (
+                      <Popconfirm
+                        title="确认从备份还原？"
+                        description={`将用 ${cfg.activePath}.ophub.bak 覆盖当前文件并重新校验。`}
+                        onConfirm={doRestore}
+                        okButtonProps={{ danger: true }}
+                      >
+                        <Button danger icon={<HistoryOutlined />} loading={cfg.saving}>
+                          还原备份
+                        </Button>
+                      </Popconfirm>
+                    )}
                     <Button
                       icon={<SyncOutlined />}
                       onClick={() => refreshCfgFiles(cfg.inst!)}

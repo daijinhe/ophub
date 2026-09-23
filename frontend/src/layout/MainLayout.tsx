@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo, ReactNode } from 'react'
 import { Layout, Menu, Dropdown, Avatar, Typography, Grid } from 'antd'
 import {
   DashboardOutlined,
@@ -36,25 +36,108 @@ import {
   LogoutOutlined,
 } from '@ant-design/icons'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
-import { useAuth } from '../store/AuthContext'
+import { useAuth, type MenuNode } from '../store/AuthContext'
 import { useTheme } from '../store/ThemeContext'
 import AccountModal from '../components/AccountModal'
 
 const { Sider, Header, Content } = Layout
 const { useBreakpoint } = Grid
 
-// 递归按权限过滤菜单：分组不带 perm（仅容器），子项各自携权限码；
-// 子项可用 perm（单码）或 perms（任一命中即显示，any-of，用于「巡检大屏」
-// 这种既给 inspection:view 又给 inspection:screen 的共用入口）；
-// 任意无可见子项的分组自动隐藏，既避免越权进入，也避免有权限页面被错藏。
-//
+/**
+ * 菜单图标映射。
+ *
+ * 图标是前端资源（ReactNode），没法从后端下发，所以后端菜单节点只声明
+ * icon 名（如 "cloud-server"），这里映射到 antd 图标组件。
+ * **新增菜单时唯一需要在前端补的东西就是这里的一条映射。**
+ */
+const ICON_MAP: Record<string, ReactNode> = {
+  dashboard: <DashboardOutlined />,
+  database: <DatabaseOutlined />,
+  'cloud-server': <CloudServerOutlined />,
+  api: <ApiOutlined />,
+  'deployment-unit': <DeploymentUnitOutlined />,
+  tool: <ToolOutlined />,
+  appstore: <AppstoreOutlined />,
+  'safety-certificate': <SafetyCertificateOutlined />,
+  history: <HistoryOutlined />,
+  hdd: <HddOutlined />,
+  rocket: <RocketOutlined />,
+  thunderbolt: <ThunderboltOutlined />,
+  'field-time': <FieldTimeOutlined />,
+  'file-protect': <FileProtectOutlined />,
+  'file-search': <FileSearchOutlined />,
+  cluster: <ClusterOutlined />,
+  code: <CodeOutlined />,
+  control: <ControlOutlined />,
+  'file-text': <FileTextOutlined />,
+  alert: <AlertOutlined />,
+  'eye-invisible': <EyeInvisibleOutlined />,
+  'dot-chart': <DotChartOutlined />,
+  fund: <FundOutlined />,
+  'bar-chart': <BarChartOutlined />,
+  'node-index': <NodeIndexOutlined />,
+  setting: <SettingOutlined />,
+  team: <TeamOutlined />,
+  key: <KeyOutlined />,
+}
+
+/**
+ * 后端菜单树 → antd Menu items（v1.7.46 起菜单不再硬编码）。
+ *
+ * 约定：
+ *   - 页面节点的 key 用 **route**（选中态与跳转都基于路由）；
+ *     分组节点的 key 用后端定义的短名（middleware / deploy / monitor …）。
+ *   - plainLabel 单独存一份纯文本：标题栏用它，避免大屏节点 label 里的
+ *     <a> 被渲染进 h4。
+ *   - noMenu（页内功能，如「资产分类」「Web 终端」）与 hidden（如「被屏蔽目标」）
+ *     的子节点都不进菜单；若某节点过滤后没有任何菜单子节点，它自身退化为叶子。
+ */
+function toMenuItems(nodes: MenuNode[]): any[] {
+  const out: any[] = []
+  for (const n of nodes) {
+    const kids = (n.children || []).filter((c) => !c.noMenu && !c.hidden)
+    const label =
+      n.newTab && n.route ? (
+        // 用原生 <a target="_blank"> 打开：保留地址栏与工具栏，可 F11 全屏 / 拖到副屏投屏，
+        // 也不会被弹窗拦截器拦截
+        <a
+          href={n.route}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: 'inherit', textDecoration: 'none' }}
+        >
+          {n.label}
+        </a>
+      ) : (
+        n.label
+      )
+    const item: any = {
+      key: n.route || n.key,
+      icon: n.icon ? ICON_MAP[n.icon] : undefined,
+      label,
+      plainLabel: n.label,
+      // entryPerms 是 any-of 语义（后端已补齐）；空数组表示「纯容器」，不参与权限过滤
+      perms: n.entryPerms || [],
+      hidden: n.hidden,
+    }
+    if (kids.length > 0) item.children = toMenuItems(kids)
+    out.push(item)
+  }
+  return out
+}
+
+// 递归按权限过滤菜单。
 // includeHidden：是否把 hidden 项（不占菜单、但真实存在且可达的页面，如 /prom/hidden）
 // 一并带回。**菜单渲染必须用 false**（否则隐藏项会漏到侧边栏），
-// 页头标题 / 选中态反查必须用 true —— 抽屉掉后者会让页头退化成兜底的「概览」。
-function filterMenuByPerm(items: any[], hasPerm: (code: string) => boolean, includeHidden = false): any[] {
+// 页头标题 / 选中态反查必须用 true —— 去掉后者会让页头退化成兜底的「概览」。
+function filterMenuByPerm(
+  items: any[],
+  hasPerm: (code: string) => boolean,
+  includeHidden = false,
+): any[] {
   const out: any[] = []
   for (const it of items) {
-    const codes: string[] = it.perms || (it.perm ? [it.perm] : [])
+    const codes: string[] = it.perms || []
     if (codes.length > 0 && !codes.some(hasPerm)) continue
     if (it.hidden) {
       if (includeHidden) out.push(it)
@@ -74,7 +157,7 @@ function filterMenuByPerm(items: any[], hasPerm: (code: string) => boolean, incl
 export default function MainLayout() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { user, logout, hasPerm } = useAuth()
+  const { user, logout, hasPerm, menuTree } = useAuth()
   const { mode, toggle } = useTheme()
   const screens = useBreakpoint()
   const [collapsed, setCollapsed] = useState(false)
@@ -84,7 +167,7 @@ export default function MainLayout() {
     if (p.startsWith('/inspection')) return ['monitor']
     if (p.startsWith('/prom')) return ['prom']
     if (p.startsWith('/deploy') || p.startsWith('/sysinit-config')) return ['middleware', 'deploy']
-    if (p.startsWith('/mwops')) return ['middleware', 'ops']
+    if (p.startsWith('/mwops') || p.startsWith('/mw-capture')) return ['middleware', 'ops']
     if (p.startsWith('/crontab')) return []
     // 脚本管理是独立一级分组（与定时任务平级），展开它才能看到子项
     if (p.startsWith('/scripts')) return ['scripts']
@@ -95,162 +178,8 @@ export default function MainLayout() {
   }
   const [openKeysState, setOpenKeysState] = useState<string[]>(openGroupsOf(location.pathname))
 
-  // 按业务域归类的菜单骨架：分组本身不带 perm（仅作容器），
-  // 由子项各自携权限码，递归过滤后「无可见子项的分组自动隐藏」，
-  // 避免「菜单看不到但手敲 URL 仍能进」的越权，也不会误把有权限的页面藏进别的组。
-  const rawItems: any[] = [
-    { key: '/dashboard', icon: <DashboardOutlined />, label: '概览', perm: 'dashboard:view' },
-
-    // 资产管理：v1.7.16 起提升为一级菜单（原「资源配置」分组拆散：资产管理独立，ansible 相关另立分组）
-    { key: '/cmdb', icon: <DatabaseOutlined />, label: '资产管理', perm: 'cmdb:view' },
-
-    // Ansible 管理：与资产管理平级的一级分组（v1.7.16）。
-    // 采集通道设置放第一个——它是全平台开关，配置优先级高于具体节点管理。
-    {
-      key: 'ansible',
-      icon: <CloudServerOutlined />,
-      label: 'Ansible 管理',
-      children: [
-        { key: '/ansible/mode', icon: <ApiOutlined />, label: '平台采集通道设置', perm: 'ansible:manage' },
-        { key: '/ansible/local', icon: <CodeOutlined />, label: '本机 Ansible 管理', perm: 'ansible:manage' },
-        { key: '/ansible/remote', icon: <CloudServerOutlined />, label: '远端 Ansible 管理', perm: 'ansible:manage' },
-      ],
-    },
-
-    {
-      key: 'middleware',
-      icon: <ApiOutlined />,
-      label: '中间件管理',
-      children: [
-        {
-          key: 'deploy',
-          icon: <DeploymentUnitOutlined />,
-          label: '中间件部署',
-          children: [
-            { key: '/deploy', icon: <RocketOutlined />, label: '应用中间件安装', perm: 'deploy:manage' },
-            { key: '/sysinit-config', icon: <ToolOutlined />, label: '系统初始化管理', perm: 'deploy:manage' },
-            { key: '/deploy-config', icon: <AppstoreOutlined />, label: '中间件部署配置', perm: 'deploy:manage' },
-            { key: '/deploy-certs', icon: <SafetyCertificateOutlined />, label: '证书管理', perm: 'deploy:manage' },
-            { key: '/deploy-records', icon: <HistoryOutlined />, label: '部署执行记录', perm: 'deploy:manage' },
-          ],
-        },
-        {
-          key: 'ops',
-          icon: <HddOutlined />,
-          label: '中间件运维',
-          children: [
-            { key: '/mwops', icon: <ThunderboltOutlined />, label: '中间件管控', perm: 'mwops:view' },
-            { key: '/mw-capture', icon: <FileSearchOutlined />, label: '中间件捕捉', perm: 'mwcapture:view' },
-          ],
-        },
-        {
-          key: 'mwconfig',
-          icon: <FileProtectOutlined />,
-          label: '中间件配置管理',
-          children: [
-            { key: '/nginx-config', icon: <FileProtectOutlined />, label: 'Nginx 配置', perm: 'config:view' },
-          ],
-        },
-      ],
-    },
-
-    // 定时任务：一级菜单（独立域，管理的是目标机 crontab，与中间件部署/管控无关）
-    { key: '/crontab', icon: <FieldTimeOutlined />, label: '定时任务', perm: 'crontab:view' },
-
-    // 脚本管理：独立一级菜单，与定时任务平级。
-    // 目前只有「Java 启停脚本管理」一个子项，未来扩展 PHP / Python / Shell 时
-    // 只需往 children 追加，架构不动。
-    {
-      key: 'scripts',
-      icon: <CodeOutlined />,
-      label: '脚本管理',
-      children: [
-        {
-          key: '/scripts/java',
-          icon: <CodeOutlined />,
-          label: 'Java 启停脚本管理',
-          perm: 'script:view',
-        },
-      ],
-    },
-
-    {
-      key: 'monitor',
-      icon: <ClusterOutlined />,
-      label: '监控巡检',
-      children: [
-        // 用原生 <a target="_blank"> 在浏览器新标签页打开：
-        // 保留地址栏与工具栏，可 F11 全屏 / 拖到副屏投屏，也不会被弹窗拦截器拦截
-        {
-          key: '/inspection/screen',
-          icon: <DotChartOutlined />,
-          label: (
-            <a
-              href="/inspection/screen"
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ color: 'inherit', textDecoration: 'none' }}
-            >
-              巡检大屏
-            </a>
-          ),
-          // 大屏是共用入口：老角色（inspection:view）与新角色（inspection:screen）都能看到
-          perms: ['inspection:screen', 'inspection:view'],
-        },
-        { key: '/inspection/tasks', icon: <ControlOutlined />, label: '智能巡检', perm: 'inspection:view' },
-        { key: '/inspection/records', icon: <FileTextOutlined />, label: '巡检报表', perm: 'inspection:view' },
-        // 告警规则属配置动作 → 用 inspection:manage（与任务增删改同权限）
-        { key: '/inspection/alert-rules', icon: <AlertOutlined />, label: '告警规则', perm: 'inspection:manage' },
-      ],
-    },
-
-    // Prometheus 监控：独立一级大类（v1.8.0）。
-    // 数据源管理列出用 prom:view，增删改在页面内再按 prom:manage 收口；
-    // 大屏在新标签页打开，prom:screen（只看大屏）与 prom:view 共用入口。
-    {
-      key: 'prom',
-      icon: <FundOutlined />,
-      label: 'Prometheus 监控',
-      children: [
-        { key: '/prom/datasources', icon: <ApiOutlined />, label: '数据源管理', perm: 'prom:view' },
-        // 监控报表（v1.7.41）：内含「生成报告 / 报表模板 / 报告记录」三个页签。
-        // 原本三样各占一个菜单，用户反馈「太乱了」，合并后菜单只留这一个入口。
-        { key: '/prom/report', icon: <BarChartOutlined />, label: '监控报表', perm: 'prom:view' },
-        {
-          key: '/prom/screen',
-          icon: <DotChartOutlined />,
-          label: (
-            <a
-              href="/prom/screen"
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ color: 'inherit', textDecoration: 'none' }}
-            >
-              监控大屏
-            </a>
-          ),
-          perms: ['prom:screen', 'prom:view'],
-        },
-        // 大屏管理（v1.7.41）：展示内容 / 风险与屏蔽 / 阈值与采集 三页签，
-        // v1.7.36 独立出去的「屏蔽规则」已并回本页。
-        { key: '/prom/screen-admin', icon: <ControlOutlined />, label: '大屏管理', perm: 'prom:manage' },
-        // 被屏蔽目标明细（v1.7.43）：大屏看不到的目标 / 风险项 / 榜位 + 它们当前的实时指标。
-        // ⚠️ hidden: true —— **不占侧边栏菜单**（入口：大屏管理 → 页头 & 风险与屏蔽卡片），
-        // 但仍登记在这里，好让页头标题反查得到「被屏蔽目标」而不是兜底的「概览」。
-        { key: '/prom/hidden', icon: <EyeInvisibleOutlined />, label: '被屏蔽目标', perm: 'prom:view', hidden: true },
-      ],
-    },
-
-    {
-      key: 'system',
-      icon: <SettingOutlined />,
-      label: '系统管理',
-      children: [
-        { key: '/users', icon: <TeamOutlined />, label: '用户管理', perm: 'user:view' },
-        { key: '/roles', icon: <KeyOutlined />, label: '角色权限', perm: 'role:view' },
-      ],
-    },
-  ]
+  // 菜单骨架来自后端下发的菜单权限树（单一事实源），这里只做「图标映射 + 权限过滤」
+  const rawItems: any[] = useMemo(() => toMenuItems(menuTree), [menuTree])
 
   // 菜单渲染用：hidden 项（不占菜单的页面，如 /prom/hidden）在这一路被丢掉
   const allItems: any[] = filterMenuByPerm(rawItems, hasPerm)
@@ -353,7 +282,7 @@ export default function MainLayout() {
           }}
         >
           <Typography.Title level={4} style={{ margin: 0, fontWeight: 600 }}>
-            {flatItems.find((i) => i.key === selected)?.label || '概览'}
+            {flatItems.find((i) => i.key === selected)?.plainLabel || '概览'}
           </Typography.Title>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
             <div

@@ -433,11 +433,13 @@ const AutoScroll = memo(function AutoScroll({
 })
 
 export default function InspectionScreen() {
-  const { isAdmin, hasPerm, logout } = useAuth()
+  const { isAdmin, hasPerm, logout, routePerms } = useAuth()
   // 「只看大屏」账号（仅授予 inspection:screen）：除大屏外没有任何可访问页面，
   // 此时不提供「返回主界面」（回去也只会被弹回大屏），改为提供「退出登录」，
   // 否则这类账号进到大屏后无法登出。
-  const onlyScreen = firstAccessiblePath(hasPerm) === '/inspection/screen'
+  // ⚠️ firstAccessiblePath 会优先排除大屏类（newTab）页面，所以只有大屏权限时
+  // 它仍会回落到本页 —— 这个判断在 v1.7.46 之后语义不变。
+  const onlyScreen = firstAccessiblePath(hasPerm, routePerms) === '/inspection/screen'
   const [data, setData] = useState<Dash | null>(null)
   const [loading, setLoading] = useState(false)
   const [canvas, setCanvas] = useState(() => fitCanvas(window.innerWidth, window.innerHeight))

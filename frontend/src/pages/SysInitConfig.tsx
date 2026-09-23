@@ -73,7 +73,7 @@ type CheckState = { exists: boolean; fullPath?: string; node?: string; head?: st
 export default function SysInitConfig() {
   const { message, modal } = App.useApp()
   const { hasPerm } = useAuth()
-  const canManage = hasPerm('deploy:manage')
+  // 本页按钮按 sysinit:catalog 的细粒度动作码收口（原 canManage / deploy:manage 为旧权限码，已弃用）
   const navigate = useNavigate()
 
   const [loading, setLoading] = useState(true)
@@ -427,7 +427,7 @@ export default function SysInitConfig() {
       render: (v: boolean, r) => (
         <Switch
           checked={v}
-          disabled={!canManage}
+          disabled={!hasPerm('sysinit:catalog:update')}
           checkedChildren="启用"
           unCheckedChildren="停用"
           onChange={(c) => toggle(r, c)}
@@ -460,17 +460,17 @@ export default function SysInitConfig() {
               }}
             />
           </Tooltip>
-          {canManage && (
-            <>
-              <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openEdit(r)} />
-              <Button
-                size="small"
-                type="text"
-                danger
-                icon={<DeleteOutlined />}
-                onClick={() => remove(r)}
-              />
-            </>
+          {hasPerm('sysinit:catalog:update') && (
+            <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openEdit(r)} />
+          )}
+          {hasPerm('sysinit:catalog:delete') && (
+            <Button
+              size="small"
+              type="text"
+              danger
+              icon={<DeleteOutlined />}
+              onClick={() => remove(r)}
+            />
           )}
         </Space>
       ),
@@ -509,7 +509,7 @@ export default function SysInitConfig() {
             <div className="mw-chip__v">{stats.groups}</div>
             <div className="mw-chip__l">分组</div>
           </div>
-          {canManage && (
+          {hasPerm('sysinit:catalog:create') && (
             <Button type="primary" size="large" icon={<PlusOutlined />} onClick={openCreate}>
               新增初始化项
             </Button>
@@ -561,12 +561,14 @@ export default function SysInitConfig() {
           <Button icon={<SafetyOutlined />} loading={checking} onClick={checkAll}>
             校验全部
           </Button>
-          {canManage && (
+          {/* 同步内置目录 / 恢复已删除的内置项都打 POST /deploy/sysinit/catalog/sync，
+              后端按 sysinit:catalog:create 收口（该资源没有独立的 :sync 动作码） */}
+          {hasPerm('sysinit:catalog:create') && (
             <Button icon={<CloudDownloadOutlined />} onClick={() => doSync(false)}>
               同步内置目录
             </Button>
           )}
-          {canManage && (
+          {hasPerm('sysinit:catalog:create') && (
             <Button icon={<SyncOutlined />} onClick={() => doSync(true)}>
               恢复已删除的内置项
             </Button>

@@ -121,7 +121,6 @@ const Z_NESTED = 1200
 export default function CrontabManage() {
   const { message, modal } = App.useApp()
   const { hasPerm } = useAuth()
-  const canManage = hasPerm('crontab:manage')
 
   // ---- 资产清单 & 扫描结果 ----
   const [hosts, setHosts] = useState<CrontabHostOption[]>([])
@@ -875,17 +874,18 @@ export default function CrontabManage() {
             <Button size="small" type="primary" ghost icon={<FieldTimeOutlined />} onClick={() => openDrawer(r.assetId)}>
               打开任务管理（增删改查）
             </Button>
-            <Button
-              size="small"
-              icon={<FileTextOutlined />}
-              disabled={!canManage}
-              onClick={async () => {
-                await openDrawer(r.assetId)
-                setRawOpen(true)
-              }}
-            >
-              编辑 crontab 原文
-            </Button>
+            {hasPerm('crontab:update') && (
+              <Button
+                size="small"
+                icon={<FileTextOutlined />}
+                onClick={async () => {
+                  await openDrawer(r.assetId)
+                  setRawOpen(true)
+                }}
+              >
+                编辑 crontab 原文
+              </Button>
+            )}
             <Button
               size="small"
               icon={<MonitorOutlined />}
@@ -907,17 +907,19 @@ export default function CrontabManage() {
       title: '状态',
       width: 78,
       align: 'center',
-      render: (_, r) => (
-        <Tooltip title={r.enabled ? '点击禁用（注释该任务行）' : '点击启用'}>
-          <Switch
-            size="small"
-            checked={r.enabled}
-            loading={busyLine === r.lineNo}
-            disabled={!canManage}
-            onChange={(v) => toggleEnabled(r, v)}
-          />
-        </Tooltip>
-      ),
+      render: (_, r) =>
+        // 启用/禁用会写回目标机 crontab（PUT /crontab/asset/:id/tasks → crontab:update），
+        // crontab 无 :exec 动作码，故按语义最近的 crontab:update 收口
+        hasPerm('crontab:update') ? (
+          <Tooltip title={r.enabled ? '点击禁用（注释该任务行）' : '点击启用'}>
+            <Switch
+              size="small"
+              checked={r.enabled}
+              loading={busyLine === r.lineNo}
+              onChange={(v) => toggleEnabled(r, v)}
+            />
+          </Tooltip>
+        ) : null,
     },
     {
       title: '执行计划',
@@ -949,29 +951,33 @@ export default function CrontabManage() {
       align: 'right',
       render: (_, r) => (
         <Space size={0}>
-          <Button size="small" type="link" icon={<EditOutlined />} disabled={!canManage} onClick={() => openEdit(r)}>
-            编辑
-          </Button>
-          <Button
-            size="small"
-            type="link"
-            icon={<CopyOutlined />}
-            disabled={!canManage}
-            onClick={() => openCreate({ expr: r.expr, command: r.command })}
-          >
-            复制
-          </Button>
-          <Button
-            size="small"
-            type="link"
-            danger
-            icon={<DeleteOutlined />}
-            disabled={!canManage}
-            loading={busyLine === r.lineNo}
-            onClick={() => confirmDelete(r)}
-          >
-            删除
-          </Button>
+          {hasPerm('crontab:update') && (
+            <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEdit(r)}>
+              编辑
+            </Button>
+          )}
+          {hasPerm('crontab:create') && (
+            <Button
+              size="small"
+              type="link"
+              icon={<CopyOutlined />}
+              onClick={() => openCreate({ expr: r.expr, command: r.command })}
+            >
+              复制
+            </Button>
+          )}
+          {hasPerm('crontab:delete') && (
+            <Button
+              size="small"
+              type="link"
+              danger
+              icon={<DeleteOutlined />}
+              loading={busyLine === r.lineNo}
+              onClick={() => confirmDelete(r)}
+            >
+              删除
+            </Button>
+          )}
         </Space>
       ),
     },
@@ -1121,21 +1127,25 @@ export default function CrontabManage() {
             <Button icon={<ReloadOutlined />} loading={detailLoading || detailRefreshing} onClick={() => drawerId && loadDetail(drawerId, { refresh: true })}>
               刷新
             </Button>
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              disabled={!detail || !detail.crontabAvailable || !canManage}
-              onClick={() => openCreate()}
-            >
-              新增任务
-            </Button>
-            <Button
-              icon={<FileTextOutlined />}
-              disabled={!detail || !canManage}
-              onClick={() => setRawOpen(true)}
-            >
-              编辑原文
-            </Button>
+            {hasPerm('crontab:create') && (
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                disabled={!detail || !detail.crontabAvailable}
+                onClick={() => openCreate()}
+              >
+                新增任务
+              </Button>
+            )}
+            {hasPerm('crontab:update') && (
+              <Button
+                icon={<FileTextOutlined />}
+                disabled={!detail}
+                onClick={() => setRawOpen(true)}
+              >
+                编辑原文
+              </Button>
+            )}
             <Tooltip title="在新窗口打开该机器的 Web SSH 终端，方便进去看脚本、查日志">
               <Button
                 icon={<MonitorOutlined />}
@@ -1384,9 +1394,11 @@ export default function CrontabManage() {
             <Button onClick={() => setRawText(detail?.content || '')} disabled={!detail}>
               重置为当前内容
             </Button>
-            <Button type="primary" icon={<SyncOutlined />} loading={rawSaving} onClick={saveRaw}>
-              保存并同步
-            </Button>
+            {hasPerm('crontab:update') && (
+              <Button type="primary" icon={<SyncOutlined />} loading={rawSaving} onClick={saveRaw}>
+                保存并同步
+              </Button>
+            )}
           </Space>
         }
       >

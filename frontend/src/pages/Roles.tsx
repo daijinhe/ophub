@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Card,
   Table,
@@ -8,30 +8,74 @@ import {
   Modal,
   Form,
   Input,
-  Checkbox,
+  Tree,
   App,
   Popconfirm,
   Typography,
+  Alert,
+  Empty,
 } from 'antd'
+import type { DataNode } from 'antd/es/tree'
 import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import api from '../api/client'
-import { useAuth, type Role } from '../store/AuthContext'
+import { useAuth, type Role, type MenuNode } from '../store/AuthContext'
 
-interface PermDef {
-  code: string
-  name: string
-  group: string
+/**
+ * 权限树：层级与侧边栏菜单**严格一致**（由后端 perm_tree.go 下发）。
+ *
+ * 节点的 key 有两类：
+ *   - 叶子 = 权限码本身（如 cmdb:create），勾选后提交给后端；
+ *   - 容器 = `#<menuKey>`（带 # 前缀，不会与 `资源:动作` 形式的权限码混淆），
+ *     只用于承载层级与「一键全选子项」，提交前会被 codeSet 过滤掉。
+ */
+function toTreeData(nodes: MenuNode[]): DataNode[] {
+  const out: DataNode[] = []
+  for (const n of nodes) {
+    const children: DataNode[] = []
+    for (const p of n.permItems || []) {
+      children.push({ key: p.code, title: p.name, isLeaf: true })
+    }
+    if (n.children && n.children.length > 0) {
+      children.push(...toTreeData(n.children))
+    }
+    if (children.length === 0) continue
+    const suffix = n.noMenu ? '（页内功能）' : n.hidden ? '（不占菜单）' : ''
+    out.push({
+      key: `#${n.key}`,
+      title: `${n.label}${suffix}`,
+      children,
+    })
+  }
+  return out
+}
+
+/** 收集树里的全部权限码（用于「全选」） */
+function allCodesOf(nodes: MenuNode[]): string[] {
+  const out: string[] = []
+  for (const n of nodes) {
+    for (const p of n.permItems || []) out.push(p.code)
+    if (n.children && n.children.length > 0) out.push(...allCodesOf(n.children))
+  }
+  return out
 }
 
 export default function Roles() {
-  const { hasPerm } = useAuth()
+  const { hasPerm, menuTree } = useAuth()
   const { message } = App.useApp()
   const [data, setData] = useState<Role[]>([])
-  const [catalog, setCatalog] = useState<PermDef[]>([])
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Role | null>(null)
+  const [checked, setChecked] = useState<string[]>([])
   const [form] = Form.useForm()
+
+  const codeSet = useMemo(() => {
+    const s = new Set<string>()
+    for (const c of allCodesOf(menuTree)) s.add(c)
+    return s
+  }, [menuTree])
+
+  const treeData = useMemo(() => toTreeData(menuTree), [menuTree])
 
   const load = async () => {
     const r = await api.get('/roles')
@@ -40,31 +84,28 @@ export default function Roles() {
 
   useEffect(() => {
     load()
-    api.get('/permissions').then((r) => setCatalog(r.data.data || []))
   }, [])
 
   const openCreate = () => {
     setEditing(null)
     form.resetFields()
-    form.setFieldsValue({ permissions: [] })
+    setChecked([])
     setOpen(true)
   }
 
   const openEdit = (r: Role) => {
     setEditing(r)
     form.setFieldsValue({ ...r })
+    setChecked(r.permissions || [])
     setOpen(true)
   }
 
   const submit = async () => {
     const v = await form.validateFields()
-    // permissions 契约必须是权限码数组。历史踩坑：Checkbox.Group 没绑到 Form 时
-    // 会拿到单个字符串，提交后后端只回一句「参数错误」，很难定位 —— 这里显式拦下。
-    if (v.permissions != null && !Array.isArray(v.permissions)) {
-      message.error('权限分配数据异常，请重新勾选后再保存')
-      return
-    }
-    const payload = { ...v, permissions: Array.isArray(v.permissions) ? v.permissions : [] }
+    // Tree 在联动模式下回传的 keys 里会带上容器节点（`#middleware` 之类），
+    // 必须只保留真实权限码 —— 否则后端会因「未知权限码」整单拒绝。
+    const permissions = checked.filter((c) => codeSet.has(c))
+    const payload = { ...v, permissions }
     try {
       if (editing) {
         await api.put(`/roles/${editing.id}`, payload)
@@ -90,13 +131,18 @@ export default function Roles() {
     }
   }
 
-  // 按 group 分组
-  const groups = Array.from(new Set(catalog.map((c) => c.group)))
-  const permByGroup: Record<string, PermDef[]> = {}
-  catalog.forEach((c) => {
-    permByGroup[c.group] = permByGroup[c.group] || []
-    permByGroup[c.group].push(c)
-  })
+  /** 权限码 → 中文名（用于列表里回显授权内容） */
+  const nameOf = useMemo(() => {
+    const m = new Map<string, string>()
+    const walk = (nodes: MenuNode[]) => {
+      for (const n of nodes) {
+        for (const p of n.permItems || []) m.set(p.code, p.name)
+        if (n.children) walk(n.children)
+      }
+    }
+    walk(menuTree)
+    return m
+  }, [menuTree])
 
   const columns: ColumnsType<Role> = [
     { title: '名称', dataIndex: 'name' },
@@ -105,10 +151,29 @@ export default function Roles() {
     {
       title: '权限数',
       dataIndex: 'permissions',
+      width: 90,
       render: (p: string[]) => <Tag color="cyan">{p?.length || 0}</Tag>,
     },
     {
+      title: '权限明细',
+      dataIndex: 'permissions',
+      render: (p: string[]) =>
+        p?.length ? (
+          <Space size={[4, 4]} wrap style={{ maxWidth: 420 }}>
+            {p.slice(0, 6).map((c) => (
+              <Tag key={c} style={{ marginInlineEnd: 0 }}>
+                {nameOf.get(c) || c}
+              </Tag>
+            ))}
+            {p.length > 6 && <Tag>… 共 {p.length} 项</Tag>}
+          </Space>
+        ) : (
+          <Typography.Text type="secondary">未授权</Typography.Text>
+        ),
+    },
+    {
       title: '操作',
+      width: 170,
       render: (_, r) =>
         hasPerm('role:update') || hasPerm('role:delete') ? (
           <Space>
@@ -145,12 +210,13 @@ export default function Roles() {
       <Table rowKey="id" columns={columns} dataSource={data} pagination={false} />
 
       <Modal
-        title={editing ? '编辑角色' : '新建角色'}
+        title={editing ? `编辑角色：${editing.name}` : '新建角色'}
         open={open}
         onOk={submit}
         onCancel={() => setOpen(false)}
         destroyOnClose
-        width={620}
+        width={760}
+        styles={{ body: { maxHeight: '62vh', overflow: 'auto' } }}
       >
         <Form form={form} layout="vertical">
           <Form.Item name="name" label="角色名称" rules={[{ required: true, message: '请输入名称' }]}>
@@ -166,36 +232,48 @@ export default function Roles() {
           <Form.Item name="description" label="描述">
             <Input />
           </Form.Item>
-          {/*
-            ⚠️ Form.Item 的**直接子元素**必须是被控组件本身（Checkbox.Group）。
-            之前这里用 <div> 包住了 Checkbox.Group，Form 注入的 value/onChange 落在 div 上：
-              ① 角色已有权限不回显（勾选框全空）；
-              ② 点击复选框时事件冒泡到 div，antd 的 defaultGetValueFromEvent 取到
-                 event.target.value（单个权限码字符串）作为表单值 →
-                 提交 body 变成 permissions:"inspection:screen" →
-                 后端 []string 反序列化失败 → 报「参数错误」。
-          */}
-          <Form.Item name="permissions" label="权限分配">
-            <Checkbox.Group style={{ display: 'block' }}>
-              <div style={{ maxHeight: 320, overflow: 'auto' }}>
-                {groups.map((g) => (
-                  <div key={g} style={{ marginBottom: 14 }}>
-                    <Typography.Text strong style={{ color: 'var(--accent)' }}>
-                      {g}
-                    </Typography.Text>
-                    <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                      {permByGroup[g].map((p) => (
-                        <Checkbox key={p.code} value={p.code}>
-                          {p.name}
-                        </Checkbox>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </Checkbox.Group>
-          </Form.Item>
         </Form>
+
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <Typography.Text strong style={{ color: 'var(--accent)' }}>
+            权限分配
+          </Typography.Text>
+          <Space size={4}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              已选 {checked.length} 项
+            </Typography.Text>
+            <Button size="small" type="link" onClick={() => setChecked([...codeSet])}>
+              全选
+            </Button>
+            <Button size="small" type="link" onClick={() => setChecked([])}>
+              清空
+            </Button>
+          </Space>
+        </div>
+        <Alert
+          type="info"
+          showIcon
+          style={{ margin: '10px 0 12px' }}
+          message="层级与左侧菜单一致；勾选页面名称即授予该页面的全部操作权限。"
+          description="账号登录后只显示已授权页面。若某页面只勾了「新增」没勾「查看」，该账号仍看不到这个菜单 —— 请按需勾选「查看」。"
+        />
+        {treeData.length === 0 ? (
+          <Empty description="权限树加载中…" />
+        ) : (
+          <Tree
+            checkable
+            defaultExpandAll
+            selectable={false}
+            treeData={treeData}
+            checkedKeys={checked}
+            onCheck={(keys) => {
+              // 联动模式下 keys 为 Key[]（含容器节点），过滤后只留真实权限码
+              const arr = (Array.isArray(keys) ? keys : keys.checked).map(String)
+              setChecked(arr.filter((k) => codeSet.has(k)))
+            }}
+            style={{ paddingBottom: 4 }}
+          />
+        )}
       </Modal>
     </Card>
   )

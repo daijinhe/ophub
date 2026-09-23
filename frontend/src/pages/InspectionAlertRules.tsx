@@ -50,7 +50,6 @@ const fmtThr = (v: number) => (v > 0 ? String(v) : '—')
 
 export default function InspectionAlertRules() {
   const { hasPerm } = useAuth()
-  const canManage = hasPerm('inspection:manage')
 
   const [rules, setRules] = useState<InspectionAlertRule[]>([])
   const [loading, setLoading] = useState(false)
@@ -316,16 +315,20 @@ export default function InspectionAlertRules() {
       title: '操作',
       width: 130,
       render: (_: any, r: InspectionAlertRule) =>
-        canManage ? (
+        hasPerm('inspection:alert:update') || hasPerm('inspection:alert:delete') ? (
           <Space>
-            <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEdit(r)}>
-              编辑
-            </Button>
-            <Popconfirm title={`确定删除规则「${r.name}」？`} onConfirm={() => remove(r)}>
-              <Button size="small" type="link" danger icon={<DeleteOutlined />}>
-                删除
+            {hasPerm('inspection:alert:update') && (
+              <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEdit(r)}>
+                编辑
               </Button>
-            </Popconfirm>
+            )}
+            {hasPerm('inspection:alert:delete') && (
+              <Popconfirm title={`确定删除规则「${r.name}」？`} onConfirm={() => remove(r)}>
+                <Button size="small" type="link" danger icon={<DeleteOutlined />}>
+                  删除
+                </Button>
+              </Popconfirm>
+            )}
           </Space>
         ) : (
           <span style={{ color: '#94a3b8' }}>—</span>
@@ -424,7 +427,7 @@ export default function InspectionAlertRules() {
             <Button icon={<ReloadOutlined />} onClick={load}>
               刷新
             </Button>
-            {canManage && (
+            {hasPerm('inspection:alert:create') && (
               <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
                 新建规则
               </Button>

@@ -1,57 +1,66 @@
-// 路由 <-> 权限码 对照表。
-// 与 MainLayout 侧边栏菜单的 perm 保持同一口径：菜单隐藏 + 路由拦截，
-// 避免「菜单看不到但手敲 URL 仍能进」的越权问题。
-export const ROUTE_PERMS: { path: string; perm: string }[] = [
-  { path: '/dashboard', perm: 'dashboard:view' },
-  { path: '/cmdb', perm: 'cmdb:view' },
-  { path: '/users', perm: 'user:view' },
-  { path: '/roles', perm: 'role:view' },
-  { path: '/ansible', perm: 'ansible:manage' },
-  { path: '/ansible/mode', perm: 'ansible:manage' },
-  { path: '/ansible/local', perm: 'ansible:manage' },
-  { path: '/ansible/remote', perm: 'ansible:manage' },
-  { path: '/crontab', perm: 'crontab:view' },
-  { path: '/scripts/java', perm: 'script:view' },
-  { path: '/deploy', perm: 'deploy:manage' },
-  { path: '/deploy-config', perm: 'deploy:manage' },
-  { path: '/deploy-certs', perm: 'deploy:manage' },
-  { path: '/deploy-records', perm: 'deploy:manage' },
-  { path: '/sysinit-config', perm: 'deploy:manage' },
-  { path: '/mwops', perm: 'mwops:view' },
-  { path: '/mw-capture', perm: 'mwcapture:view' },
-  { path: '/nginx-config', perm: 'config:view' },
-  { path: '/inspection/tasks', perm: 'inspection:view' },
-  { path: '/inspection/records', perm: 'inspection:view' },
-  // 告警规则属配置动作，与巡检任务增删改同权限
-  { path: '/inspection/alert-rules', perm: 'inspection:manage' },
-  // 巡检大屏：独立权限码，可单独授予「只看大屏」的账号。
-  // 放在最后，保证同时有 inspection:view 的账号仍首选落到「智能巡检」而非大屏。
-  { path: '/inspection/screen', perm: 'inspection:screen' },
-  // Prometheus 监控（v1.8.0）：数据源/监控报表用 prom:view（页面内按 prom:manage 收口）；
-  // 大屏独立权限码，可单独授予「只看大屏」的账号（路由侧 RequireAnyPerm 放行两种）。
-  { path: '/prom/datasources', perm: 'prom:view' },
-  // 监控报表（v1.7.41 起内含「生成报告 / 报表模板 / 报告记录」三页签）。
-  // ⚠️ /prom/report-templates、/prom/report-records 只剩重定向，**不列在这里** ——
-  // 否则 firstAccessiblePath 可能把用户送到一个立刻跳走的路径上。
-  { path: '/prom/report', perm: 'prom:view' },
-  { path: '/prom/screen', perm: 'prom:screen' },
-  // 大屏管理（展示内容 / 风险与屏蔽 / 阈值与采集）：配置动作，用 prom:manage
-  { path: '/prom/screen-admin', perm: 'prom:manage' },
-  // 被屏蔽目标明细（v1.7.43）：大屏的审计视图，属查看动作 → prom:view。
-  // ⚠️ **不占侧边栏菜单**（入口：大屏管理 → 风险与屏蔽 → 「被屏蔽明细」），但路径可达，
-  // 仍需这条映射兜底「手敲 URL / 从别的页跳过来」时的权限判定。
-  // 放在最后：firstAccessiblePath 应优先把有 prom:view 的账号送到「数据源管理/监控报表」。
-  { path: '/prom/hidden', perm: 'prom:view' },
+import type { MenuNode } from '../store/AuthContext'
+
+/**
+ * 路由 <-> 权限码 对照表。
+ *
+ * v1.7.46 起这份表**不再手工维护** —— 由后端下发的菜单权限树自动派生
+ * （MenuNode[]，定义在 backend/perm_tree.go）：
+ *   - 每个带 route 的菜单节点产出一条 { path, perms }；
+ *   - perms 取节点的 entryPerms（后端已补齐：有 view 动作则为 <resource>:view；
+ *     纯容器则为子孙入口权限的并集，即 any-of 语义）。
+ *
+ * 于是「新增一个菜单要同步 6 处」只剩下 3 处：
+ * 后端 perm_tree.go（定义节点）+ 后端 main.go（挂路由）+ 本目录 AuthContext 的
+ * iconMap（补一个图标）—— 前端路由拦截表随之自动生成，不会再漏配。
+ */
+export interface RoutePerm {
+  path: string
+  perms: string[]
+  /** 新标签页打开的展示页（大屏类）—— 不作为登录后的默认落地页 */
+  newTab?: boolean
+}
+
+/** 由菜单权限树派生「路由 → 所需权限码」表 */
+export function buildRoutePerms(tree: MenuNode[]): RoutePerm[] {
+  const out: RoutePerm[] = []
+  const walk = (nodes: MenuNode[]) => {
+    for (const n of nodes) {
+      if (n.route) {
+        out.push({
+          path: n.route,
+          perms: n.entryPerms && n.entryPerms.length > 0 ? n.entryPerms : [],
+          newTab: n.newTab,
+        })
+      }
+      if (n.children && n.children.length > 0) walk(n.children)
+    }
+  }
+  walk(tree)
+  return out
+}
+
+/**
+ * 菜单树拉取失败时的最小兜底。
+ * 正常情况下不会用到；只在 /permissions 请求异常时避免「整站无法进入」的观感。
+ */
+export const FALLBACK_ROUTE_PERMS: RoutePerm[] = [
+  { path: '/dashboard', perms: ['dashboard:view'] },
 ]
 
-// 路由路径 -> 所需权限码
-export const ROUTE_PERM_MAP: Record<string, string> = ROUTE_PERMS.reduce(
-  (m, r) => ({ ...m, [r.path]: r.perm }),
-  {},
-)
-
-// 依据当前用户权限，返回第一个可访问的路由；全部无权限时返回 null
-export function firstAccessiblePath(hasPerm: (code: string) => boolean): string | null {
-  const hit = ROUTE_PERMS.find((r) => hasPerm(r.perm))
-  return hit ? hit.path : null
+/**
+ * 依据当前用户权限，返回第一个可访问的路由；全部无权限时返回 null。
+ *
+ * 优先排除大屏类页面（newTab）：大屏是「新标签页打开的展示页」，
+ * 不适合当登录后的默认工作页 —— 与改造前把 /inspection/screen 排在
+ * ROUTE_PERMS 最后是同一个口径。只有当账号**只有**大屏权限时才会落到大屏。
+ */
+export function firstAccessiblePath(
+  hasPerm: (code: string) => boolean,
+  routePerms: RoutePerm[],
+): string | null {
+  const list = routePerms.length > 0 ? routePerms : FALLBACK_ROUTE_PERMS
+  const hit = list.find((r) => !r.newTab && r.perms.some(hasPerm))
+  if (hit) return hit.path
+  const any = list.find((r) => r.perms.some(hasPerm))
+  return any ? any.path : null
 }

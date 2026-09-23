@@ -486,8 +486,14 @@ export default function CMDB() {
   const [detailSaving, setDetailSaving] = useState(false)
   // ---- 详情内嵌的「定时任务信息」：直读目标机 crontab（与定时任务管理页同一数据源）----
   const canViewCrontab = hasPerm('crontab:view')
-  // 「用途」是平台侧备注，写入走 crontab:manage；只读用户看到的是纯文本
-  const canManageCrontab = hasPerm('crontab:manage')
+  // 「用途」是平台侧备注，写入走 crontab:update；面板内还允许新增/删除任务任务
+  // （crontab:create / crontab:delete）。三者任一即可操作，只读用户看到的是纯文本。
+  const canManageCrontab =
+    hasPerm('crontab:create') || hasPerm('crontab:update') || hasPerm('crontab:delete')
+  // 中间件捕捉的写操作：执行捕捉 POST /mwcapture/run = mwcapture:create，
+  // 就地编辑 PUT /mwcapture/asset/:id = mwcapture:update，删除 = mwcapture:delete。
+  const canManageMwWrite =
+    hasPerm('mwcapture:create') || hasPerm('mwcapture:update') || hasPerm('mwcapture:delete')
   const [ctView, setCtView] = useState<AssetCrontabView | null>(null)
   const [ctLoading, setCtLoading] = useState(false)
   const [ctErr, setCtErr] = useState('')
@@ -1485,27 +1491,31 @@ export default function CMDB() {
       >
         {node.title}
       </span>
-      {hasPerm('category:manage') && (
+      {(hasPerm('category:update') || hasPerm('category:delete')) && (
         <span
           onClick={(e) => {
             e.stopPropagation()
           }}
           style={{ opacity: 0.6, flex: 'none' }}
         >
-          <EditOutlined
-            style={{ fontSize: 12 }}
-            onClick={(e) => {
-              e.stopPropagation()
-              openCatEdit(Number(node.key), node.title as string)
-            }}
-          />
-          <DeleteOutlined
-            style={{ fontSize: 12, marginLeft: 6 }}
-            onClick={(e) => {
-              e.stopPropagation()
-              removeCat(Number(node.key))
-            }}
-          />
+          {hasPerm('category:update') && (
+            <EditOutlined
+              style={{ fontSize: 12 }}
+              onClick={(e) => {
+                e.stopPropagation()
+                openCatEdit(Number(node.key), node.title as string)
+              }}
+            />
+          )}
+          {hasPerm('category:delete') && (
+            <DeleteOutlined
+              style={{ fontSize: 12, marginLeft: 6 }}
+              onClick={(e) => {
+                e.stopPropagation()
+                removeCat(Number(node.key))
+              }}
+            />
+          )}
         </span>
       )}
     </div>
@@ -1574,7 +1584,7 @@ export default function CMDB() {
           </Space>
         }
         extra={
-          hasPerm('category:manage') && (
+          hasPerm('category:create') && (
             <Button size="small" icon={<PlusOutlined />} onClick={() => openCatCreate()} />
           )
         }
@@ -1713,7 +1723,8 @@ export default function CMDB() {
                     复制选中
                   </Button>
                 )}
-                {hasPerm('ansible:manage') && (
+                {/* 添加到主机清单 → POST /ansible/import-cmdb，后端收口码为 ansible:local:update */}
+                {hasPerm('ansible:local:update') && (
                   <Button icon={<CloudServerOutlined />} onClick={openAnsibleImport}>
                     添加到主机清单
                   </Button>
@@ -1807,7 +1818,7 @@ export default function CMDB() {
                 )}
                 {/* 编辑总开关：资产全部字段 + 中间件捕捉 + 定时任务管理都挂在它下面，
                     双击行打开的详情默认只读展示。三种权限任一即可进入（各自的可操作范围在面板内再判）。 */}
-                {(hasPerm('cmdb:update') || hasPerm('mwcapture:manage') || hasPerm('crontab:manage')) && (
+                {(hasPerm('cmdb:update') || canManageMwWrite || canManageCrontab) && (
                   <Button
                     type={detailEditing ? 'primary' : 'text'}
                     size="small"
@@ -1903,7 +1914,7 @@ export default function CMDB() {
           const ctError = ctTasks.length === 0 ? ctErr : ''
 
           const canViewMw = hasPerm('mwcapture:view')
-          const canManageMw = hasPerm('mwcapture:manage')
+          const canManageMw = canManageMwWrite
           // 资产字段就地编辑依赖 cmdb:update（没有该权限时只读展示，与列表按钮口径一致）
           const canEditAsset = hasPerm('cmdb:update')
 
@@ -2109,7 +2120,7 @@ export default function CMDB() {
                   }
                 />
               ) : (
-                (hasPerm('cmdb:update') || hasPerm('mwcapture:manage') || hasPerm('crontab:manage')) && (
+                (hasPerm('cmdb:update') || canManageMwWrite || canManageCrontab) && (
                   <div className="cmdb-detail-tip" style={{ marginBottom: 10 }}>
                     <span>
                       当前为只读展示。需要修改资产字段、执行中间件捕捉或维护定时任务时，点标题栏「编辑」进入编辑模式。

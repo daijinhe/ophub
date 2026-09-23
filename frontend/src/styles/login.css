@@ -1,17 +1,19 @@
 /* ==========================================================================
-   登录 / 注册页（v1.7.45）：固定深色门户
+   登录 / 注册页（v1.7.45 深色 → v1.7.46 浅色）
    --------------------------------------------------------------------------
-   为什么固定深色、不跟随主题：门户页是产品第一印象，固定深色才能保证观感
-   一致可控；登录之后的应用内部仍按用户自己的主题走。
-   antd 组件通过嵌套 ConfigProvider(darkTheme) 变深色，本文件只负责「质感」：
-   背景光晕 / 卡片细节 / 字距 / 输入与按钮的深浅层次。
+   门户页固定使用**浅色**主题（不进「主题切换」）：它是产品第一印象，
+   固定配色才能保证观感一致可控；登录之后的应用内部仍按用户自己的偏好走。
+   antd 组件通过嵌套 ConfigProvider(lightTheme) 走浅色，本文件只负责「质感」：
+   背景网格与柔光 / 卡片细节 / 字距 / 输入与按钮的层次。
 
-   两个容易踩的点，这里一次说清：
-   1. 背景（网格 + 光晕 + 暗角）全部写成 .xy-auth 自己的多层 background 并
+   三个容易踩的点，这里一次说清：
+   1. 背景（网格 + 柔光）全部写成 .xy-auth 自己的多层 background 并
       background-attachment: fixed —— 注册页字段多会滚动，用伪元素绝对定位
       会出现「滚动后背景没铺满」，用 fixed 附着则永远铺满视口。
    2. 垂直居中用「首尾 margin: auto」而不是 justify-content: center ——
       后者在内容高于视口时会把顶部裁掉且滚不上去。
+   3. 浅色下的「高级感」不靠深色渐变，靠**极低对比度的灰蓝层次 + 一层柔和的
+      大半径阴影**。阴影一重就会发脏，这里刻意压得很淡（.06 ~ .10 透明度）。
    ========================================================================== */
 
 .xy-auth {
@@ -22,15 +24,15 @@
   min-height: 100vh;
   padding: 32px 16px;
   box-sizing: border-box;
-  background-color: #070b14;
-  background-image: linear-gradient(rgba(56, 189, 248, 0.045) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(56, 189, 248, 0.045) 1px, transparent 1px),
-    /* 顶部主光晕：稍强且更聚焦，给画面一个「上方来光」的纵深 */
-    radial-gradient(1020px 560px at 50% -8%, rgba(56, 189, 248, 0.16), transparent 62%),
-    /* 左下副光晕：靛紫，避免整屏只有一种蓝 */
-    radial-gradient(760px 520px at 8% 98%, rgba(99, 102, 241, 0.11), transparent 64%),
-    /* 四周暗角：把注意力收回中心 */
-    radial-gradient(125% 125% at 50% 50%, transparent 42%, rgba(0, 0, 0, 0.55) 100%);
+  background-color: #f4f7fc;
+  background-image: linear-gradient(rgba(37, 99, 235, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(37, 99, 235, 0.035) 1px, transparent 1px),
+    /* 顶部主柔光：给画面一个「上方来光」的纵深 */
+    radial-gradient(1020px 560px at 50% -10%, rgba(59, 130, 246, 0.13), transparent 60%),
+    /* 右下副柔光：一点点青，避免整屏只有一种蓝 */
+    radial-gradient(760px 520px at 96% 100%, rgba(14, 165, 233, 0.1), transparent 62%),
+    /* 四周不做暗角，改为向白过渡 —— 浅色底上暗角会显脏 */
+    radial-gradient(130% 120% at 50% 45%, transparent 55%, rgba(255, 255, 255, 0.85) 100%);
   background-size: 64px 64px, 64px 64px, auto, auto, auto;
   background-attachment: fixed, fixed, fixed, fixed, fixed;
 }
@@ -43,15 +45,13 @@
   margin-top: auto; /* 与 .xy-meta 的 margin-bottom:auto 配对，实现「内容少时整体居中」 */
   padding: 40px 36px 30px;
   border-radius: 20px;
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  background: linear-gradient(180deg, rgba(18, 27, 45, 0.9) 0%, rgba(10, 16, 30, 0.9) 100%);
-  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid #e6ecf5;
+  background: #ffffff;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.08), 0 2px 6px rgba(15, 23, 42, 0.04);
   animation: xyRise 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-/* 顶部一道极细高光：这类 1px 细节是「高级感」的主要来源 */
+/* 顶部一道极细高光：这类 1px 细节是「高级感」的主要来源（浅色下更含蓄） */
 .xy-card::before {
   content: '';
   position: absolute;
@@ -59,7 +59,7 @@
   left: 12%;
   right: 12%;
   height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.5), transparent);
+  background: linear-gradient(90deg, transparent, rgba(37, 99, 235, 0.28), transparent);
 }
 
 @keyframes xyRise {
@@ -74,15 +74,14 @@
 }
 
 /* ---------- 品牌区 ---------- */
-/* 徽章：直接嵌巡检大屏那份 /inspection-logo-icon.svg。
-   深蓝渐变方块在近黑底上会「陷进去」，所以靠一圈极细青边 + 两层蓝色辉光把它托起来 ——
-   深色门户里最关键的一处体积感就来自这里。 */
+/* 徽章：直接嵌巡检大屏那份 /inspection-logo-icon.svg（深蓝渐变方块 + 青色折线）。
+   浅色底上图标本身就够醒目，不再需要青色辉光去「托」，
+   只留一层柔和的蓝色投影做体积感，避免发灰。 */
 .xy-badge {
   display: inline-flex;
   border-radius: 18px;
   overflow: hidden;
-  box-shadow: 0 0 0 1px rgba(125, 211, 252, 0.22), 0 14px 34px rgba(30, 64, 175, 0.45),
-    0 0 44px rgba(59, 130, 246, 0.22);
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.1), 0 12px 26px rgba(37, 99, 235, 0.22);
   animation: xyBadgeIn 0.8s 0.06s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 .xy-badge img {
@@ -106,8 +105,7 @@
   font-size: 25px;
   font-weight: 700;
   letter-spacing: 3px;
-  color: #eaf2fb;
-  text-shadow: 0 0 26px rgba(56, 189, 248, 0.18);
+  color: #0f172a;
 }
 
 /* 英文副标：字距拉开 + 低对比度 —— 中英搭配是「高级感」里最稳的一种做法 */
@@ -117,16 +115,16 @@
   font-weight: 500;
   letter-spacing: 2.6px;
   text-transform: uppercase;
-  color: #46586f;
+  color: #9aa8bd;
 }
 
 /* ---------- 表单 ---------- */
-/* 输入框比卡片再深一档，形成「凹进去」的层次；聚焦时细青边 + 极淡外发光 */
+/* 输入框：极浅灰底（比卡片低一档，形成「凹进去」的层次），聚焦时蓝边 + 淡蓝外发光 */
 .xy-card .ant-input-affix-wrapper,
 .xy-card .ant-input {
-  background: rgba(7, 12, 22, 0.72) !important;
-  border-color: rgba(148, 163, 184, 0.14) !important;
-  color: #e6eef8 !important;
+  background: #f8fafd !important;
+  border-color: #e3e9f2 !important;
+  color: #1f2937 !important;
 }
 .xy-card .ant-input-affix-wrapper > .ant-input,
 .xy-card .ant-input-affix-wrapper input.ant-input {
@@ -134,37 +132,38 @@
 }
 .xy-card .ant-input-affix-wrapper:hover,
 .xy-card .ant-input:hover {
-  border-color: rgba(56, 189, 248, 0.4) !important;
+  border-color: #b9cdf0 !important;
 }
 .xy-card .ant-input-affix-wrapper-focused,
 .xy-card .ant-input:focus {
-  border-color: rgba(56, 189, 248, 0.65) !important;
-  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.1) !important;
+  background: #ffffff !important;
+  border-color: #2563eb !important;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1) !important;
 }
 .xy-card .ant-input::placeholder {
-  color: #4d5b6e !important;
+  color: #a8b4c6 !important;
 }
 .xy-card .ant-input-prefix,
 .xy-card .ant-input-suffix {
-  color: #5d6c80;
+  color: #9aa8bd;
 }
 
-/* 主按钮：亮青渐变 + 深色字（深色 UI 上比纯色块更高级），hover 提亮并浮起 */
+/* 主按钮：蓝青渐变 + 白字，hover 提亮并浮起 */
 .xy-card .xy-submit.ant-btn-primary {
   height: 46px;
   border: none;
   border-radius: 12px;
   font-weight: 600;
   letter-spacing: 4px;
-  color: #04121f;
-  background: linear-gradient(135deg, #63cbfb 0%, #2f8ff0 100%);
-  box-shadow: 0 10px 26px rgba(56, 189, 248, 0.22);
+  color: #ffffff;
+  background: linear-gradient(135deg, #3b9bf5 0%, #2563eb 100%);
+  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.24);
   transition: filter 0.2s ease, box-shadow 0.2s ease, transform 0.08s ease;
 }
 .xy-card .xy-submit.ant-btn-primary:hover {
-  color: #04121f;
-  filter: brightness(1.07);
-  box-shadow: 0 14px 32px rgba(56, 189, 248, 0.3);
+  color: #ffffff;
+  filter: brightness(1.05);
+  box-shadow: 0 14px 30px rgba(37, 99, 235, 0.3);
 }
 .xy-card .xy-submit.ant-btn-primary:active {
   transform: translateY(1px);
@@ -172,30 +171,25 @@
 
 /* ---------- 卡片内文字 ---------- */
 .xy-foot {
-  color: #7c8ba1;
+  color: #64748b;
   font-size: 13px;
 }
 .xy-foot a,
 .xy-card a {
-  color: #7dd3fc;
+  color: #2563eb;
 }
 .xy-foot a:hover,
 .xy-card a:hover {
-  color: #a5e0ff;
+  color: #1d4ed8;
 }
 
-/* 卡片内的提示条压暗：antd 默认给 info/warning 配了高饱和描边，放到深色卡片上太抢眼
-   （看着像「没调过的默认样式」）→ 统一压成暗底 + 细灰边，只让图标保留语义色。
-   必须 !important —— antd 的 .ant-alert-info / .ant-alert-warning 优先级更高。 */
+/* 卡片内的提示条：浅色下 antd 默认配色已经得体，这里只把边框与圆角收一点，
+   让它与卡片的细边风格一致（不再需要深色版那种压暗 + !important 覆盖）。 */
 .xy-card .ant-alert {
-  background: rgba(8, 14, 26, 0.72) !important;
-  border: 1px solid rgba(148, 163, 184, 0.16) !important;
+  border-radius: 10px;
 }
 .xy-card .ant-alert .ant-alert-message {
-  color: #cfe0f2;
-}
-.xy-card .ant-alert .ant-alert-description {
-  color: #7f92a8;
+  font-weight: 600;
 }
 
 /* 页脚 meta：极低对比度，只提供一个「这是哪个版本」的锚点 */
@@ -204,7 +198,7 @@
   margin-bottom: auto;
   font-size: 12px;
   letter-spacing: 1px;
-  color: #3d4d66;
+  color: #9aa8bd;
   animation: xyRise 0.7s 0.12s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 

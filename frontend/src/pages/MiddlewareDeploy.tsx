@@ -82,6 +82,7 @@ import {
   type ManualTargetPayload,
 } from '../api/deploy'
 import { MwBrandIcon, MW_BRAND_COLOR } from '../components/MwBrandIcon'
+import { useAuth } from '../store/AuthContext'
 
 const { Title, Paragraph, Text } = Typography
 
@@ -177,7 +178,11 @@ const MW_DESC: Record<string, string> = {
 // 目录可在「系统初始化管理」页面自定义增删，新增项会自动出现在本向导。
 
 export default function MiddlewareDeploy() {
+  const { hasPerm } = useAuth()
   const { message } = App.useApp()
+
+  // 按钮权限码按后端端点收口：向导里的「部署对象」（已选中间件、手动目标）增删改 → deploy:create/update/delete；
+  // 上传证书走 POST /deploy/certs，后端按 cert:create 收口，故单独用 cert:create。
 
   // 目录 / 注册中心
   const [catalog, setCatalog] = useState<MiddlewareDef[]>([])
@@ -1630,20 +1635,25 @@ export default function MiddlewareDeploy() {
                                     }
                                   })}
                                 />
-                                <Button icon={<PlusOutlined />} onClick={() => setCertModal(true)}>
-                                  上传新证书
-                                </Button>
+                                {hasPerm('cert:create') && (
+                                  <Button icon={<PlusOutlined />} onClick={() => setCertModal(true)}>
+                                    上传新证书
+                                  </Button>
+                                )}
                               </Space>
                             )}
                           </div>
                         )}
                       </div>
                       <Space style={{ marginTop: 16 }} wrap>
-                        <Button type="primary" icon={<CheckCircleFilled />} onClick={confirmConfig}>
-                          {existed ? '保存修改' : '确认添加'}
-                        </Button>
+                        {/* 首次加入已选清单＝新增部署对象（create）；修改已有项＝update */}
+                        {hasPerm(existed ? 'deploy:update' : 'deploy:create') && (
+                          <Button type="primary" icon={<CheckCircleFilled />} onClick={confirmConfig}>
+                            {existed ? '保存修改' : '确认添加'}
+                          </Button>
+                        )}
                         <Button onClick={() => setEditing(null)}>取消</Button>
-                        {existed && (
+                        {existed && hasPerm('deploy:delete') && (
                           <Button danger onClick={() => removeMw(editing.type)}>
                             移除该中间件
                           </Button>
@@ -1686,27 +1696,34 @@ export default function MiddlewareDeploy() {
                               主
                             </Tag>
                           ) : (
-                            <Button size="small" type="link" onClick={() => setAsMain(it.type)}>
-                              设为主
-                            </Button>
+                            // 「设为主」调整的是部署对象顺序（主项决定版本/模式/证书校验），按更新语义用 deploy:update
+                            hasPerm('deploy:update') && (
+                              <Button size="small" type="link" onClick={() => setAsMain(it.type)}>
+                                设为主
+                              </Button>
+                            )
                           )}
                           <span className="mw-selected__spacer" />
-                          <Button
-                            size="small"
-                            type="link"
-                            icon={<EditOutlined />}
-                            onClick={() => def && openConfig(def)}
-                          >
-                            修改
-                          </Button>
-                          <Button
-                            size="small"
-                            type="link"
-                            danger
-                            onClick={() => removeMw(it.type)}
-                          >
-                            移除
-                          </Button>
+                          {hasPerm('deploy:update') && (
+                            <Button
+                              size="small"
+                              type="link"
+                              icon={<EditOutlined />}
+                              onClick={() => def && openConfig(def)}
+                            >
+                              修改
+                            </Button>
+                          )}
+                          {hasPerm('deploy:delete') && (
+                            <Button
+                              size="small"
+                              type="link"
+                              danger
+                              onClick={() => removeMw(it.type)}
+                            >
+                              移除
+                            </Button>
+                          )}
                         </div>
                       )
                     })}
@@ -1919,9 +1936,11 @@ export default function MiddlewareDeploy() {
                     }
                   />
                   <Space wrap style={{ marginBottom: 12 }}>
-                    <Button type="primary" icon={<PlusOutlined />} onClick={openManualModal}>
-                      添加手动目标
-                    </Button>
+                    {hasPerm('deploy:create') && (
+                      <Button type="primary" icon={<PlusOutlined />} onClick={openManualModal}>
+                        添加手动目标
+                      </Button>
+                    )}
                     <Text type="secondary" style={{ fontSize: 12 }}>
                       已添加 {manualEntries.length} 台手动目标
                     </Text>
@@ -1963,9 +1982,11 @@ export default function MiddlewareDeploy() {
                           key: 'op',
                           width: 80,
                           render: (_: any, r: ManualEntry) => (
-                            <Button size="small" type="link" danger onClick={() => removeManual(r.id)}>
-                              移除
-                            </Button>
+                            hasPerm('deploy:delete') && (
+                              <Button size="small" type="link" danger onClick={() => removeManual(r.id)}>
+                                移除
+                              </Button>
+                            )
                           ),
                         },
                       ]}
@@ -2272,20 +2293,24 @@ export default function MiddlewareDeploy() {
                     查看执行日志
                   </Button>
                 )}
-                <Button
-                  type="primary"
-                  size="large"
-                  icon={<PlayCircleOutlined />}
-                  loading={running}
-                  disabled={!canStart}
-                  onClick={startDeploy}
-                >
-                  {!mainMw
-                    ? '开始初始化'
-                    : initTasks.length > 0
-                    ? '开始部署（含系统初始化）'
-                    : '开始部署'}
-                </Button>
+                {/* 一次点击可能同时下发「系统初始化 + 中间件部署」：只跑初始化（未选中间件）时按
+                    sysinit:exec 判断，含中间件部署时按 deploy:exec 判断 */}
+                {(mainMw ? hasPerm('deploy:exec') : hasPerm('sysinit:exec')) && (
+                  <Button
+                    type="primary"
+                    size="large"
+                    icon={<PlayCircleOutlined />}
+                    loading={running}
+                    disabled={!canStart}
+                    onClick={startDeploy}
+                  >
+                    {!mainMw
+                      ? '开始初始化'
+                      : initTasks.length > 0
+                      ? '开始部署（含系统初始化）'
+                      : '开始部署'}
+                  </Button>
+                )}
               </Space>
             </div>
               {(mainMw && !mainDef?.ready) && (

@@ -32,6 +32,11 @@ func InitDB(cfg Config) {
 		log.Fatalf("数据库迁移失败: %v", err)
 	}
 	seed()
+	// 角色权限码迁移：把历史粗粒度码（ansible:manage / deploy:manage /
+	// inspection:view / prom:manage 等）展开为等效的细粒度码。
+	// ⚠️ 必须在 seed() **之后**跑：seed 会先给内置 admin 补齐全部新码，
+	// 迁移再把 admin 手上残留的旧码展开去重，两者顺序反了会漏补。
+	migrateLegacyPerms()
 	seedMwTemplates()
 	normalizeMwTemplates()
 	migrateAssetFieldKeys()

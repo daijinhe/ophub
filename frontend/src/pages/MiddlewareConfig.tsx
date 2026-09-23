@@ -52,6 +52,7 @@ import {
   NETWORK_ZONES,
 } from '../api/deploy'
 import { MwBrandIcon, MW_BRAND_COLOR } from '../components/MwBrandIcon'
+import { useAuth } from '../store/AuthContext'
 
 const { Text } = Typography
 
@@ -174,6 +175,7 @@ const FILTERS: { key: StatusFilter; label: string }[] = [
 
 export default function MiddlewareConfig() {
   const { message } = App.useApp()
+  const { hasPerm } = useAuth()
   const [list, setList] = useState<DeployMiddleware[]>([])
   const [loading, setLoading] = useState(true)
   const [modal, setModal] = useState(false)
@@ -402,9 +404,11 @@ export default function MiddlewareConfig() {
             <div className="mw-chip__v">{needCertCnt}</div>
             <div className="mw-chip__l">需证书</div>
           </div>
-          <Button type="primary" size="large" icon={<PlusOutlined />} onClick={openCreate}>
-            新增中间件
-          </Button>
+          {hasPerm('mwtemplate:create') && (
+            <Button type="primary" size="large" icon={<PlusOutlined />} onClick={openCreate}>
+              新增中间件
+            </Button>
+          )}
         </div>
       </div>
 
@@ -515,7 +519,8 @@ export default function MiddlewareConfig() {
           )
         }
         extra={
-          detail && (
+          detail &&
+          hasPerm('mwtemplate:update') && (
             <Button
               type="primary"
               icon={<EditOutlined />}
@@ -933,6 +938,7 @@ function ConfigCard({
   onEdit: () => void
   onDelete: () => void
 }) {
+  const { hasPerm } = useAuth()
   const color = MW_COLOR[m.name] || '#64748b'
   const desc = MW_DESC[m.name] || m.description || ''
   const versions = safeParseArr(m.versions)
@@ -1026,19 +1032,23 @@ function ConfigCard({
         <Button type="text" size="small" icon={<EyeOutlined />} onClick={onView}>
           详情
         </Button>
-        <Button type="text" size="small" icon={<EditOutlined />} onClick={onEdit}>
-          编辑
-        </Button>
-        <Popconfirm
-          title="确认删除该中间件配置？"
-          description="删除后无法恢复，部署向导中也不再可用"
-          okText="删除"
-          cancelText="取消"
-          okButtonProps={{ danger: true }}
-          onConfirm={onDelete}
-        >
-          <Button type="text" size="small" danger icon={<DeleteOutlined />} />
-        </Popconfirm>
+        {hasPerm('mwtemplate:update') && (
+          <Button type="text" size="small" icon={<EditOutlined />} onClick={onEdit}>
+            编辑
+          </Button>
+        )}
+        {hasPerm('mwtemplate:delete') && (
+          <Popconfirm
+            title="确认删除该中间件配置？"
+            description="删除后无法恢复，部署向导中也不再可用"
+            okText="删除"
+            cancelText="取消"
+            okButtonProps={{ danger: true }}
+            onConfirm={onDelete}
+          >
+            <Button type="text" size="small" danger icon={<DeleteOutlined />} />
+          </Popconfirm>
+        )}
       </div>
     </div>
   )

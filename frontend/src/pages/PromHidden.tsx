@@ -42,6 +42,7 @@ import {
   type PromHiddenResp,
   type PromIssue,
 } from '../api/prometheus'
+import { useAuth } from '../store/AuthContext'
 
 /**
  * 被屏蔽目标明细（v1.7.43）
@@ -107,6 +108,7 @@ const METRIC_CN: Record<string, string> = {
 const REFRESH_MS = 30_000
 
 export default function PromHidden() {
+  const { hasPerm } = useAuth()
   const navigate = useNavigate()
   const [sp, setSp] = useSearchParams()
   const dsParam = Number(sp.get('ds')) || undefined
@@ -511,9 +513,14 @@ export default function PromHidden() {
           <Tooltip title={`每 ${REFRESH_MS / 1000} 秒刷新一次当前水位（读服务端快照，不查 Prometheus）`}>
             <Switch size="small" checked={auto} onChange={setAuto} checkedChildren="自动刷新" unCheckedChildren="暂停刷新" />
           </Tooltip>
-          <Button size="small" icon={<SyncOutlined />} loading={collecting} onClick={collect}>
-            立即采集
-          </Button>
+          {/* 本页是只读审计视图，唯一的「写」动作就是这个「立即采集」：
+              它走 POST /prom/collect（后端 any-of: prom:screen / prom:screen:config:update），
+              故按后端实际收口码 prom:screen:config:update 显隐；其余按钮均为只读展示，不加条件。 */}
+          {hasPerm('prom:screen:config:update') && (
+            <Button size="small" icon={<SyncOutlined />} loading={collecting} onClick={collect}>
+              立即采集
+            </Button>
+          )}
           <Button size="small" icon={<ReloadOutlined />} loading={loading} onClick={() => load()}>
             刷新
           </Button>
@@ -617,9 +624,11 @@ export default function PromHidden() {
               data?.collecting ? '该数据源首次采集进行中，稍后刷新即可' : '该数据源还没有采集到快照，算不出被屏蔽项'
             }
           >
-            <Button type="primary" icon={<SyncOutlined />} loading={collecting} onClick={collect}>
-              立即采集
-            </Button>
+            {hasPerm('prom:screen:config:update') && (
+              <Button type="primary" icon={<SyncOutlined />} loading={collecting} onClick={collect}>
+                立即采集
+              </Button>
+            )}
           </Empty>
         </Card>
       ) : (

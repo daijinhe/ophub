@@ -68,6 +68,7 @@ import {
   type PromPanelGroup,
   type PromPanelKey,
 } from '../utils/promPanels'
+import { useAuth } from '../store/AuthContext'
 
 const { Title, Text, Paragraph } = Typography
 
@@ -162,6 +163,7 @@ const nextMaskKey = () => `m${Date.now().toString(36)}${(maskSeq++).toString(36)
  * 保存时 validateFields() 拿不到那些字段 —— 表现是「阈值校验失效 + 值提交不上去」。
  */
 export default function PromScreenAdmin() {
+  const { hasPerm } = useAuth()
   const [cfg, setCfg] = useState<PromScreenConfig | null>(null)
   const [status, setStatus] = useState<PromCollectStatus[]>([])
   const [nextAt, setNextAt] = useState<number>(0)
@@ -340,14 +342,17 @@ export default function PromScreenAdmin() {
         title: '操作',
         key: 'op',
         width: 110,
-        render: (_: any, r: PromCollectStatus) => (
-          <Button size="small" icon={<CloudDownloadOutlined />} loading={collectingId === r.id} onClick={() => onCollect(r.id)}>
-            立即采集
-          </Button>
-        ),
+        render: (_: any, r: PromCollectStatus) =>
+          // 「立即采集」走 POST /prom/collect（后端 any-of: prom:screen / prom:screen:config:update），
+          // 按后端实际收口码 prom:screen:config:update 显隐。
+          hasPerm('prom:screen:config:update') && (
+            <Button size="small" icon={<CloudDownloadOutlined />} loading={collectingId === r.id} onClick={() => onCollect(r.id)}>
+              立即采集
+            </Button>
+          ),
       },
     ],
-    [collectingId, onCollect],
+    [collectingId, onCollect, hasPerm],
   )
 
   /* ---------------- 面板开关操作 ---------------- */
@@ -479,9 +484,11 @@ export default function PromScreenAdmin() {
           <Button icon={<ReloadOutlined />} onClick={load} loading={loading}>
             重新加载
           </Button>
-          <Button type="primary" icon={<SaveOutlined />} onClick={onSave} loading={saving}>
-            保存配置
-          </Button>
+          {hasPerm('prom:screen:config:update') && (
+            <Button type="primary" icon={<SaveOutlined />} onClick={onSave} loading={saving}>
+              保存配置
+            </Button>
+          )}
         </Space>
       </div>
 

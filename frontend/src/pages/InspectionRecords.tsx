@@ -38,6 +38,7 @@ import {
   InspectionTask,
 } from '../api/inspection'
 import { buildQuarterReportXlsx, downloadBlob, fmtBytes } from '../utils/inspectionQuarterReport'
+import { useAuth } from '../store/AuthContext'
 
 const PeriodMap: Record<string, string> = {
   day: '日报',
@@ -315,6 +316,7 @@ function ResultDetail({ result }: { result: any }) {
 }
 
 export default function InspectionRecords() {
+  const { hasPerm } = useAuth()
   const [params] = useSearchParams()
   const navigate = useNavigate()
   const [records, setRecords] = useState<any[]>([])
@@ -627,11 +629,13 @@ export default function InspectionRecords() {
           <Button size="small" icon={<FundOutlined />} onClick={() => navigate(`/inspection/report/${r.id}`)}>
             报告
           </Button>
-          <Tooltip title="单独导出该记录">
-            <Button size="small" icon={<DownloadOutlined />} loading={exporting} onClick={() => exportXlsx('all', new Date().toISOString().slice(0, 10), r.id)}>
-              导出
-            </Button>
-          </Tooltip>
+          {hasPerm('inspection:record:export') && (
+            <Tooltip title="单独导出该记录">
+              <Button size="small" icon={<DownloadOutlined />} loading={exporting} onClick={() => exportXlsx('all', new Date().toISOString().slice(0, 10), r.id)}>
+                导出
+              </Button>
+            </Tooltip>
+          )}
         </Space>
       ),
     },
@@ -703,30 +707,34 @@ export default function InspectionRecords() {
             onChange={(v) => setTaskId(v)}
             options={tasks.map((t) => ({ label: t.name, value: t.id }))}
           />
-          <Button
-            type="primary"
-            icon={<DownloadOutlined />}
-            loading={quarterGenerating}
-            onClick={generateQuarterReport}
-          >
-            生成季度报告 xlsx
-          </Button>
-          <Popconfirm
-            title={`按任务分别导出`}
-            description={`将为每个巡检任务各生成一份独立的季度报告（共 ${tasks.length} 个任务，文件名带任务名）。继续？`}
-            okText="导出"
-            cancelText="取消"
-            onConfirm={generatePerTaskReports}
-            disabled={batchExporting || !tasks.length}
-          >
+          {hasPerm('inspection:record:export') && (
             <Button
-              icon={<FileExcelOutlined />}
-              loading={batchExporting}
-              disabled={!tasks.length}
+              type="primary"
+              icon={<DownloadOutlined />}
+              loading={quarterGenerating}
+              onClick={generateQuarterReport}
             >
-              按任务分别导出（{tasks.length} 个任务）
+              生成季度报告 xlsx
             </Button>
-          </Popconfirm>
+          )}
+          {hasPerm('inspection:record:export') && (
+            <Popconfirm
+              title={`按任务分别导出`}
+              description={`将为每个巡检任务各生成一份独立的季度报告（共 ${tasks.length} 个任务，文件名带任务名）。继续？`}
+              okText="导出"
+              cancelText="取消"
+              onConfirm={generatePerTaskReports}
+              disabled={batchExporting || !tasks.length}
+            >
+              <Button
+                icon={<FileExcelOutlined />}
+                loading={batchExporting}
+                disabled={!tasks.length}
+              >
+                按任务分别导出（{tasks.length} 个任务）
+              </Button>
+            </Popconfirm>
+          )}
         </Space>
         {quarterReport && (
           <Alert
@@ -790,31 +798,35 @@ export default function InspectionRecords() {
             onChange={(_, d) => d && setRefDate(Array.isArray(d) ? d[0] : d)}
             allowClear={false}
           />
-          <Button
-            type="primary"
-            icon={<DownloadOutlined />}
-            loading={exporting}
-            onClick={() => exportXlsx(period, refDate)}
-          >
-            导出{PeriodMap[period]}（截至所选日）
-          </Button>
+          {hasPerm('inspection:record:export') && (
+            <Button
+              type="primary"
+              icon={<DownloadOutlined />}
+              loading={exporting}
+              onClick={() => exportXlsx(period, refDate)}
+            >
+              导出{PeriodMap[period]}（截至所选日）
+            </Button>
+          )}
         </Space>
-        <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {Object.entries(PeriodMap).map(([p, label]) => (
-            <Tooltip key={p} title={`一键导出最近一个${label}（截至今天）`}>
-              <Button size="small" onClick={() => exportXlsx(p, new Date().toISOString().slice(0, 10))}>
-                快速导出{label}
-              </Button>
-            </Tooltip>
-          ))}
-        </div>
+        {hasPerm('inspection:record:export') && (
+          <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {Object.entries(PeriodMap).map(([p, label]) => (
+              <Tooltip key={p} title={`一键导出最近一个${label}（截至今天）`}>
+                <Button size="small" onClick={() => exportXlsx(p, new Date().toISOString().slice(0, 10))}>
+                  快速导出{label}
+                </Button>
+              </Tooltip>
+            ))}
+          </div>
+        )}
         <Divider style={{ margin: '12px 0 10px' }} />
         <Space wrap align="center">
           <span style={{ color: 'var(--text-secondary)' }}>列表操作：</span>
           <Button icon={<ReloadOutlined />} onClick={load}>
             刷新
           </Button>
-          {selectedKeys.length > 0 && (
+          {selectedKeys.length > 0 && hasPerm('inspection:record:delete') && (
             <Popconfirm
               title={`确认删除选中的 ${selectedKeys.length} 条巡检记录？`}
               description="将同时删除对应的采集明细，且不可恢复。"

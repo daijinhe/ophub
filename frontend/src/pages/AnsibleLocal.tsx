@@ -34,6 +34,7 @@ import {
   TableOutlined,
 } from '@ant-design/icons'
 import api from '../api/client'
+import { useAuth } from '../store/AuthContext'
 
 const { Text, Paragraph } = Typography
 const { TextArea } = Input
@@ -88,7 +89,11 @@ const replaceTpl = (tpl: string, fields: Record<string, any>): string => {
 }
 
 export default function AnsibleLocal() {
+  const { hasPerm } = useAuth()
   const { message } = App.useApp()
+
+  // 本机 Ansible 的 hosts 文件是「整体保存」（PUT /ansible），后端只有 ansible:local:update
+  // 一个写权限码、没有 create/delete，因此新增/编辑/删除分组与主机、原始编辑、从 CMDB 导入统一按 update 处理。
 
   // 本机 ansible 环境
   const [info, setInfo] = useState<AnsibleLocalInfo | null>(null)
@@ -453,15 +458,21 @@ export default function AnsibleLocal() {
           <Tooltip title="刷新 hosts">
             <Button icon={<ReloadOutlined />} onClick={load} loading={loading} />
           </Tooltip>
-          <Button icon={<ApiOutlined />} loading={testing} onClick={handleTest}>
-            测试 ansible
-          </Button>
+          {hasPerm('ansible:local:exec') && (
+            <Button icon={<ApiOutlined />} loading={testing} onClick={handleTest}>
+              测试 ansible
+            </Button>
+          )}
           <Button icon={<InfoCircleOutlined />} onClick={openInfo}>
             节点信息
           </Button>
-          <Button icon={<PlayCircleOutlined />} onClick={() => setExecOpen(true)}>
-            执行命令
-          </Button>
+          {/* 连通性测试与容器内执行命令都是「执行」语义 → ansible:local:exec
+              （后端 /ansible/local/exec 另有 admin 角色要求） */}
+          {hasPerm('ansible:local:exec') && (
+            <Button icon={<PlayCircleOutlined />} onClick={() => setExecOpen(true)}>
+              执行命令
+            </Button>
+          )}
         </Space>
       </div>
 
@@ -517,15 +528,22 @@ export default function AnsibleLocal() {
                     onChange={(e) => setSearchInput(e.target.value)}
                   />
                   {searchStats && <Tag color="geekblue">命中 {searchStats.groups} 组 / {searchStats.hosts} 台</Tag>}
-                  <Button icon={<PlusOutlined />} onClick={() => { groupForm.resetFields(); setGroupModal(true) }}>
-                    新增分组
-                  </Button>
-                  <Button icon={<ImportOutlined />} onClick={() => setImportOpen(true)}>
-                    从 CMDB 导入
-                  </Button>
-                  <Button icon={<CodeOutlined />} onClick={openRaw}>
-                    原始编辑
-                  </Button>
+                  {/* hosts 写操作统一用 ansible:local:update（后端 PUT /ansible / POST /ansible/raw / import-cmdb 均如此收口） */}
+                  {hasPerm('ansible:local:update') && (
+                    <Button icon={<PlusOutlined />} onClick={() => { groupForm.resetFields(); setGroupModal(true) }}>
+                      新增分组
+                    </Button>
+                  )}
+                  {hasPerm('ansible:local:update') && (
+                    <Button icon={<ImportOutlined />} onClick={() => setImportOpen(true)}>
+                      从 CMDB 导入
+                    </Button>
+                  )}
+                  {hasPerm('ansible:local:update') && (
+                    <Button icon={<CodeOutlined />} onClick={openRaw}>
+                      原始编辑
+                    </Button>
+                  )}
                 </Space>
                 {file && file.groups.length === 0 && (
                   <Card>
@@ -572,14 +590,18 @@ export default function AnsibleLocal() {
                         ),
                         extra: (
                           <Space onClick={(e) => e.stopPropagation()}>
-                            <Button size="small" type="link" icon={<PlusOutlined />} onClick={() => openHost(g.name, null)}>
-                              添加主机
-                            </Button>
-                            <Popconfirm title="确认删除该分组及其所有主机？" onConfirm={() => removeGroup(g.name)}>
-                              <Button size="small" type="link" danger icon={<DeleteOutlined />}>
-                                删除分组
+                            {hasPerm('ansible:local:update') && (
+                              <Button size="small" type="link" icon={<PlusOutlined />} onClick={() => openHost(g.name, null)}>
+                                添加主机
                               </Button>
-                            </Popconfirm>
+                            )}
+                            {hasPerm('ansible:local:update') && (
+                              <Popconfirm title="确认删除该分组及其所有主机？" onConfirm={() => removeGroup(g.name)}>
+                                <Button size="small" type="link" danger icon={<DeleteOutlined />}>
+                                  删除分组
+                                </Button>
+                              </Popconfirm>
+                            )}
                           </Space>
                         ),
                         children: (
@@ -606,14 +628,18 @@ export default function AnsibleLocal() {
                                 width: 120,
                                 render: (_: any, _row: AnsibleHostEntry, idx: number) => (
                                   <Space>
-                                    <Button size="small" type="link" onClick={() => openHost(g.name, idx)}>
-                                      编辑
-                                    </Button>
-                                    <Popconfirm title="删除该主机？" onConfirm={() => removeHost(g.name, idx)}>
-                                      <Button size="small" type="link" danger>
-                                        删除
+                                    {hasPerm('ansible:local:update') && (
+                                      <Button size="small" type="link" onClick={() => openHost(g.name, idx)}>
+                                        编辑
                                       </Button>
-                                    </Popconfirm>
+                                    )}
+                                    {hasPerm('ansible:local:update') && (
+                                      <Popconfirm title="删除该主机？" onConfirm={() => removeHost(g.name, idx)}>
+                                        <Button size="small" type="link" danger>
+                                          删除
+                                        </Button>
+                                      </Popconfirm>
+                                    )}
                                   </Space>
                                 ),
                               },

@@ -65,6 +65,7 @@ import {
   scopeTextOf,
   thOf,
 } from '../utils/promReportExcel'
+import { useAuth } from '../store/AuthContext'
 
 const { Title, Text } = Typography
 
@@ -113,6 +114,7 @@ function PromReportGenerate({
    */
   tplReq?: { id: number; seq: number } | null
 } = {}) {
+  const { hasPerm } = useAuth()
   const [dss, setDss] = useState<PromDataSource[]>([])
   const [ds, setDs] = useState<number | null>(null)
   const [period, setPeriod] = useState<Period>('month')
@@ -660,28 +662,30 @@ function PromReportGenerate({
               }))}
             />
           </Col>
-          <Col>
-            <Tooltip title="把当前的数据源 / 项目范围 / 周期存成模板，下次一键复用">
-              <Button icon={<SaveOutlined />} onClick={openSaveAsNew}>
-                另存为模板
-              </Button>
-            </Tooltip>
-          </Col>
-          {curTemplate && (
-            <>
-              <Col>
-                <Tooltip title={curTemplate.canEdit ? '用当前设置覆盖该模板' : '只有创建人可修改该模板'}>
-                  <Button disabled={!curTemplate.canEdit} onClick={openOverwrite}>
-                    更新模板
-                  </Button>
-                </Tooltip>
-              </Col>
-              <Col>
-                <Button danger disabled={!curTemplate.canEdit} icon={<DeleteOutlined />} onClick={removeTemplate}>
-                  删除模板
+          {hasPerm('prom:report:create') && (
+            <Col>
+              <Tooltip title="把当前的数据源 / 项目范围 / 周期存成模板，下次一键复用">
+                <Button icon={<SaveOutlined />} onClick={openSaveAsNew}>
+                  另存为模板
                 </Button>
-              </Col>
-            </>
+              </Tooltip>
+            </Col>
+          )}
+          {curTemplate && hasPerm('prom:report:update') && (
+            <Col>
+              <Tooltip title={curTemplate.canEdit ? '用当前设置覆盖该模板' : '只有创建人可修改该模板'}>
+                <Button disabled={!curTemplate.canEdit} onClick={openOverwrite}>
+                  更新模板
+                </Button>
+              </Tooltip>
+            </Col>
+          )}
+          {curTemplate && hasPerm('prom:report:delete') && (
+            <Col>
+              <Button danger disabled={!curTemplate.canEdit} icon={<DeleteOutlined />} onClick={removeTemplate}>
+                删除模板
+              </Button>
+            </Col>
           )}
         </Row>
 
@@ -714,9 +718,11 @@ function PromReportGenerate({
           <Col>{refPicker}</Col>
           <Col>
             <Space>
-              <Button type="primary" icon={<FundOutlined />} loading={loading} onClick={generate}>
-                生成报告
-              </Button>
+              {hasPerm('prom:report:create') && (
+                <Button type="primary" icon={<FundOutlined />} loading={loading} onClick={generate}>
+                  生成报告
+                </Button>
+              )}
               <Button icon={<FileExcelOutlined />} disabled={!report} onClick={exportXlsx}>
                 导出 Excel
               </Button>

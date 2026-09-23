@@ -43,6 +43,7 @@ import {
   MinusCircleOutlined,
 } from '@ant-design/icons'
 import api from '../api/client'
+import { useAuth } from '../store/AuthContext'
 
 const { Text, Paragraph } = Typography
 const { TextArea } = Input
@@ -121,7 +122,11 @@ function ep(nodeId: string, sub: string) {
 }
 
 export default function Ansible() {
+  const { hasPerm } = useAuth()
   const { message, modal } = App.useApp()
+
+  // 远端节点的 hosts 文件是「整体保存」（PUT /ansible/remotes/:id/hosts），后端按 ansible:remote:update
+  // 收口，因此分组/主机的新增与删除也走 update；从 CMDB 导入是独立端点，后端单独用 ansible:remote:create。
 
   // 节点
   const [nodes, setNodes] = useState<AnsibleRemote[]>([])
@@ -624,15 +629,21 @@ export default function Ansible() {
           <Tooltip title="刷新当前节点的 hosts">
             <Button icon={<ReloadOutlined />} onClick={load} loading={loading} />
           </Tooltip>
-          <Button icon={<ApiOutlined />} loading={testing} disabled={!selectedNodeId} onClick={handleTest}>
-            测试连接
-          </Button>
+          {hasPerm('ansible:remote:exec') && (
+            <Button icon={<ApiOutlined />} loading={testing} disabled={!selectedNodeId} onClick={handleTest}>
+              测试连接
+            </Button>
+          )}
           <Button icon={<InfoCircleOutlined />} disabled={!selectedNodeId} onClick={openInfo}>
             节点信息
           </Button>
-          <Button icon={<PlayCircleOutlined />} disabled={!selectedNodeId} onClick={() => setExecOpen(true)}>
-            执行命令
-          </Button>
+          {/* 连通性测试与执行命令都是「执行」语义 → ansible:remote:exec
+              （后端 /ansible/remotes/:id/exec 另有 admin 角色要求） */}
+          {hasPerm('ansible:remote:exec') && (
+            <Button icon={<PlayCircleOutlined />} disabled={!selectedNodeId} onClick={() => setExecOpen(true)}>
+              执行命令
+            </Button>
+          )}
           <Button icon={<SettingOutlined />} onClick={() => setNodeManageOpen(true)}>
             节点管理
           </Button>
@@ -677,15 +688,23 @@ export default function Ansible() {
                     onChange={(e) => setSearchInput(e.target.value)}
                   />
                   {searchStats && <Tag color="geekblue">命中 {searchStats.groups} 组 / {searchStats.hosts} 台</Tag>}
-                  <Button icon={<PlusOutlined />} onClick={() => { groupForm.resetFields(); setGroupModal(true) }}>
-                    新增分组
-                  </Button>
-                  <Button icon={<ImportOutlined />} onClick={() => setImportOpen(true)}>
-                    从 CMDB 导入
-                  </Button>
-                  <Button icon={<CodeOutlined />} onClick={openRaw}>
-                    原始编辑
-                  </Button>
+                  {/* hosts 写操作按后端收口：整体保存 PUT /hosts 与原始编辑 POST /hosts/raw 用 ansible:remote:update，
+                      从 CMDB 导入是独立端点 POST /import-cmdb，后端用的是 ansible:remote:create */}
+                  {hasPerm('ansible:remote:update') && (
+                    <Button icon={<PlusOutlined />} onClick={() => { groupForm.resetFields(); setGroupModal(true) }}>
+                      新增分组
+                    </Button>
+                  )}
+                  {hasPerm('ansible:remote:create') && (
+                    <Button icon={<ImportOutlined />} onClick={() => setImportOpen(true)}>
+                      从 CMDB 导入
+                    </Button>
+                  )}
+                  {hasPerm('ansible:remote:update') && (
+                    <Button icon={<CodeOutlined />} onClick={openRaw}>
+                      原始编辑
+                    </Button>
+                  )}
                 </Space>
                 {file && file.groups.length === 0 && (
                   <Card>
@@ -747,14 +766,18 @@ export default function Ansible() {
                       ),
                       extra: (
                         <Space onClick={(e) => e.stopPropagation()}>
-                          <Button size="small" type="link" icon={<PlusOutlined />} onClick={() => openHost(g.name, null)}>
-                            添加主机
-                          </Button>
-                          <Popconfirm title="确认删除该分组及其所有主机？" onConfirm={() => removeGroup(g.name)}>
-                            <Button size="small" type="link" danger icon={<DeleteOutlined />}>
-                              删除分组
+                          {hasPerm('ansible:remote:update') && (
+                            <Button size="small" type="link" icon={<PlusOutlined />} onClick={() => openHost(g.name, null)}>
+                              添加主机
                             </Button>
-                          </Popconfirm>
+                          )}
+                          {hasPerm('ansible:remote:update') && (
+                            <Popconfirm title="确认删除该分组及其所有主机？" onConfirm={() => removeGroup(g.name)}>
+                              <Button size="small" type="link" danger icon={<DeleteOutlined />}>
+                                删除分组
+                              </Button>
+                            </Popconfirm>
+                          )}
                         </Space>
                       ),
                       children: (
@@ -786,14 +809,18 @@ export default function Ansible() {
                               width: 120,
                               render: (_: any, _row: AnsibleHost, idx: number) => (
                                 <Space>
-                                  <Button size="small" type="link" onClick={() => openHost(g.name, idx)}>
-                                    编辑
-                                  </Button>
-                                  <Popconfirm title="删除该主机？" onConfirm={() => removeHost(g.name, idx)}>
-                                    <Button size="small" type="link" danger>
-                                      删除
+                                  {hasPerm('ansible:remote:update') && (
+                                    <Button size="small" type="link" onClick={() => openHost(g.name, idx)}>
+                                      编辑
                                     </Button>
-                                  </Popconfirm>
+                                  )}
+                                  {hasPerm('ansible:remote:update') && (
+                                    <Popconfirm title="删除该主机？" onConfirm={() => removeHost(g.name, idx)}>
+                                      <Button size="small" type="link" danger>
+                                        删除
+                                      </Button>
+                                    </Popconfirm>
+                                  )}
                                 </Space>
                               ),
                             },
@@ -974,9 +1001,11 @@ export default function Ansible() {
         open={nodeManageOpen}
         onClose={() => setNodeManageOpen(false)}
         extra={
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => openNodeModal('create')}>
-            新增节点
-          </Button>
+          hasPerm('ansible:remote:create') && (
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => openNodeModal('create')}>
+              新增节点
+            </Button>
+          )
         }
       >
         <Paragraph type="secondary">
@@ -1001,17 +1030,23 @@ export default function Ansible() {
                 }
                 extra={
                   <Space>
-                    <Button size="small" icon={<ApiOutlined />} onClick={() => quickTest(n)}>
-                      测试
-                    </Button>
-                    <Button size="small" icon={<EditOutlined />} onClick={() => openNodeModal('edit', n)}>
-                      编辑
-                    </Button>
-                    <Popconfirm title="确认删除该节点？" onConfirm={() => removeNode(n)}>
-                      <Button size="small" danger icon={<DeleteOutlined />}>
-                        删除
+                    {hasPerm('ansible:remote:exec') && (
+                      <Button size="small" icon={<ApiOutlined />} onClick={() => quickTest(n)}>
+                        测试
                       </Button>
-                    </Popconfirm>
+                    )}
+                    {hasPerm('ansible:remote:update') && (
+                      <Button size="small" icon={<EditOutlined />} onClick={() => openNodeModal('edit', n)}>
+                        编辑
+                      </Button>
+                    )}
+                    {hasPerm('ansible:remote:delete') && (
+                      <Popconfirm title="确认删除该节点？" onConfirm={() => removeNode(n)}>
+                        <Button size="small" danger icon={<DeleteOutlined />}>
+                          删除
+                        </Button>
+                      </Popconfirm>
+                    )}
                   </Space>
                 }
               >

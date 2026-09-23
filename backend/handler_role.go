@@ -15,9 +15,15 @@ func ListRoles(c *gin.Context) {
 	OK(c, roles)
 }
 
-// ListPermissions 权限目录
+// ListPermissions 权限目录 + 菜单权限树。
+//
+// v1.7.46 起返回两样东西：
+//   - tree：菜单权限树（MenuPermTree 的副本，EntryPerms 已补齐）——
+//     前端用它渲染侧边栏菜单、派生路由拦截所需的权限码、渲染角色授权树。
+//     结构与侧边栏菜单**严格一致**，所以授权页看到的层级就是菜单的层级。
+//   - flat：扁平权限目录（Group = 菜单祖先路径），供搜索/校验类用途。
 func ListPermissions(c *gin.Context) {
-	OK(c, PermissionCatalog)
+	OK(c, gin.H{"tree": menuTreeForClient(), "flat": PermissionCatalog})
 }
 
 type roleReq struct {

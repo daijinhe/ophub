@@ -330,10 +330,12 @@ const AutoScroll = memo(function AutoScroll({
 })
 
 export default function PromScreen() {
-  const { hasPerm, logout } = useAuth()
+  const { hasPerm, logout, routePerms } = useAuth()
   // 「只看大屏」账号（仅授予 prom:screen）：除大屏外没有任何可访问页面，
   // 此时不提供「返回主界面」（回去也只会被弹回大屏），改为提供「退出登录」。
-  const onlyScreen = firstAccessiblePath(hasPerm) === '/prom/screen'
+  // ⚠️ firstAccessiblePath 会优先排除大屏类（newTab）页面，所以只有大屏权限时
+  // 它仍会回落到本页 —— 这个判断在 v1.7.46 之后语义不变。
+  const onlyScreen = firstAccessiblePath(hasPerm, routePerms) === '/prom/screen'
 
   const [snap, setSnap] = useState<PromSnapshotResp | null>(null)
   const [dss, setDss] = useState<PromDataSource[]>([])
@@ -841,7 +843,7 @@ export default function PromScreen() {
               <div style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.9 }}>
                 左 / 中 / 右三栏的面板都在「大屏管理」里被关闭了。
                 <br />
-                {hasPerm('prom:manage') ? (
+                {hasPerm('prom:screen:config:view') ? (
                   <a href="/prom/screen-admin" style={{ color: '#38bdf8' }}>
                     前往「大屏管理 → 展示内容」重新勾选需要展示的面板
                   </a>

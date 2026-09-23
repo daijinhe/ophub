@@ -48,6 +48,7 @@ import {
   type DeployCert,
   type CertSummary,
 } from '../api/deploy'
+import { useAuth } from '../store/AuthContext'
 
 const { Text, Paragraph, Title } = Typography
 
@@ -80,6 +81,7 @@ function daysProgress(daysLeft: number, status: string) {
 
 export default function CertManage() {
   const { message } = App.useApp()
+  const { hasPerm } = useAuth()
   const [list, setList] = useState<DeployCert[]>([])
   const [loading, setLoading] = useState(true)
   const [summary, setSummary] = useState<CertSummary | null>(null)
@@ -417,13 +419,19 @@ export default function CertManage() {
           <Button size="small" type="text" icon={<EyeOutlined />} onClick={() => openDetail(r)}>
             详情
           </Button>
-          <Button size="small" type="text" icon={<UploadOutlined />} onClick={() => openRenew(r)}>
-            更新
-          </Button>
-          <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openEdit(r)} />
-          <Popconfirm title="确认删除该证书？" description="删除后不可恢复" onConfirm={() => remove(r.id)} okText="删除" cancelText="取消" okButtonProps={{ danger: true }}>
-            <Button size="small" type="text" danger icon={<DeleteOutlined />} />
-          </Popconfirm>
+          {hasPerm('cert:update') && (
+            <Button size="small" type="text" icon={<UploadOutlined />} onClick={() => openRenew(r)}>
+              更新
+            </Button>
+          )}
+          {hasPerm('cert:update') && (
+            <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openEdit(r)} />
+          )}
+          {hasPerm('cert:delete') && (
+            <Popconfirm title="确认删除该证书？" description="删除后不可恢复" onConfirm={() => remove(r.id)} okText="删除" cancelText="取消" okButtonProps={{ danger: true }}>
+              <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+            </Popconfirm>
+          )}
         </Space>
       ),
     },
@@ -494,9 +502,11 @@ export default function CertManage() {
                   <span style={{ color: STATUS_META[e.status]?.color, fontWeight: 600 }}>
                     {e.daysLeft >= 0 ? `剩 ${e.daysLeft} 天` : `已过期 ${Math.abs(e.daysLeft)} 天`}
                   </span>
-                  <Button size="small" type="link" onClick={() => openRenew({ id: e.id } as DeployCert)}>
-                    去换证
-                  </Button>
+                  {hasPerm('cert:update') && (
+                    <Button size="small" type="link" onClick={() => openRenew({ id: e.id } as DeployCert)}>
+                      去换证
+                    </Button>
+                  )}
                 </div>
               ))}
             </div>
@@ -536,12 +546,16 @@ export default function CertManage() {
           <Button icon={<ReloadOutlined />} onClick={load}>
             刷新
           </Button>
-          <Button icon={<UploadOutlined />} onClick={openUpload}>
-            上传证书
-          </Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-            新增证书
-          </Button>
+          {hasPerm('cert:create') && (
+            <Button icon={<UploadOutlined />} onClick={openUpload}>
+              上传证书
+            </Button>
+          )}
+          {hasPerm('cert:create') && (
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+              新增证书
+            </Button>
+          )}
         </Space>
       </div>
 
@@ -581,12 +595,16 @@ export default function CertManage() {
         extra={
           detail && (
             <Space>
-              <Button icon={<UploadOutlined />} onClick={() => openRenew(detail)}>
-                更新证书
-              </Button>
-              <Button icon={<EditOutlined />} onClick={() => openEdit(detail)}>
-                编辑
-              </Button>
+              {hasPerm('cert:update') && (
+                <Button icon={<UploadOutlined />} onClick={() => openRenew(detail)}>
+                  更新证书
+                </Button>
+              )}
+              {hasPerm('cert:update') && (
+                <Button icon={<EditOutlined />} onClick={() => openEdit(detail)}>
+                  编辑
+                </Button>
+              )}
             </Space>
           )
         }

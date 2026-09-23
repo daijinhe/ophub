@@ -4,7 +4,7 @@ import { UserOutlined, LockOutlined } from '@ant-design/icons'
 import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../store/AuthContext'
 import { getRegisterAllow } from '../api/system'
-import { darkTheme } from '../theme'
+import { lightTheme } from '../theme'
 import BrandLogo from '../components/BrandLogo'
 import '../styles/login.css'
 
@@ -34,9 +34,9 @@ export default function Login() {
   }
 
   return (
-    // 门户页固定深色：嵌套一层 ConfigProvider 让 antd 组件用 darkAlgorithm，
+    // 门户页固定浅色：嵌套一层 ConfigProvider 让 antd 组件走 defaultAlgorithm，
     // 不跟随应用内主题（登录前也拿不到用户主题偏好）
-    <ConfigProvider theme={darkTheme}>
+    <ConfigProvider theme={lightTheme}>
       <div className="xy-auth">
         <div className="xy-card">
           <div style={{ textAlign: 'center', marginBottom: 30 }}>
@@ -86,11 +86,11 @@ export default function Login() {
                 还没有账号？ <Link to="/register">立即注册</Link>
               </>
             ) : (
-              <span style={{ color: '#5a6a7f' }}>自助注册已关闭 · 账号请联系管理员开通</span>
+              <span style={{ color: '#9aa8bd' }}>自助注册已关闭 · 账号请联系管理员开通</span>
             )}
           </div>
         </div>
-        <div className="xy-meta">云枢 OpsHub · v1.7.45</div>
+        <div className="xy-meta">云枢 OpsHub · v1.7.46</div>
       </div>
     </ConfigProvider>
   )

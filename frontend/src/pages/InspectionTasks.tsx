@@ -80,7 +80,6 @@ export default function InspectionTasks() {
   const [catMode, setCatMode] = useState<'single' | 'multi'>('multi')
   const [form] = Form.useForm()
 
-  const canManage = hasPerm('inspection:manage')
   // 当前选择的调度频率：联动显示对应的参数输入项（间隔 / 时刻 / 星期 / 日期）
   const freqVal = Form.useWatch('freq', form)
 
@@ -393,18 +392,20 @@ export default function InspectionTasks() {
       key: 'op',
       render: (_: any, r: InspectionTask) => (
         <Space wrap>
-          <Tooltip title="立即巡检">
-            <Button
-              type="primary"
-              ghost
-              size="small"
-              icon={runningId === r.id ? <Spin size="small" /> : <PlayCircleOutlined />}
-              loading={runningId === r.id}
-              onClick={() => run(r.id)}
-            >
-              执行
-            </Button>
-          </Tooltip>
+          {hasPerm('inspection:task:run') && (
+            <Tooltip title="立即巡检">
+              <Button
+                type="primary"
+                ghost
+                size="small"
+                icon={runningId === r.id ? <Spin size="small" /> : <PlayCircleOutlined />}
+                loading={runningId === r.id}
+                onClick={() => run(r.id)}
+              >
+                执行
+              </Button>
+            </Tooltip>
+          )}
           <Tooltip title="查看记录">
             <Button
               size="small"
@@ -414,13 +415,13 @@ export default function InspectionTasks() {
               记录
             </Button>
           </Tooltip>
-          {canManage && (
-            <>
-              <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />
-              <Popconfirm title="确认删除该任务及其历史记录？" onConfirm={() => remove(r.id)}>
-                <Button size="small" danger icon={<DeleteOutlined />} />
-              </Popconfirm>
-            </>
+          {hasPerm('inspection:task:update') && (
+            <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />
+          )}
+          {hasPerm('inspection:task:delete') && (
+            <Popconfirm title="确认删除该任务及其历史记录？" onConfirm={() => remove(r.id)}>
+              <Button size="small" danger icon={<DeleteOutlined />} />
+            </Popconfirm>
           )}
         </Space>
       ),
@@ -511,7 +512,7 @@ export default function InspectionTasks() {
           <Button icon={<ReloadOutlined />} onClick={load}>
             刷新
           </Button>
-          {canManage && selectedKeys.length > 0 && (
+          {selectedKeys.length > 0 && hasPerm('inspection:task:delete') && (
             <Popconfirm
               title={`确认删除选中的 ${selectedKeys.length} 个巡检任务？`}
               description="将同时删除其历史巡检记录与采集明细，且不可恢复。"
@@ -522,9 +523,11 @@ export default function InspectionTasks() {
               </Button>
             </Popconfirm>
           )}
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate} disabled={!canManage}>
-            新建任务
-          </Button>
+          {hasPerm('inspection:task:create') && (
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+              新建任务
+            </Button>
+          )}
         </Space>
       </div>
 
@@ -535,7 +538,8 @@ export default function InspectionTasks() {
           columns={columns}
           dataSource={tasks}
           rowSelection={
-            canManage
+            // 勾选仅服务于「批量删除」，故与删除按钮同一权限
+            hasPerm('inspection:task:delete')
               ? {
                   selectedRowKeys: selectedKeys,
                   onChange: (keys: React.Key[]) => setSelectedKeys(keys as number[]),

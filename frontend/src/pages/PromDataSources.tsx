@@ -56,7 +56,8 @@ const AUTH_LABEL: Record<string, string> = {
  */
 export default function PromDataSources() {
   const { hasPerm } = useAuth()
-  const canManage = hasPerm('prom:manage')
+  // ⚠️ 不用 hasPerm('prom:manage')：它是后端 migrateLegacyPerms 会展开并移除的历史聚合码，
+  // 前端判定恒为 false，会把按钮全部藏掉。按动作改用 prom:datasource:<action> 细分码。
 
   const [list, setList] = useState<PromDataSource[]>([])
   const [loading, setLoading] = useState(false)
@@ -219,21 +220,21 @@ export default function PromDataSources() {
           >
             测试
           </Button>
-          {canManage && (
-            <>
-              <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>
-                编辑
-              </Button>
-              <Popconfirm
-                title={`确认删除数据源「${r.name}」?`}
-                okText="删除"
-                okButtonProps={{ danger: true }}
-                cancelText="取消"
-                onConfirm={() => remove(r)}
-              >
-                <Button size="small" danger icon={<DeleteOutlined />} />
-              </Popconfirm>
-            </>
+          {hasPerm('prom:datasource:update') && (
+            <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>
+              编辑
+            </Button>
+          )}
+          {hasPerm('prom:datasource:delete') && (
+            <Popconfirm
+              title={`确认删除数据源「${r.name}」?`}
+              okText="删除"
+              okButtonProps={{ danger: true }}
+              cancelText="取消"
+              onConfirm={() => remove(r)}
+            >
+              <Button size="small" danger icon={<DeleteOutlined />} />
+            </Popconfirm>
           )}
         </Space>
       ),
@@ -249,7 +250,7 @@ export default function PromDataSources() {
         </Title>
         <Tag color="purple">v1.8.0</Tag>
         <div style={{ flex: 1 }} />
-        {canManage && (
+        {hasPerm('prom:datasource:create') && (
           <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
             添加数据源
           </Button>

@@ -98,9 +98,9 @@ func promTplFill(t *PromReportTemplate, c *gin.Context) {
 	t.CanEdit = promTplCanEdit(c, t)
 }
 
-// promTplCanEdit 改 / 删权限：本人，或持有 prom:manage 的管理员
+// promTplCanEdit 改 / 删权限：本人，或持有 prom:report:manage 的管理员
 func promTplCanEdit(c *gin.Context, t *PromReportTemplate) bool {
-	if hasPerm(c, "prom:manage") {
+	if hasPerm(c, "prom:report:manage") {
 		return true
 	}
 	return t.OwnerID != 0 && t.OwnerID == currentUserID(c)
@@ -250,11 +250,11 @@ func PromListProjects(c *gin.Context) {
 
 // PromListReportTemplates GET /api/prom/report-templates
 //
-// 可见范围：本人的模板 + 别人共享的模板；管理员（prom:manage）看全部（便于排查）。
+// 可见范围：本人的模板 + 别人共享的模板；管理员（prom:report:manage）看全部（便于排查）。
 func PromListReportTemplates(c *gin.Context) {
 	uid := currentUserID(c)
 	q := DB.Model(&PromReportTemplate{})
-	if !hasPerm(c, "prom:manage") {
+	if !hasPerm(c, "prom:report:manage") {
 		q = q.Where("owner_id = ? OR shared = 1", uid)
 	}
 	var list []PromReportTemplate

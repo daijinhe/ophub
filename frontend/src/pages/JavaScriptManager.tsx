@@ -107,7 +107,9 @@ function errMsg(e: any, fallback = '操作失败'): string {
  */
 export default function JavaScriptManager() {
   const { hasPerm } = useAuth()
-  const canManage = hasPerm('script:manage')
+  const canCreate = hasPerm('script:create')
+  const canEdit = hasPerm('script:update')
+  const canDelete = hasPerm('script:delete')
 
   // 自 v1.7.9 起只支持平台本机模式:直接操作后台容器能看到的文件系统。
   const [rootPath, setRootPath] = useState(ROOT_DEFAULT)
@@ -311,7 +313,8 @@ export default function JavaScriptManager() {
   /* ---------- 右键菜单 / 就地新建 的动作集合 ---------- */
   const nodeActs: NodeActions = useMemo(
     () => ({
-      canManage,
+      canCreate,
+      canDelete,
       onDraft: (parentPath, parentKey, type) => {
         void startDraft(parentPath, parentKey, type)
       },
@@ -330,7 +333,7 @@ export default function JavaScriptManager() {
       },
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [canManage, startDraft, reloadDir, refreshTree, copyText],
+    [canCreate, canDelete, startDraft, reloadDir, refreshTree, copyText],
   )
 
   useEffect(() => {
@@ -523,7 +526,7 @@ export default function JavaScriptManager() {
               >
                 刷新
               </Button>
-              {canManage && (
+              {canCreate && (
                 <>
                   <Button
                     icon={<FolderAddOutlined />}
@@ -557,8 +560,8 @@ export default function JavaScriptManager() {
             }
             bodyStyle={{ padding: 0, height: 'calc(100vh - 280px)', overflow: 'auto' }}
             extra={
-              canManage ? (
-                <Space size={4}>
+              <Space size={4}>
+                {canCreate && (
                   <Tooltip title="在根目录下新建目录">
                     <Button
                       size="small"
@@ -567,16 +570,16 @@ export default function JavaScriptManager() {
                       onClick={() => void startDraft(rootPath, null, 'dir')}
                     />
                   </Tooltip>
-                  <Tooltip title="刷新目录树">
-                    <Button
-                      size="small"
-                      type="text"
-                      icon={<ReloadOutlined />}
-                      onClick={() => setTreeVersion((v) => v + 1)}
-                    />
-                  </Tooltip>
-                </Space>
-              ) : null
+                )}
+                <Tooltip title="刷新目录树">
+                  <Button
+                    size="small"
+                    type="text"
+                    icon={<ReloadOutlined />}
+                    onClick={() => setTreeVersion((v) => v + 1)}
+                  />
+                </Tooltip>
+              </Space>
             }
           >
             {treeLoading && treeData.length === 0 ? (
@@ -589,7 +592,7 @@ export default function JavaScriptManager() {
                 imageStyle={{ height: 80 }}
                 style={{ padding: 16 }}
               >
-                {canManage && (
+                {canCreate && (
                   <Space>
                     <Button
                       type="primary"
@@ -645,7 +648,7 @@ export default function JavaScriptManager() {
             <EditorPanel
               file={selectedFile}
               editor={editor}
-              canManage={canManage}
+              canEdit={canEdit}
               onEnterEdit={enterEdit}
               onCancelEdit={cancelEdit}
               onChange={(v) =>
@@ -723,7 +726,13 @@ export default function JavaScriptManager() {
               <Tag color="blue">script:view</Tag> 查看目录树、脚本内容
             </li>
             <li>
-              <Tag color="purple">script:manage</Tag> 新建 / 修改 / 删除目录与脚本
+              <Tag color="purple">script:create</Tag> 新建目录与脚本
+            </li>
+            <li>
+              <Tag color="purple">script:update</Tag> 修改脚本内容
+            </li>
+            <li>
+              <Tag color="purple">script:delete</Tag> 删除目录与脚本
             </li>
           </ul>
         </Paragraph>
@@ -742,7 +751,10 @@ export default function JavaScriptManager() {
 
 /** 树节点的右键菜单 / 就地新建动作集合（v1.8.1） */
 interface NodeActions {
-  canManage: boolean
+  /** 新建子目录 / 新建文件（script:create） */
+  canCreate: boolean
+  /** 删除目录 / 删除文件（script:delete） */
+  canDelete: boolean
   /** 在 parentPath 下就地新建;parentKey = null 表示根目录 */
   onDraft: (parentPath: string, parentKey: string | null, type: 'dir' | 'file') => void
   onDelete: (entry: ScriptDirEntry) => void
@@ -800,11 +812,12 @@ function runMenuAction(key: string, e: ScriptDirEntry, acts: NodeActions) {
 }
 
 /** 节点的右键菜单项:目录 → 新建子目录/新建文件/刷新/复制路径/删除;
- *  文件 → 打开/复制路径/删除。删除只在有管理权限时出现。 */
+ *  文件 → 打开/复制路径/删除。
+ *  菜单项按最小权限过滤:新建项需 script:create、删除项需 script:delete。 */
 function nodeMenuItems(e: ScriptDirEntry, acts: NodeActions): MenuProps['items'] {
   if (e.isDir) {
     return [
-      ...(acts.canManage
+      ...(acts.canCreate
         ? [
             { key: 'mkdir', icon: <FolderAddOutlined />, label: '新建子目录' },
             { key: 'mkfile', icon: <FileAddOutlined />, label: '新建文件' },
@@ -813,7 +826,7 @@ function nodeMenuItems(e: ScriptDirEntry, acts: NodeActions): MenuProps['items']
         : []),
       { key: 'reload', icon: <ReloadOutlined />, label: '刷新此目录' },
       { key: 'copy', icon: <CopyOutlined />, label: '复制路径' },
-      ...(acts.canManage
+      ...(acts.canDelete
         ? [
             { type: 'divider' as const },
             { key: 'del', icon: <DeleteOutlined />, label: '删除目录', danger: true },
@@ -824,7 +837,7 @@ function nodeMenuItems(e: ScriptDirEntry, acts: NodeActions): MenuProps['items']
   return [
     { key: 'open', icon: <EyeOutlined />, label: '打开' },
     { key: 'copy', icon: <CopyOutlined />, label: '复制路径' },
-    ...(acts.canManage
+    ...(acts.canDelete
       ? [
           { type: 'divider' as const },
           { key: 'del', icon: <DeleteOutlined />, label: '删除文件', danger: true },
@@ -1060,7 +1073,7 @@ function ScriptTreeView(props: {
 
   // 空白处右键菜单(节点上右键会被 stopPropagation 拦掉,不会走到这里)
   const blankItems: MenuProps['items'] = [
-    ...(acts.canManage
+    ...(acts.canCreate
       ? [
           { key: 'mkdir', icon: <FolderAddOutlined />, label: '新建目录' },
           { key: 'mkfile', icon: <FileAddOutlined />, label: '新建文件' },
@@ -1154,7 +1167,8 @@ function findNode(nodes: DataNode[], key: string): DataNode | null {
 function EditorPanel(props: {
   file: ScriptDirEntry | null
   editor: EditorState
-  canManage: boolean
+  /** 是否有保存文件内容的权限（script:update）；无权限则只读预览 */
+  canEdit: boolean
   onEnterEdit: () => void
   onCancelEdit: () => void
   onChange: (v: string) => void
@@ -1198,7 +1212,7 @@ function EditorPanel(props: {
             编辑中{props.editor.dirty ? ' · 有改动' : ''}
           </Tag>
         )}
-        {!isEdit && props.canManage && (
+        {!isEdit && props.canEdit && (
           <Button
             size="small"
             type="primary"
@@ -1208,7 +1222,7 @@ function EditorPanel(props: {
             编辑
           </Button>
         )}
-        {isEdit && props.canManage && (
+        {isEdit && props.canEdit && (
           <Space size={4}>
             <Button size="small" onClick={props.onCancelEdit}>
               取消

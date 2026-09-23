@@ -20,6 +20,7 @@ import {
   ReloadOutlined,
 } from '@ant-design/icons'
 import api from '../api/client'
+import { useAuth } from '../store/AuthContext'
 
 const { Text, Paragraph } = Typography
 
@@ -67,6 +68,7 @@ const AFFECTED = [
 ]
 
 export default function AnsibleMode() {
+  const { hasPerm } = useAuth()
   const { message } = App.useApp()
   const [modeInfo, setModeInfo] = useState<AnsibleModeInfo | null>(null)
   const [localInfo, setLocalInfo] = useState<AnsibleLocalInfo | null>(null)
@@ -150,19 +152,22 @@ export default function AnsibleMode() {
           style={{ marginBottom: 16 }}
         >
           <Space direction="vertical" style={{ width: '100%' }} size={14}>
-            <Space wrap>
-              <Text>采集通道：</Text>
-              <Segmented
-                value={currentMode}
-                disabled={!modeInfo || saving}
-                onChange={(v) => saveMode(String(v))}
-                options={[
-                  { label: '本机 ansible', value: 'local' },
-                  { label: '远端控制节点', value: 'remote' },
-                  { label: '自动', value: 'auto' },
-                ]}
-              />
-            </Space>
+            {/* 本页唯一的写操作是切换采集通道（PUT /ansible/mode），语义为「保存设置」→ ansible:mode:update */}
+            {hasPerm('ansible:mode:update') && (
+              <Space wrap>
+                <Text>采集通道：</Text>
+                <Segmented
+                  value={currentMode}
+                  disabled={!modeInfo || saving}
+                  onChange={(v) => saveMode(String(v))}
+                  options={[
+                    { label: '本机 ansible', value: 'local' },
+                    { label: '远端控制节点', value: 'remote' },
+                    { label: '自动', value: 'auto' },
+                  ]}
+                />
+              </Space>
+            )}
 
             <Paragraph type="secondary" style={{ marginBottom: 0 }}>
               {MODE_HELP[currentMode]}

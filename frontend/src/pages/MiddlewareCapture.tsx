@@ -53,7 +53,6 @@ const CAPTURE_CHUNK = 6
 export default function MiddlewareCapture() {
   const { message, modal } = App.useApp()
   const { hasPerm } = useAuth()
-  const canManage = hasPerm('mwcapture:manage')
 
   const [assets, setAssets] = useState<MwCaptureAssetItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -379,23 +378,26 @@ export default function MiddlewareCapture() {
 
         <div className="glass mw-panel mwc-toolbar">
           <Space wrap size={8}>
-            <Button
-              type="primary"
-              icon={<ThunderboltOutlined />}
-              loading={running}
-              disabled={!canManage}
-              onClick={() => askCapture(selected.length ? selected : filtered.map((a) => a.assetId), false)}
-            >
-              {selected.length ? `开始捕捉（${selected.length} 台）` : `捕捉当前列表（${filtered.length} 台）`}
-            </Button>
-            <Button
-              icon={<ReloadOutlined />}
-              disabled={!canManage || running || activeId == null}
-              title={activeId == null ? '请先在左侧选择一台资产' : undefined}
-              onClick={() => askCapture(activeId != null ? [activeId] : [], true)}
-            >
-              重新捕捉
-            </Button>
+            {hasPerm('mwcapture:create') && (
+              <Button
+                type="primary"
+                icon={<ThunderboltOutlined />}
+                loading={running}
+                onClick={() => askCapture(selected.length ? selected : filtered.map((a) => a.assetId), false)}
+              >
+                {selected.length ? `开始捕捉（${selected.length} 台）` : `捕捉当前列表（${filtered.length} 台）`}
+              </Button>
+            )}
+            {hasPerm('mwcapture:create') && (
+              <Button
+                icon={<ReloadOutlined />}
+                disabled={running || activeId == null}
+                title={activeId == null ? '请先在左侧选择一台资产' : undefined}
+                onClick={() => askCapture(activeId != null ? [activeId] : [], true)}
+              >
+                重新捕捉
+              </Button>
+            )}
             <Button icon={<DownloadOutlined />} loading={exporting} onClick={() => void doExport()}>
               {selected.length ? `导出选中（${selected.length}）` : '导出全部'}
             </Button>
@@ -407,7 +409,7 @@ export default function MiddlewareCapture() {
                 { label: '汇总列表', value: 'summary' },
               ]}
             />
-            {!canManage && (
+            {!hasPerm('mwcapture:create') && (
               <Text type="secondary">
                 当前账号没有「执行中间件捕捉」权限，只能查看已有结果
               </Text>
@@ -588,7 +590,7 @@ export default function MiddlewareCapture() {
                             {detail.capturedBy ? ` · ${detail.capturedBy}` : ''}
                             {detail.durationMs ? ` · ${(detail.durationMs / 1000).toFixed(1)}s` : ''}
                           </Text>
-                          {canManage && (
+                          {hasPerm('mwcapture:delete') && (
                             <Tooltip title="仅删除平台记录，不影响目标机">
                               <Button
                                 size="small"

@@ -82,7 +82,6 @@ function fmtSize(n: number) {
 export default function NginxConfig() {
   const { message, modal } = App.useApp()
   const { hasPerm } = useAuth()
-  const canManage = hasPerm('config:manage')
 
   const [loading, setLoading] = useState(true)
   const [rows, setRows] = useState<NginxConfigItem[]>([])
@@ -416,29 +415,34 @@ export default function NginxConfig() {
       width: 220,
       render: (_, r) => (
         <Space size={4} wrap>
-          <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEdit(r)} disabled={!canManage}>
-            编辑
-          </Button>
-          <Button
-            size="small"
-            type="link"
-            icon={<CloudDownloadOutlined />}
-            onClick={async () => {
-              try {
-                await pullNginxConfig(r.id)
-                message.success(`已拉取 ${r.path}`)
-                load()
-              } catch (e: any) {
-                message.error(e?.response?.data?.msg || '拉取失败')
-              }
-            }}
-            disabled={!canManage}
-          >
-            拉取
-          </Button>
-          <Button size="small" type="link" danger icon={<DeleteOutlined />} onClick={() => doDelete(r)} disabled={!canManage}>
-            删除
-          </Button>
+          {hasPerm('config:update') && (
+            <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEdit(r)}>
+              编辑
+            </Button>
+          )}
+          {hasPerm('config:sync') && (
+            <Button
+              size="small"
+              type="link"
+              icon={<CloudDownloadOutlined />}
+              onClick={async () => {
+                try {
+                  await pullNginxConfig(r.id)
+                  message.success(`已拉取 ${r.path}`)
+                  load()
+                } catch (e: any) {
+                  message.error(e?.response?.data?.msg || '拉取失败')
+                }
+              }}
+            >
+              拉取
+            </Button>
+          )}
+          {hasPerm('config:delete') && (
+            <Button size="small" type="link" danger icon={<DeleteOutlined />} onClick={() => doDelete(r)}>
+              删除
+            </Button>
+          )}
         </Space>
       ),
     },
@@ -530,15 +534,15 @@ export default function NginxConfig() {
           刷新
         </Button>
         <div style={{ flex: 1 }} />
-        {canManage && (
-          <>
-            <Button type="primary" icon={<ScanOutlined />} onClick={openScan}>
-              扫描配置
-            </Button>
-            <Button icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
-              新增纳管
-            </Button>
-          </>
+        {hasPerm('config:sync') && (
+          <Button type="primary" icon={<ScanOutlined />} onClick={openScan}>
+            扫描配置
+          </Button>
+        )}
+        {hasPerm('config:create') && (
+          <Button icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+            新增纳管
+          </Button>
         )}
       </div>
 
@@ -577,12 +581,16 @@ export default function NginxConfig() {
             optionFilterProp="label"
             options={scope.map((a) => ({ value: a.id, label: `${a.name}（${a.ip || '未填 IP'}）` }))}
           />
-          <Button type="primary" loading={scanning} onClick={() => runScan(false)} disabled={!canManage}>
-            扫描该主机
-          </Button>
-          <Button loading={scanning} onClick={() => runScan(true)} disabled={!canManage}>
-            扫描全部主机
-          </Button>
+          {hasPerm('config:sync') && (
+            <Button type="primary" loading={scanning} onClick={() => runScan(false)}>
+              扫描该主机
+            </Button>
+          )}
+          {hasPerm('config:sync') && (
+            <Button loading={scanning} onClick={() => runScan(true)}>
+              扫描全部主机
+            </Button>
+          )}
         </Space>
         {scanSummary && (
           <Alert type="info" showIcon message={scanSummary} style={{ marginBottom: 12 }} />
@@ -611,15 +619,18 @@ export default function NginxConfig() {
               scroll={{ y: 380 }}
             />
             <div style={{ marginTop: 14, textAlign: 'right' }}>
-              <Button
-                type="primary"
-                icon={<CheckCircleOutlined />}
-                loading={importing}
-                disabled={selectedKeys.length === 0}
-                onClick={doImport}
-              >
-                导入选中（{selectedKeys.length}）
-              </Button>
+              {/* 「导入」后端 /config/import 收口在 config:sync，故用 :sync */}
+              {hasPerm('config:sync') && (
+                <Button
+                  type="primary"
+                  icon={<CheckCircleOutlined />}
+                  loading={importing}
+                  disabled={selectedKeys.length === 0}
+                  onClick={doImport}
+                >
+                  导入选中（{selectedKeys.length}）
+                </Button>
+              )}
             </div>
           </>
         )}
@@ -712,12 +723,17 @@ export default function NginxConfig() {
         destroyOnClose
         extra={
           <Space>
-            <Button icon={<CloudDownloadOutlined />} loading={pulling} onClick={doPull} disabled={!canManage}>
-              从服务器拉取
-            </Button>
-            <Button type="primary" icon={<SyncOutlined />} loading={syncing} onClick={doSync} disabled={!canManage}>
-              保存并同步
-            </Button>
+            {hasPerm('config:sync') && (
+              <Button icon={<CloudDownloadOutlined />} loading={pulling} onClick={doPull}>
+                从服务器拉取
+              </Button>
+            )}
+            {/* 「保存并同步」写入远端，后端 /config/:id/sync 收口在 config:sync，故用 :sync */}
+            {hasPerm('config:sync') && (
+              <Button type="primary" icon={<SyncOutlined />} loading={syncing} onClick={doSync}>
+                保存并同步
+              </Button>
+            )}
           </Space>
         }
       >
@@ -756,9 +772,11 @@ export default function NginxConfig() {
               <Text type="secondary" style={{ fontSize: 12 }}>
                 写入远端前自动生成 <code>*.ophub.bak</code> 备份；保存后自动执行 <code>nginx -t</code> 校验。
               </Text>
-              <Button danger icon={<DeleteOutlined />} onClick={() => doDelete(editRec)} disabled={!canManage}>
-                删除纳管
-              </Button>
+              {hasPerm('config:delete') && (
+                <Button danger icon={<DeleteOutlined />} onClick={() => doDelete(editRec)}>
+                  删除纳管
+                </Button>
+              )}
             </div>
           </>
         )}

@@ -99,9 +99,11 @@ export default function PromReportRecords({
   /** 抽屉被关掉时通知外层清掉 ?view= 参数 */
   onCloseView?: () => void
 } = {}) {
-  // 重命名 / 删除是配置动作，只有 prom:manage 才显示（后端同样按 prom:manage 收口）
+  // 重命名 / 删除按细粒度码显隐：后端分别是 PUT/DELETE /prom/reports/:id 的
+  // prom:report:update / prom:report:delete。
+  // ⚠️ 不再用 hasPerm('prom:manage')：它是后端 migrateLegacyPerms 会展开并移除的历史聚合码，
+  // 前端判定恒为 false，会把这两个按钮一直藏住。
   const { hasPerm } = useAuth()
-  const canManage = hasPerm('prom:manage')
   const [dss, setDss] = useState<PromDataSource[]>([])
   const [ds, setDs] = useState<number | undefined>(undefined)
   const [period, setPeriod] = useState<string | undefined>(undefined)
@@ -419,7 +421,7 @@ export default function PromReportRecords({
                 }}
               />
             </Tooltip>
-            {canManage && (
+            {hasPerm('prom:report:update') && (
               <Tooltip title="重命名">
                 <Button
                   size="small"
@@ -432,7 +434,7 @@ export default function PromReportRecords({
                 />
               </Tooltip>
             )}
-            {canManage && (
+            {hasPerm('prom:report:delete') && (
               <Tooltip title="删除">
                 <Button size="small" danger icon={<DeleteOutlined />} onClick={() => onDelete(r)} />
               </Tooltip>
@@ -441,7 +443,7 @@ export default function PromReportRecords({
         ),
       },
     ],
-    [openDetail, download, onDelete, canManage],
+    [openDetail, download, onDelete, hasPerm],
   )
 
   /* ---------- 详情 ---------- */

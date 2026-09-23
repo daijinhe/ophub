@@ -36,6 +36,7 @@ import {
   type PromProject,
   type PromReportTemplate,
 } from '../api/prometheus'
+import { useAuth } from '../store/AuthContext'
 
 const { Title, Text } = Typography
 
@@ -72,6 +73,7 @@ export default function PromReportTemplates({
    */
   onUse?: (t: PromReportTemplate) => void
 } = {}) {
+  const { hasPerm } = useAuth()
   const [dss, setDss] = useState<PromDataSource[]>([])
   const [list, setList] = useState<PromReportTemplate[]>([])
   const [myUid, setMyUid] = useState(0)
@@ -305,30 +307,35 @@ export default function PromReportTemplates({
         width: 240,
         render: (_: any, r: PromReportTemplate) => (
           <Space size={4}>
-            <Tooltip title="带着模板的数据源 / 项目范围 / 周期跳到「生成报告」">
-              <Button
-                type="primary"
-                size="small"
-                icon={<FundOutlined />}
-                onClick={() => {
-                  // 嵌在监控报表里 → 就地切到「生成报告」页签（同一页内跳转，不开新标签）；
-                  // 独立路由访问时保持原行为：新标签打开监控报表并带上模板。
-                  if (onUse) onUse(r)
-                  else window.open(`/prom/report?template=${r.id}`, '_blank')
-                }}
-              >
-                生成报告
-              </Button>
-            </Tooltip>
-            {r.canEdit && (
+            {/* 语义就是「生成报告」（跳转到生成报告并套用本模板），与生成报告按钮同码 prom:report:create */}
+            {hasPerm('prom:report:create') && (
+              <Tooltip title="带着模板的数据源 / 项目范围 / 周期跳到「生成报告」">
+                <Button
+                  type="primary"
+                  size="small"
+                  icon={<FundOutlined />}
+                  onClick={() => {
+                    // 嵌在监控报表里 → 就地切到「生成报告」页签（同一页内跳转，不开新标签）；
+                    // 独立路由访问时保持原行为：新标签打开监控报表并带上模板。
+                    if (onUse) onUse(r)
+                    else window.open(`/prom/report?template=${r.id}`, '_blank')
+                  }}
+                >
+                  生成报告
+                </Button>
+              </Tooltip>
+            )}
+            {r.canEdit && hasPerm('prom:report:update') && (
               <Tooltip title="修改">
                 <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />
               </Tooltip>
             )}
-            <Tooltip title="复制成自己的模板（共享模板不能直接改，复制后再调整）">
-              <Button size="small" icon={<CopyOutlined />} onClick={() => openCreate(r)} />
-            </Tooltip>
-            {r.canEdit && (
+            {hasPerm('prom:report:create') && (
+              <Tooltip title="复制成自己的模板（共享模板不能直接改，复制后再调整）">
+                <Button size="small" icon={<CopyOutlined />} onClick={() => openCreate(r)} />
+              </Tooltip>
+            )}
+            {r.canEdit && hasPerm('prom:report:delete') && (
               <Tooltip title="删除">
                 <Button size="small" danger icon={<DeleteOutlined />} onClick={() => onDelete(r)} />
               </Tooltip>
@@ -337,7 +344,7 @@ export default function PromReportTemplates({
         ),
       },
     ],
-    [openEdit, openCreate, onDelete, myUid, onUse],
+    [openEdit, openCreate, onDelete, myUid, onUse, hasPerm],
   )
 
   // 按 ownerId 判断「我的」，不能用 canEdit：管理员对所有人的模板都能改，
@@ -357,9 +364,11 @@ export default function PromReportTemplates({
             <Button icon={<ReloadOutlined />} onClick={load} loading={loading}>
               刷新
             </Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate()}>
-              新建模板
-            </Button>
+            {hasPerm('prom:report:create') && (
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate()}>
+                新建模板
+              </Button>
+            )}
           </Space>
         </div>
       )}
@@ -370,9 +379,11 @@ export default function PromReportTemplates({
             <Button icon={<ReloadOutlined />} onClick={load} loading={loading}>
               刷新
             </Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate()}>
-              新建模板
-            </Button>
+            {hasPerm('prom:report:create') && (
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate()}>
+                新建模板
+              </Button>
+            )}
           </Space>
         </div>
       )}

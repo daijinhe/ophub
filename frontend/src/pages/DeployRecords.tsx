@@ -30,6 +30,7 @@ import {
   SimpleUser,
   DeployMiddleware,
 } from '../api/deploy'
+import { useAuth } from '../store/AuthContext'
 
 const { Text, Paragraph } = Typography
 
@@ -58,6 +59,7 @@ function targetCount(targets: string): number {
 
 export default function DeployRecords() {
   const { message } = App.useApp()
+  const { hasPerm } = useAuth()
 
   const [loading, setLoading] = useState(false)
   const [rows, setRows] = useState<DeployJob[]>([])
@@ -238,16 +240,18 @@ export default function DeployRecords() {
           >
             日志
           </Button>
-          <Button
-            size="small"
-            type="primary"
-            ghost
-            icon={<RocketOutlined />}
-            loading={rerunning}
-            onClick={() => handleRerun(r.id)}
-          >
-            重新运行
-          </Button>
+          {hasPerm('deploy:exec') && (
+            <Button
+              size="small"
+              type="primary"
+              ghost
+              icon={<RocketOutlined />}
+              loading={rerunning}
+              onClick={() => handleRerun(r.id)}
+            >
+              重新运行
+            </Button>
+          )}
         </Space>
       ),
     },
@@ -340,7 +344,8 @@ export default function DeployRecords() {
         open={drawerId != null}
         onClose={() => setDrawerId(null)}
         extra={
-          detail && (
+          detail &&
+          hasPerm('deploy:exec') && (
             <Button
               type="primary"
               icon={<RocketOutlined />}

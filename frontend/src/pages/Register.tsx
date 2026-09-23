@@ -4,7 +4,7 @@ import { UserOutlined, LockOutlined, MailOutlined, PhoneOutlined } from '@ant-de
 import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../store/AuthContext'
 import { getRegisterAllow } from '../api/system'
-import { darkTheme } from '../theme'
+import { lightTheme } from '../theme'
 import BrandLogo from '../components/BrandLogo'
 import '../styles/login.css'
 
@@ -39,8 +39,8 @@ export default function Register() {
   }
 
   return (
-    // 与登录页同一套固定深色门户视觉
-    <ConfigProvider theme={darkTheme}>
+    // 与登录页同一套固定浅色门户视觉
+    <ConfigProvider theme={lightTheme}>
       <div className="xy-auth">
         <div className="xy-card" style={{ width: 440 }}>
           <div style={{ textAlign: 'center', marginBottom: 24 }}>
@@ -143,7 +143,7 @@ export default function Register() {
             </>
           )}
         </div>
-        <div className="xy-meta">云枢 OpsHub · v1.7.45</div>
+        <div className="xy-meta">云枢 OpsHub · v1.7.46</div>
       </div>
     </ConfigProvider>
   )
