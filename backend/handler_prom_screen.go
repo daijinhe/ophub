@@ -443,20 +443,22 @@ func promNormalizeConfig(c *PromScreenConfig) {
 	}
 }
 
-// promMasked 判断 (主机, 指标) 是否被屏蔽规则命中：
-// target 对 instance（IP:端口）与展示名做「包含」匹配，不区分大小写。
-// metric = all 表示该主机的所有指标（含离线连通性）都屏蔽。
+// promMatchRule 找出命中 (主机, 指标) 的第一条规则（没命中返回 nil）。
 //
-// ⚠️ 本函数只回答「命中没命中」，**不决定去留** —— 去留由规则模式决定：
-// 风险项走 promBuildIssues 里的 keep()，负载榜走 promRankVisible()。
-func promMasked(cfg *PromScreenConfig, metric, instance, name string) bool {
+// target 对 instance（IP:端口）与展示名做「包含」匹配，不区分大小写；
+// metric = all 表示该主机的所有指标（含离线连通性）都命中。
+//
+// 返回规则本体而不只是 bool，是为了让「被屏蔽目标明细」能带上「它是被哪条规则、什么备注挡掉的」——
+// 光知道「被屏蔽了」但不知道原因，运维还得回配置页对着规则列表自己推。
+func promMatchRule(cfg *PromScreenConfig, metric, instance, name string) *promMaskRule {
 	rules := promParseMasks(cfg.Masks)
 	if len(rules) == 0 {
-		return false
+		return nil
 	}
 	inst := strings.ToLower(instance)
 	nm := strings.ToLower(name)
-	for _, r := range rules {
+	for i := range rules {
+		r := rules[i]
 		if r.Metric != "all" && r.Metric != metric {
 			continue
 		}
@@ -465,10 +467,73 @@ func promMasked(cfg *PromScreenConfig, metric, instance, name string) bool {
 			continue
 		}
 		if strings.Contains(inst, t) || strings.Contains(nm, t) {
-			return true
+			return &rules[i]
 		}
 	}
-	return false
+	return nil
+}
+
+// promMasked 判断 (主机, 指标) 是否被屏蔽规则命中。
+//
+// ⚠️ 本函数只回答「命中没命中」，**不决定去留** —— 去留由规则模式决定，
+// 且必须走 promIssueGate（风险项）/ promRankGate（负载榜）这两个闸门，
+// 别在调用点自己写 if hit { ... }：那正是「大屏用一套口径、明细页用另一套」的来源。
+func promMasked(cfg *PromScreenConfig, metric, instance, name string) bool {
+	return promMatchRule(cfg, metric, instance, name) != nil
+}
+
+// 可见性原因码（v1.7.43）—— 「大屏为什么看不到这一条」的唯一口径。
+//
+//   - risk     等级口径收窄（riskLevel = crit/warn，被收的那一档整体不上屏）
+//   - mask     黑名单模式：命中屏蔽规则
+//   - notwhite 白名单模式：没命中任何规则（= 不在白名单里）
+//   - truncate 清单超过大屏上限（100 条）被截掉 —— 不是因为屏蔽，但同样「没上屏」
+const (
+	promHideRisk     = "risk"
+	promHideMask     = "mask"
+	promHideNotWhite = "notwhite"
+	promHideTruncate = "truncate"
+)
+
+// promHideReasonCN 原因码 → 中文（前后端共用同一套词，别在页面里另写一份）
+func promHideReasonCN(reason string) string {
+	switch reason {
+	case promHideRisk:
+		return "等级口径收窄"
+	case promHideMask:
+		return "屏蔽规则命中"
+	case promHideNotWhite:
+		return "白名单外"
+	case promHideTruncate:
+		return "超出清单上限"
+	}
+	return reason
+}
+
+// promIssueGate 风险项可见性闸门。
+//
+// promBuildIssues 的 keep() 与「被屏蔽目标明细」共用这一份 —— 保证「大屏没展示」
+// 和「明细里说被屏蔽」永远是同一件事。判定顺序必须与原实现一致：**先等级口径，再规则模式**。
+//
+// 返回 ""=可见，否则是原因码。
+func promIssueGate(cfg *PromScreenConfig, level, metric, instance, name string) string {
+	if cfg.RiskLevel == "crit" && level != "crit" {
+		return promHideRisk
+	}
+	if cfg.RiskLevel == "warn" && level != "warn" {
+		return promHideRisk
+	}
+	hit := promMasked(cfg, metric, instance, name)
+	if cfg.MaskMode == "whitelist" {
+		if hit {
+			return ""
+		}
+		return promHideNotWhite
+	}
+	if hit {
+		return promHideMask
+	}
+	return ""
 }
 
 // promRankVisible 判断某主机能不能出现在「指标 metric 的负载榜」上（v1.7.42）。
@@ -481,12 +546,25 @@ func promMasked(cfg *PromScreenConfig, metric, instance, name string) bool {
 //   - blacklist：命中的主机不进该指标的榜；
 //   - whitelist：该指标的榜上**只留**命中的主机 —— 想「大屏只盯这几台机器」，
 //     写一条 metric=all 的规则即可，四个榜连带风险项一起收窄。
-func promRankVisible(cfg *PromScreenConfig, metric, instance, name string) bool {
+//
+// promRankGate 负载榜可见性闸门（与 promIssueGate 同源，但**不含等级口径那道闸**）。
+// 返回 ""=可见，否则 promHideMask / promHideNotWhite。
+func promRankGate(cfg *PromScreenConfig, metric, instance, name string) string {
 	hit := promMasked(cfg, metric, instance, name)
 	if cfg.MaskMode == "whitelist" {
-		return hit
+		if hit {
+			return ""
+		}
+		return promHideNotWhite
 	}
-	return !hit
+	if hit {
+		return promHideMask
+	}
+	return ""
+}
+
+func promRankVisible(cfg *PromScreenConfig, metric, instance, name string) bool {
+	return promRankGate(cfg, metric, instance, name) == ""
 }
 
 var (
@@ -571,19 +649,11 @@ func promBuildIssues(hosts []promHostStat, cfg *PromScreenConfig, limit int) ([]
 		rank float64 // 排序权重：严重优先，其次数值大优先
 	}
 	// keep 判定「这条风险项该不该出现在大屏上」：先按等级口径筛，再按规则模式处理。
+	// ⚠️ 闸门逻辑全部收在 promIssueGate 里 —— 「被屏蔽目标明细」页要按同一份口径反推
+	// 「谁被挡掉了、为什么」，两处各写一份必然漂移（改了这里忘了那里，明细就变成骗人的）。
 	// ⚠️ 被过滤掉的项**既不进清单也不进统计**（否则大屏 KPI 与清单对不上）。
 	keep := func(level, metric, instance, name string) bool {
-		if cfg.RiskLevel == "crit" && level != "crit" {
-			return false
-		}
-		if cfg.RiskLevel == "warn" && level != "warn" {
-			return false
-		}
-		hit := promMasked(cfg, metric, instance, name)
-		if cfg.MaskMode == "whitelist" {
-			return hit
-		}
-		return !hit
+		return promIssueGate(cfg, level, metric, instance, name) == ""
 	}
 	items := make([]item, 0, len(hosts))
 	hostSet := map[string]bool{}

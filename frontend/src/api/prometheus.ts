@@ -508,6 +508,134 @@ export function promCollectNow(ds?: number): Promise<{ msg: string; generatedAt:
   return unwrap(api.post('/prom/collect', undefined, { params: ds ? { ds } : {} }))
 }
 
+/* ---------------- 被屏蔽目标明细（v1.7.43） ---------------- */
+
+/**
+ * 「大屏为什么看不到这一条」的原因码（后端 handler_prom_masked.go 的同一套常量）：
+ *  - `mask`     黑名单模式：命中屏蔽规则
+ *  - `notwhite` 白名单模式：不在白名单里
+ *  - `risk`     等级口径收窄（riskLevel = crit / warn 时被收掉的那一档）
+ *  - `truncate` 清单超过大屏上限（100 条）被截掉 —— 不是被屏蔽，但同样没上屏
+ */
+export type PromHideReason = 'mask' | 'notwhite' | 'risk' | 'truncate'
+
+/** 本次快照生效的判级阈值（表格给水位标色用，避免前端硬编码） */
+export interface PromHiddenThresholds {
+  cpuWarn: number
+  cpuCrit: number
+  memWarn: number
+  memCrit: number
+  diskWarn: number
+  diskCrit: number
+}
+
+/** 被屏蔽的主机（目标维度）：这条回答「哪些目标被屏蔽了、它现在什么水位」 */
+export interface PromHiddenHost {
+  instance: string
+  hostname: string
+  name: string
+  department: string
+  system: string
+  env: string
+  deployserver: string
+  up: boolean
+  cpu: number
+  mem: number
+  disk: number
+  net: number
+  /** 被屏蔽的维度：cpu | mem | disk | net | offline */
+  dims: string[]
+  dimsCN: string[]
+  risk: 'none' | 'warn' | 'crit'
+  riskCN: string
+  reason: PromHideReason
+  reasonCN: string
+  /** 命中的规则描述（黑名单模式才有） */
+  rules: string[]
+}
+
+/** 被隐藏的风险项（条目维度）：字段与大屏清单一致，额外带原因与主机当前水位 */
+export interface PromHiddenIssue extends PromIssue {
+  reason: PromHideReason
+  reasonCN: string
+  ruleTarget?: string
+  ruleMetric?: string
+  note?: string
+  hostUp: boolean
+  hostCpu: number
+  hostMem: number
+  hostDisk: number
+  hostNet: number
+}
+
+/** 被屏蔽掉的榜位：`wouldRank` = 不屏蔽时的名次（1 起），≤ topN 才是「本来能上屏」的 */
+export interface PromHiddenRank {
+  metric: 'cpu' | 'mem' | 'disk' | 'net'
+  metricCN: string
+  wouldRank: number
+  instance: string
+  hostname: string
+  name: string
+  department: string
+  system: string
+  env: string
+  deployserver: string
+  value: number
+  reason: PromHideReason
+  reasonCN: string
+  ruleTarget?: string
+  note?: string
+}
+
+export interface PromHiddenCounts {
+  fleetHosts: number
+  hiddenHosts: number
+  issueTotal: number
+  issueShown: number
+  issueHidden: number
+  maskedIssues: number
+  riskIssues: number
+  truncIssues: number
+  rankSlots: number
+  rankBeyond: number
+  hostsCapped: boolean
+  issuesCapped: boolean
+}
+
+/** 提示条：级别由后端判定（`error` = 需要马上处理，如白名单空规则导致全隐藏） */
+export interface PromHiddenNotice {
+  level: 'error' | 'warning' | 'info'
+  text: string
+}
+
+export interface PromHiddenResp {
+  dsId: number
+  dsName: string
+  ready: boolean
+  collecting: boolean
+  msg: string
+  generatedAt: string
+  collectMs: number
+  maskMode: PromMaskMode
+  riskLevel: PromRiskLevel
+  topN: number
+  masks: PromMaskRule[]
+  thresholds: PromHiddenThresholds
+  hosts: PromHiddenHost[]
+  issues: PromHiddenIssue[]
+  ranks: PromHiddenRank[]
+  counts: PromHiddenCounts
+  notices: PromHiddenNotice[]
+}
+
+/**
+ * 被屏蔽目标明细：大屏上看不到的主机 / 风险项 / 榜位 + 它们当前的实时指标。
+ * 服务端读快照现算（不查 Prometheus），毫秒级。
+ */
+export function promHidden(ds?: number): Promise<PromHiddenResp> {
+  return unwrap(api.get('/prom/hidden', { params: ds ? { ds } : {} }))
+}
+
 /* ---------------- 报告记录（v1.7.36） ---------------- */
 
 /** 列表项（不含明细数据，避免列表接口过大） */

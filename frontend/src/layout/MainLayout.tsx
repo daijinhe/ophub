@@ -21,6 +21,7 @@ import {
   ControlOutlined,
   FileTextOutlined,
   AlertOutlined,
+  EyeInvisibleOutlined,
   DotChartOutlined,
   FundOutlined,
   NodeIndexOutlined,
@@ -225,6 +226,10 @@ export default function MainLayout() {
         // 大屏管理（v1.7.41）：展示内容 / 风险与屏蔽 / 阈值与采集 三页签，
         // v1.7.36 独立出去的「屏蔽规则」已并回本页。
         { key: '/prom/screen-admin', icon: <ControlOutlined />, label: '大屏管理', perm: 'prom:manage' },
+        // 被屏蔽目标（v1.7.43）：屏蔽的「审计视图」—— 大屏上看不到的目标 / 风险项 / 榜位都在这里，
+        // 并附当前实时指标。屏蔽不能让风险凭空消失，得有地方能看到「我把什么藏起来了」。
+        // 属查看动作（prom:view）：漏掉风险的人需要自己能看到，不该只让管理员看。
+        { key: '/prom/hidden', icon: <EyeInvisibleOutlined />, label: '被屏蔽目标', perm: 'prom:view' },
       ],
     },
 

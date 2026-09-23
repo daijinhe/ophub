@@ -307,6 +307,9 @@ func main() {
 			auth.PUT("/prom/screen-config", RequirePermission("prom:manage"), PromSaveScreenConfig)
 			auth.GET("/prom/snapshot", RequireAnyPermission("prom:view", "prom:screen"), PromGetSnapshot)
 			auth.POST("/prom/collect", RequireAnyPermission("prom:manage", "prom:view", "prom:screen"), PromCollectNow)
+			// 被屏蔽目标明细（v1.7.43）：审计视图 —— 大屏上看不到的主机 / 风险项 / 榜位都在这里，
+			// 并附带它们当前的实时指标。只读，prom:view 即可（大屏专属账号 prom:screen 不需要它）。
+			auth.GET("/prom/hidden", RequireAnyPermission("prom:view", "prom:manage"), PromGetHidden)
 		}
 	}
 

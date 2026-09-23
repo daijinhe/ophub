@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Alert,
   Button,
@@ -34,6 +35,7 @@ import {
   EyeOutlined,
   FireOutlined,
   FundOutlined,
+  EyeInvisibleOutlined,
   HddOutlined,
   InfoCircleOutlined,
   PieChartOutlined,
@@ -166,7 +168,22 @@ export default function PromScreenAdmin() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [collectingId, setCollectingId] = useState<number | null>(null)
-  const [tab, setTab] = useState<string>('content')
+  const navigate = useNavigate()
+  const [sp, setSp] = useSearchParams()
+  // 页签与 URL 同步（v1.7.43）：「被屏蔽目标」页的「屏蔽规则配置」按钮要能直接落到本页的
+  // 风险页签（/prom/screen-admin?tab=risk）。非法值一律落回默认页签 —— 否则手改 URL 会
+  // 出现「三个页签一个都没选中」的空白 Tabs。
+  const [tab, setTab] = useState<string>(() => {
+    const t = sp.get('tab')
+    return t === 'risk' || t === 'collect' ? t : 'content'
+  })
+  const switchTab = (k: string) => {
+    setTab(k)
+    const next = new URLSearchParams(sp)
+    if (k === 'content') next.delete('tab')
+    else next.set('tab', k)
+    setSp(next, { replace: true })
+  }
   const [form] = Form.useForm()
   const [tick, setTick] = useState(0)
 
@@ -488,7 +505,7 @@ export default function PromScreenAdmin() {
       >
         <Tabs
           activeKey={tab}
-          onChange={setTab}
+          onChange={switchTab}
           items={[
             /* ==================== ① 展示内容 ==================== */
             {
@@ -709,6 +726,10 @@ export default function PromScreenAdmin() {
                     title="屏蔽规则"
                     extra={
                       <Space size={4}>
+                        {/* v1.7.43：屏蔽完必须能「看得见自己屏蔽了什么」，否则等于把风险藏起来没人管 */}
+                        <Button size="small" icon={<EyeInvisibleOutlined />} onClick={() => navigate('/prom/hidden')}>
+                          被屏蔽明细
+                        </Button>
                         <Button size="small" icon={<PlusOutlined />} onClick={addMask}>
                           添加规则
                         </Button>
@@ -786,7 +807,7 @@ export default function PromScreenAdmin() {
                     showIcon
                     icon={<CheckCircleOutlined />}
                     message="保存后立即生效，不必等下一轮采集"
-                    description="风险口径、规则模式、规则明细、四个负载榜都用服务端当前快照现场重算，保存即刷新大屏。"
+                    description="风险口径、规则模式、规则明细、四个负载榜都用服务端当前快照现场重算，保存即刷新大屏。想确认「到底把什么挡掉了、它们现在什么水位」，去「被屏蔽目标」页看 —— 那里按同一套口径列出全部被隐藏的目标、风险项与榜位。"
                   />
                 </>
               ),
