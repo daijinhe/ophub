@@ -219,7 +219,7 @@ export function buildWorkbook(
     ['涉及部门', `${byDept.length} 个`],
     [],
     ['四、风险主机 TOP10'],
-    ['所属部门', '项目名', '虚拟机IPv4', '环境', '业务环境', '最高峰值%', '主要风险项', '风险'],
+    ['所属部门', '项目名', '虚拟机IPv4', '环境', '业务环境', '最高峰值%'],
     ...topRisk.map((x) => [
       x.r.department || '',
       x.r.system || '',
@@ -227,8 +227,6 @@ export function buildWorkbook(
       x.r.env || '',
       x.r.deployserver || '',
       Number(x.m.value.toFixed(1)),
-      x.m.name,
-      riskLevel(x.r, th),
     ]),
     [],
     ['五、Sheet 说明'],
@@ -237,8 +235,8 @@ export function buildWorkbook(
     ['资源趋势', opts.trendLimit === 0 ? '（数据量超限，本期已省略）' : `${fleetWord}均值随时间变化`],
   ]
   const wsOv = XLSX.utils.aoa_to_sheet(ov)
-  setCols(wsOv, [24, 20, 18, 14, 14, 14, 14, 12])
-  wsOv['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 7 } }]
+  setCols(wsOv, [24, 20, 18, 14, 14, 14])
+  wsOv['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 5 } }]
   XLSX.utils.book_append_sheet(wb, wsOv, '报告概览')
 
   /* ---------- Sheet2 分组汇总 ---------- */
