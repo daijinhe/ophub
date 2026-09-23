@@ -135,6 +135,10 @@ def api(method, path, body=None, token=None):
             return e.code, json.loads(raw or "{}")
         except Exception:
             return e.code, {"raw": raw}
+    except Exception:
+        # 连接被重置 / 服务正在重启（B9 会 docker restart 后端）——视为「无响应」返回 0，
+        # 而不是让 RemoteDisconnected 冒到顶层把整轮验证崩掉。调用方按状态码 0 处理即可。
+        return 0, {}
 
 
 def login(u=USERNAME, p=PASSWORD):
