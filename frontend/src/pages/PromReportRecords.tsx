@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Button,
@@ -93,6 +93,7 @@ function scoreColor(s: number): string {
 export default function PromReportRecords({
   embedded = false,
   viewId = null,
+  reloadSeq = 0,
   onCloseView,
 }: {
   /**
@@ -102,6 +103,12 @@ export default function PromReportRecords({
   embedded?: boolean
   /** 深链要打开的报告 id（由外层从 ?view= 解析后传入；为 null 表示没有深链） */
   viewId?: number | null
+  /**
+   * 列表刷新信号。三个页签都 forceRender（只挂载一次），「生成报告」页归档出
+   * 新记录后本页签收不到通知 —— 症状是「刚生成的报告在记录里找不到，刷新浏览器才有」。
+   * 外层每次归档或切到本页签时把这个序号 +1。
+   */
+  reloadSeq?: number
   /** 抽屉被关掉时通知外层清掉 ?view= 参数 */
   onCloseView?: () => void
 } = {}) {
@@ -171,6 +178,15 @@ export default function PromReportRecords({
   useEffect(() => {
     load()
   }, [load])
+
+  // 外层通知「有新归档 / 切到了本页签」时重拉。用 ref 记住上次处理的序号：
+  // 这样 load 因筛选变化而重建时（它被上面那个 effect 依赖）不会重复打请求。
+  const lastReloadSeq = useRef(reloadSeq)
+  useEffect(() => {
+    if (reloadSeq === lastReloadSeq.current) return
+    lastReloadSeq.current = reloadSeq
+    load()
+  }, [reloadSeq, load])
 
   // 深链支持：从监控报表页「查看」带过来的 ?view=<id>。
   // 嵌入模式由外层解析 URL 后通过 viewId 传入（外层还负责在关抽屉时清掉参数）；

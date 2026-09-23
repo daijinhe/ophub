@@ -90,7 +90,7 @@ export default function Login() {
             )}
           </div>
         </div>
-        <div className="xy-meta">云枢 OpsHub · v1.7.46</div>
+        <div className="xy-meta">云枢 OpsHub · v1.7.48</div>
       </div>
     </ConfigProvider>
   )

@@ -104,15 +104,29 @@ function fmtPct(v: number | undefined | null): string {
  */
 function PromReportGenerate({
   onOpenArchived,
+  onArchived,
+  onTemplatesChanged,
   tplReq,
+  reloadSeq = 0,
 }: {
   /** 点归档提示里的「查看」→ 由外层切到「报告记录」页签并带上 ?view= */
   onOpenArchived?: (id: number) => void
+  /** 本次生成已归档（写入「报告记录」）→ 通知外层让报告记录页签重拉，否则切过去看不到刚生成的那条 */
+  onArchived?: () => void
+  /** 本页「另存为模板」建/改/删了模板 → 通知外层让「报表模板」页签重拉 */
+  onTemplatesChanged?: () => void
   /**
    * 外层（报表模板页签）带着模板跳过来。用「请求序号」而不是裸 id：
    * 同一个模板被点第二次也要能再次生效，裸 id 相同的话 effect 不会触发。
    */
   tplReq?: { id: number; seq: number } | null
+  /**
+   * 模板列表的刷新信号。三个页签都是 forceRender，本组件只挂载一次，
+   * 「报表模板」页签里新建 / 改名 / 删除模板后这里收不到任何通知 ——
+   * 症状就是「刚建的模板在下拉里找不到，刷新浏览器才有」。
+   * 外层每次模板集合可能变化就把这个序号 +1，这里据此重新拉取。
+   */
+  reloadSeq?: number
 } = {}) {
   const { hasPerm } = useAuth()
   const [dss, setDss] = useState<PromDataSource[]>([])
@@ -182,10 +196,15 @@ function PromReportGenerate({
   const loadTemplates = useCallback(async () => {
     try {
       const r = await listPromReportTemplates()
-      setTemplates(r.list || [])
+      const list = r.list || []
+      setTemplates(list)
       setMyUid(r.uid || 0)
+      // 选中的模板可能已被删除（在「报表模板」页签删的，本组件此前不知情）→ 清掉选中。
+      // 不清的话 Select 找不到对应 option 会退化成显示一个裸数字 id，比空着更让人困惑。
+      setTemplateId((cur) => (cur && !list.some((t) => t.id === cur) ? undefined : cur))
     } catch (e) {
-      // 模板加载失败不该挡住出报告：只是没有模板可选用
+      // 模板加载失败不该挡住出报告：只是没有模板可选用。
+      // 这里**不动** templateId —— 加载失败不等于模板被删，清掉会让用户白丢选择。
       message.warning('加载报表模板失败:' + errMsg(e))
       setTemplates([])
     }
@@ -194,6 +213,15 @@ function PromReportGenerate({
   useEffect(() => {
     loadTemplates()
   }, [loadTemplates])
+
+  // 「报表模板」页签里增删改模板后重新拉取（reloadSeq 由外层递增）。
+  // 只在序号真的变化时才请求，挂载首帧不重复打一次（首次由上面的 effect 负责）。
+  const lastReloadSeq = useRef(reloadSeq)
+  useEffect(() => {
+    if (reloadSeq === lastReloadSeq.current) return
+    lastReloadSeq.current = reloadSeq
+    loadTemplates()
+  }, [reloadSeq, loadTemplates])
 
   /** 拉当前数据源的项目清单（项目范围的唯一来源，避免手输项目名写错） */
   const loadProjects = useCallback(async (dsId: number | null) => {
@@ -331,7 +359,11 @@ function PromReportGenerate({
       )
       const rep = r.report
       setReport(rep)
-      if (r.id) setArchivedId(r.id)
+      if (r.id) {
+        setArchivedId(r.id)
+        // 让「报告记录」页签重拉：它是独立挂载的，不通知就看不到这条新归档
+        onArchived?.()
+      }
       if (!rep.rows || rep.rows.length === 0) {
         // 后端会给出「没数据」的具体原因（是没接 node_exporter，还是项目没 target）
         message.warning(
@@ -352,7 +384,7 @@ function PromReportGenerate({
     } finally {
       setLoading(false)
     }
-  }, [ds, period, ref, systems, templateId, tplDirty, selectedHosts])
+  }, [ds, period, ref, systems, templateId, tplDirty, selectedHosts, onArchived])
 
   const refPicker = useMemo(() => {
     if (period === 'month') return <DatePicker picker="month" value={ref} onChange={setRef} allowClear={false} />
@@ -419,12 +451,16 @@ function PromReportGenerate({
         setTemplateId(r.template.id)
         setTplDirty(false)
       }
+      // 通知外层「报表模板」页签重拉（本页自己那份已在上面的 loadTemplates 里刷新）。
+      // 外层的版本号同时也会回到本组件再拉一次，多一个轻量 GET，换的是两个页签永远一致 ——
+      // 反之（只刷自己不通知）就是用户反馈的「刚建的模板在模板页 / 下拉里找不到」。
+      onTemplatesChanged?.()
     } catch (e) {
       message.error(errMsg(e))
     } finally {
       setTplSaving(false)
     }
-  }, [tplForm, ds, period, systems, tplModal, loadTemplates])
+  }, [tplForm, ds, period, systems, tplModal, loadTemplates, onTemplatesChanged])
 
   const removeTemplate = useCallback(() => {
     if (!curTemplate) return
@@ -441,12 +477,14 @@ function PromReportGenerate({
           setTemplateId(undefined)
           setTplDirty(false)
           await loadTemplates()
+          // 同样通知「报表模板」页签：它那份列表里还留着刚删掉的这条
+          onTemplatesChanged?.()
         } catch (e) {
           message.error(errMsg(e))
         }
       },
     })
-  }, [curTemplate, loadTemplates])
+  }, [curTemplate, loadTemplates, onTemplatesChanged])
 
   /* ---------- 图表 ---------- */
   const barOption = useMemo(() => {
@@ -1077,6 +1115,16 @@ export default function PromReportPage() {
     return 'generate'
   })
   const [tplReq, setTplReq] = useState<{ id: number; seq: number } | null>(null)
+  // 模板集合的版本号。三个页签都 forceRender（同时挂载且不再重挂），
+  // 「报表模板」页签改了模板后必须显式告诉「生成报告」页签重新拉取，
+  // 否则下拉里永远看不到刚建/刚改名的模板 —— 只能刷新浏览器。
+  const [tplSeq, setTplSeq] = useState(0)
+  // 归档记录的版本号：同理，「生成报告」页归档后要让「报告记录」页签重拉
+  const [recSeq, setRecSeq] = useState(0)
+  // 用 useCallback 固定引用：否则子组件里依赖这两个回调用 useCallback 的
+  // generate / submit 每次渲染都被重建（虽无功能问题，但没必要）
+  const bumpTplSeq = useCallback(() => setTplSeq((n) => n + 1), [])
+  const bumpRecSeq = useCallback(() => setRecSeq((n) => n + 1), [])
 
   // 深链 ?view=<id>：取出来交给「报告记录」页签打开详情抽屉
   const viewId = useMemo(() => {
@@ -1118,7 +1166,7 @@ export default function PromReportPage() {
           <BarChartOutlined style={{ marginRight: 8 }} />
           Prometheus 监控报表
         </Title>
-        <Tag color="purple">v1.7.41</Tag>
+        <Tag color="purple">v1.7.48</Tag>
         <Text type="secondary" style={{ fontSize: 12 }}>
           定口径（模板）→ 出报告 → 回看历史，都在这一页
         </Text>
@@ -1128,6 +1176,11 @@ export default function PromReportPage() {
         activeKey={tab}
         onChange={(k) => {
           setTab(k)
+          // 切到「生成报告」/「报告记录」时顺手重拉一次做兜底：正常路径由「报表模板」
+          // 页增删改（onChanged）与生成归档（onArchived）通知，但模板/记录也可能在
+          // 别的标签页或别人那里变过。这两个接口都是轻量 GET，重拉无副作用。
+          if (k === 'generate' || k === 'templates') bumpTplSeq()
+          if (k === 'records') bumpRecSeq()
           // 页签写回 URL：刷新 / 分享链接能落到同一个页签。
           // 离开「报告记录」时顺手清掉 view —— 否则再切回来会莫名其妙弹出上次的抽屉。
           setSp(
@@ -1149,7 +1202,15 @@ export default function PromReportPage() {
               </span>
             ),
             forceRender: true,
-            children: <PromReportGenerate tplReq={tplReq} onOpenArchived={openArchived} />,
+            children: (
+              <PromReportGenerate
+                tplReq={tplReq}
+                reloadSeq={tplSeq}
+                onArchived={bumpRecSeq}
+                onTemplatesChanged={bumpTplSeq}
+                onOpenArchived={openArchived}
+              />
+            ),
           },
           {
             key: 'templates',
@@ -1162,6 +1223,9 @@ export default function PromReportPage() {
             children: (
               <PromReportTemplates
                 embedded
+                // 双向：本页增删改 → 通知生成页重拉；生成页「另存为模板」→ 本页重拉
+                onChanged={bumpTplSeq}
+                reloadSeq={tplSeq}
                 onUse={(t) => {
                   // 就地切到「生成报告」并套用模板 —— 不再开新标签页
                   setTplReq({ id: t.id, seq: Date.now() })
@@ -1178,7 +1242,7 @@ export default function PromReportPage() {
               </span>
             ),
             forceRender: true,
-            children: <PromReportRecords embedded viewId={viewId} onCloseView={clearView} />,
+            children: <PromReportRecords embedded viewId={viewId} reloadSeq={recSeq} onCloseView={clearView} />,
           },
         ]}
       />

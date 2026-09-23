@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Button,
@@ -64,6 +64,8 @@ const PERIOD_LABEL: Record<Period, string> = {
 export default function PromReportTemplates({
   embedded = false,
   onUse,
+  onChanged,
+  reloadSeq = 0,
 }: {
   /** 嵌在「监控报表」页签里时置 true：不渲染页面级标题栏（标题由外层 Tabs 承载） */
   embedded?: boolean
@@ -72,6 +74,17 @@ export default function PromReportTemplates({
    * 而不是新开一个浏览器标签页 —— 同一页里来回跳转比开一堆标签更好用。
    */
   onUse?: (t: PromReportTemplate) => void
+  /**
+   * 模板集合发生变化（新建 / 保存 / 删除）后回调。
+   * 本页签与「生成报告」页签各自独立拉取模板清单（三个页签 forceRender，只挂载一次），
+   * 不通知的话，刚建的模板在生成页的下拉里就找不到 —— 用户得刷新浏览器。
+   */
+  onChanged?: () => void
+  /**
+   * 列表刷新信号（onChanged 的另一半）：在「生成报告」页点「另存为模板」建的模板，
+   * 本页签同样收不到通知，要靠外层递增这个序号触发重拉。
+   */
+  reloadSeq?: number
 } = {}) {
   const { hasPerm } = useAuth()
   const [dss, setDss] = useState<PromDataSource[]>([])
@@ -114,6 +127,15 @@ export default function PromReportTemplates({
       .catch(() => undefined)
     load()
   }, [load])
+
+  // 外层通知模板集合变了（典型：在「生成报告」页点了「另存为模板」）时重拉。
+  // 用 ref 记住上次处理的序号，避免 load 重建时重复打请求。
+  const lastReloadSeq = useRef(reloadSeq)
+  useEffect(() => {
+    if (reloadSeq === lastReloadSeq.current) return
+    lastReloadSeq.current = reloadSeq
+    load()
+  }, [reloadSeq, load])
 
   /** 表单里的数据源变了就重拉项目清单（项目名是 per-数据源 的） */
   const loadFormProjects = useCallback(async (dsId: number | null) => {
@@ -204,12 +226,14 @@ export default function PromReportTemplates({
       }
       setOpen(false)
       load()
+      // 通知外层（「生成报告」页签）重新拉模板清单，否则它那份缓存里没有刚建的模板
+      onChanged?.()
     } catch (e) {
       message.error(errMsg(e))
     } finally {
       setSaving(false)
     }
-  }, [form, editId, load])
+  }, [form, editId, load, onChanged])
 
   const onDelete = useCallback(
     (t: PromReportTemplate) => {
@@ -224,13 +248,15 @@ export default function PromReportTemplates({
             await deletePromReportTemplate(t.id)
             message.success('模板已删除')
             load()
+            // 同上：删除也要让外层的下拉立刻少掉这一项
+            onChanged?.()
           } catch (e) {
             message.error(errMsg(e))
           }
         },
       })
     },
-    [load],
+    [load, onChanged],
   )
 
   const columns = useMemo(
