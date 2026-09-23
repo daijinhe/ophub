@@ -63,16 +63,76 @@ export function isScoped(report: PromReport): boolean {
   return (report.systems || []).length > 0
 }
 
-/**
- * 文件名里的范围后缀。同一周期导出多份项目报告时，
- * 没有后缀会得到一批同名文件（浏览器自动加 (1)(2)），根本分不清谁是谁。
+/* ---------------- 导出文件名（v1.7.47 定稿口径） ----------------
+ * 格式：<模板名称>_<周期>_<周期码>_<导出日期>.xlsx
+ * 例：季度巡检模板_季度_2026Q3_20260829.xlsx
+ *
+ * - 模板名称：生成报告时套用的「报表模板」名字；自由生成（未套模板）回退「Prometheus监控报表」
+ * - 周期：月度 / 季度 / 年度（与页面周期标签同口径）
+ * - 周期码：按周期形态自适应 —— 季度 `2026Q3` / 月度 `2026-09` / 年度 `2026`
+ *   （优先取报告窗口起点，缺省时解析 periodCN）
+ * - 导出日期：**导出当天**的 YYYYMMDD，不带时分 —— 同一份报告导两次应当同名，
+ *   时分秒只会让「同一份」看起来像两份
+ *
+ * ⚠️ 文件名已不再带「项目范围」段（v1.7.47 按需求去掉）：
+ *   同一周期的多份项目报告会同名（浏览器自动加 (1)(2)），
+ *   因此**文件内部必须写出范围** —— 概览 Sheet 的「报告范围」行（scopeTextOf），
+ *   且 Excel 内「生成时间」仍精确到分钟。改这里时别把 scopeTextOf 一起去掉。
  */
-export function scopeFileSuffix(report: PromReport): string {
-  const sys = report.systems || []
-  if (sys.length === 0) return ''
-  const head = sys.length <= 2 ? sys.join('、') : `${sys[0]}等${sys.length}个项目`
-  // 文件名非法字符替换掉，避免下载时被浏览器截断
-  return `_${head.replace(/[\\/:*?"<>|\s]/g, '_')}`
+export const PROM_REPORT_FILE_FALLBACK = 'Prometheus监控报表'
+
+const PERIOD_FILE_LABEL: Record<PromReport['period'], string> = {
+  month: '月度',
+  quarter: '季度',
+  year: '年度',
+}
+
+/** 文件名片段清洗：Windows/macOS 都不接受的字符统一换成下划线 */
+function safeFileSeg(s: string): string {
+  return (s || '')
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** 周期码：季度 2026Q3 / 月度 2026-09 / 年度 2026 */
+export function periodFileCode(
+  period: PromReport['period'],
+  start?: string,
+  periodCN?: string,
+): string {
+  const m = /^(\d{4})-(\d{2})/.exec(start || '')
+  if (m) {
+    if (period === 'quarter') return `${m[1]}Q${Math.floor((Number(m[2]) - 1) / 3) + 1}`
+    if (period === 'month') return `${m[1]}-${m[2]}`
+    return m[1]
+  }
+  const cn = periodCN || ''
+  const q = /(\d{4})\s*年\s*Q(\d)/.exec(cn)
+  if (q) return `${q[1]}Q${q[2]}`
+  const mo = /(\d{4})\s*年\s*(\d{1,2})\s*月/.exec(cn)
+  if (mo) return `${mo[1]}-${mo[2].padStart(2, '0')}`
+  return (/^(\d{4})/.exec(cn) || [])[1] || ''
+}
+
+/** 报告文件名：<模板名称>_<周期>_<周期码>_<导出日期>.xlsx */
+export function promReportFileName(opts: {
+  period: PromReport['period']
+  periodCN?: string
+  /** 报告窗口起点（YYYY-MM-DD），用来派生周期码 */
+  start?: string
+  /** 生成时套用的报表模板名；未套模板则回退默认名 */
+  templateName?: string
+  /** 导出日期（YYYYMMDD），缺省取当天 */
+  at?: string
+}): string {
+  const segs = [
+    safeFileSeg(opts.templateName || '') || PROM_REPORT_FILE_FALLBACK,
+    PERIOD_FILE_LABEL[opts.period] || '报告',
+    periodFileCode(opts.period, opts.start, opts.periodCN),
+    opts.at || dayjs().format('YYYYMMDD'),
+  ].filter(Boolean)
+  return `${segs.join('_')}.xlsx`
 }
 
 /** 该主机最主要的风险项（取峰值最高的那一项） */
@@ -345,7 +405,7 @@ export function exportPromReportXlsx(
       a.href = URL.createObjectURL(blob)
       a.download =
         fileName ||
-        `Prometheus监控报表_${report.periodCN}${scopeFileSuffix(report)}_${dayjs().format('YYYYMMDD')}.xlsx`
+        promReportFileName({ period: report.period, periodCN: report.periodCN, start: report.start })
       a.click()
       URL.revokeObjectURL(a.href)
       return { ok: true, bytes: out.byteLength, tip: s.tip }

@@ -43,7 +43,13 @@ import {
   type PromReportRecordDetail,
   type PromReportRow,
 } from '../api/prometheus'
-import { exportPromReportXlsx, healthScore, riskLevel, scopeFileSuffix, thOf } from '../utils/promReportExcel'
+import {
+  exportPromReportXlsx,
+  healthScore,
+  promReportFileName,
+  riskLevel,
+  thOf,
+} from '../utils/promReportExcel'
 import { useAuth } from '../store/AuthContext'
 
 const { Title, Text } = Typography
@@ -211,8 +217,14 @@ export default function PromReportRecords({
       scopeTargets: 0,
       hint: '',
     }
-    // 文件名带范围后缀：同一周期的多份项目报告要能区分开
-    const file = `Prometheus监控报表_${d.periodCN}${scopeFileSuffix(rep)}_${dayjs(d.createdAt).format('YYYYMMDD-HHmm')}.xlsx`
+    // 文件名口径（v1.7.47）：<模板名称>_<周期>_<周期码>_<导出日期>.xlsx
+    // 日期段取**导出当天**；这份报告自身的生成时间写在 Excel 概览的「生成时间」行里（下一行的第 4 个参数）
+    const file = promReportFileName({
+      period: d.period,
+      periodCN: d.periodCN,
+      start: d.start,
+      templateName: d.templateName,
+    })
     const r = exportPromReportXlsx(rep, d.dsName, file, dayjs(d.createdAt).format('YYYY-MM-DD HH:mm'))
     if (r.ok) {
       message.success(`已导出（${(r.bytes / 1024 / 1024).toFixed(2)}MB）${r.tip ? ' · ' + r.tip : ''}`)

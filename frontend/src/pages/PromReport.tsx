@@ -60,8 +60,8 @@ import {
   exportPromReportXlsx,
   healthScore,
   isScoped,
+  promReportFileName,
   riskLevel,
-  scopeFileSuffix,
   scopeTextOf,
   thOf,
 } from '../utils/promReportExcel'
@@ -552,7 +552,12 @@ function PromReportGenerate({
     if (!report) return
     const dsName = dss.find((x) => x.id === ds)?.name || '—'
     try {
-      const file = `Prometheus监控报表_${report.periodCN}${scopeFileSuffix(report)}_${dayjs().format('YYYYMMDD-HHmm')}.xlsx`
+      const file = promReportFileName({
+        period: report.period,
+        periodCN: report.periodCN,
+        start: report.start,
+        templateName: curTemplate?.name,
+      })
       const r = exportPromReportXlsx(report, dsName, file)
       if (r.ok) {
         message.success(`导出成功（${(r.bytes / 1024 / 1024).toFixed(2)}MB）${r.tip ? ' · ' + r.tip : ''}`)
@@ -562,7 +567,7 @@ function PromReportGenerate({
     } catch (e: any) {
       message.error('导出失败:' + (e?.message || e))
     }
-  }, [report, ds, dss])
+  }, [report, ds, dss, curTemplate])
 
   /* ---------- 明细表（列顺序与导出 Excel 完全一致） ---------- */
   const th = useMemo(() => thOf(report?.config), [report?.config])
