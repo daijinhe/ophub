@@ -47,13 +47,21 @@ const { useBreakpoint } = Grid
 // 子项可用 perm（单码）或 perms（任一命中即显示，any-of，用于「巡检大屏」
 // 这种既给 inspection:view 又给 inspection:screen 的共用入口）；
 // 任意无可见子项的分组自动隐藏，既避免越权进入，也避免有权限页面被错藏。
-function filterMenuByPerm(items: any[], hasPerm: (code: string) => boolean): any[] {
+//
+// includeHidden：是否把 hidden 项（不占菜单、但真实存在且可达的页面，如 /prom/hidden）
+// 一并带回。**菜单渲染必须用 false**（否则隐藏项会漏到侧边栏），
+// 页头标题 / 选中态反查必须用 true —— 抽屉掉后者会让页头退化成兜底的「概览」。
+function filterMenuByPerm(items: any[], hasPerm: (code: string) => boolean, includeHidden = false): any[] {
   const out: any[] = []
   for (const it of items) {
     const codes: string[] = it.perms || (it.perm ? [it.perm] : [])
     if (codes.length > 0 && !codes.some(hasPerm)) continue
+    if (it.hidden) {
+      if (includeHidden) out.push(it)
+      continue
+    }
     if (it.children) {
-      const kids = filterMenuByPerm(it.children, hasPerm)
+      const kids = filterMenuByPerm(it.children, hasPerm, includeHidden)
       if (kids.length === 0) continue
       out.push({ ...it, children: kids })
     } else {
@@ -226,10 +234,10 @@ export default function MainLayout() {
         // 大屏管理（v1.7.41）：展示内容 / 风险与屏蔽 / 阈值与采集 三页签，
         // v1.7.36 独立出去的「屏蔽规则」已并回本页。
         { key: '/prom/screen-admin', icon: <ControlOutlined />, label: '大屏管理', perm: 'prom:manage' },
-        // 被屏蔽目标（v1.7.43）：屏蔽的「审计视图」—— 大屏上看不到的目标 / 风险项 / 榜位都在这里，
-        // 并附当前实时指标。屏蔽不能让风险凭空消失，得有地方能看到「我把什么藏起来了」。
-        // 属查看动作（prom:view）：漏掉风险的人需要自己能看到，不该只让管理员看。
-        { key: '/prom/hidden', icon: <EyeInvisibleOutlined />, label: '被屏蔽目标', perm: 'prom:view' },
+        // 被屏蔽目标明细（v1.7.43）：大屏看不到的目标 / 风险项 / 榜位 + 它们当前的实时指标。
+        // ⚠️ hidden: true —— **不占侧边栏菜单**（入口：大屏管理 → 页头 & 风险与屏蔽卡片），
+        // 但仍登记在这里，好让页头标题反查得到「被屏蔽目标」而不是兜底的「概览」。
+        { key: '/prom/hidden', icon: <EyeInvisibleOutlined />, label: '被屏蔽目标', perm: 'prom:view', hidden: true },
       ],
     },
 
@@ -244,10 +252,14 @@ export default function MainLayout() {
     },
   ]
 
+  // 菜单渲染用：hidden 项（不占菜单的页面，如 /prom/hidden）在这一路被丢掉
   const allItems: any[] = filterMenuByPerm(rawItems, hasPerm)
 
-  // 展开子菜单后的扁平项，用于选中态与标题计算
-  const flatItems: any[] = allItems.flatMap((i) => (i.children ? i.children : [i]))
+  // 展开子菜单后的扁平项，用于选中态与标题计算。
+  // ⚠️ 必须走 includeHidden=true 这一路：否则 /prom/hidden 反查不到 label，
+  // 页头标题会退化成兜底的「概览」（实测踩过），选中态也会落回 /dashboard。
+  const titleItems: any[] = filterMenuByPerm(rawItems, hasPerm, true)
+  const flatItems: any[] = titleItems.flatMap((i) => (i.children ? i.children : [i]))
   const selected =
     flatItems.find((i) => location.pathname === i.key)?.key ||
     flatItems.find((i) => location.pathname.startsWith(i.key))?.key ||

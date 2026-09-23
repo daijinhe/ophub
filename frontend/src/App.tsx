@@ -124,7 +124,8 @@ export default function App() {
             v1.7.36 独立出去的「屏蔽规则」v1.7.41 已并回本页，/prom/masks 一并重定向。 */}
         <Route path="prom/screen-admin" element={<RequirePerm perm="prom:manage"><PromScreenAdmin /></RequirePerm>} />
         <Route path="prom/masks" element={<RequirePerm perm="prom:manage"><Navigate to="/prom/screen-admin" replace /></RequirePerm>} />
-        {/* 被屏蔽目标（v1.7.43）：大屏的审计视图 —— 大屏上看不到的目标 / 风险项 / 榜位都在这里。
+        {/* 被屏蔽目标明细（v1.7.43）：大屏的审计视图 —— 大屏上看不到的目标 / 风险项 / 榜位都在这里。
+            ⚠️ **不占侧边栏菜单**（入口：大屏管理 → 风险与屏蔽 → 「被屏蔽明细」），但路由保留可直达。
             属**查看**动作，prom:view 即可（不需要 prom:manage，否则普通监控使用者看不到自己漏了什么）。 */}
         <Route path="prom/hidden" element={<RequirePerm perm="prom:view"><PromHidden /></RequirePerm>} />
       </Route>

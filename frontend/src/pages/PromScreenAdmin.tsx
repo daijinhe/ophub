@@ -464,10 +464,15 @@ export default function PromScreenAdmin() {
           <SettingOutlined style={{ marginRight: 8 }} />
           监控大屏管理
         </Title>
-        <Tag color="purple">v1.7.42</Tag>
+        <Tag color="purple">v1.7.44</Tag>
         {dirty && <Tag color="warning">有未保存的修改</Tag>}
         {offCount > 0 && !dirty && <Tag color="default">{offCount} 个面板已关闭</Tag>}
         <Space style={{ marginLeft: 'auto' }}>
+          {/* 被屏蔽明细（v1.7.43 起不再单占侧边栏菜单，入口收在这里）：放在**页头**而不是
+              「风险与屏蔽」页签里，切到别的页签时也能一键进去看『我到底把什么藏起来了』。 */}
+          <Button icon={<EyeInvisibleOutlined />} onClick={() => navigate('/prom/hidden')}>
+            被屏蔽明细
+          </Button>
           <Button icon={<EyeOutlined />} onClick={() => window.open('/prom/screen', '_blank')}>
             预览大屏
           </Button>

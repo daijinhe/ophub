@@ -488,7 +488,7 @@ export default function PromHidden() {
           <EyeInvisibleOutlined style={{ marginRight: 8 }} />
           被屏蔽目标
         </Title>
-        <Tag color="purple">v1.7.43</Tag>
+        <Tag color="purple">v1.7.44</Tag>
         {ready && data && (
           <Text type="secondary" style={{ fontSize: 12 }}>
             {data.dsName} · 快照 {data.generatedAt} · 采集耗时 {data.collectMs} ms
@@ -517,15 +517,17 @@ export default function PromHidden() {
           <Button size="small" icon={<ReloadOutlined />} loading={loading} onClick={() => load()}>
             刷新
           </Button>
-          <Button
-            size="small"
-            type="primary"
-            ghost
-            icon={<SettingOutlined />}
-            onClick={() => navigate('/prom/screen-admin?tab=risk')}
-          >
-            屏蔽规则配置
-          </Button>
+          <Tooltip title="回到大屏管理 → 风险与屏蔽（屏蔽规则、等级口径、白名单都在那里配）">
+            <Button
+              size="small"
+              type="primary"
+              ghost
+              icon={<SettingOutlined />}
+              onClick={() => navigate('/prom/screen-admin?tab=risk')}
+            >
+              返回大屏管理
+            </Button>
+          </Tooltip>
         </Space>
       </div>
 
@@ -539,6 +541,8 @@ export default function PromHidden() {
             屏蔽不等于不存在 —— 被屏蔽的目标仍然在真实报警，只是没有投在屏幕上。
             「被屏蔽」的判定与大屏<b>同一套代码口径</b>（同一份阈值、同一份规则、同一个清单上限），
             所以这里显示的不会被屏蔽的和这里列出的不会重复、也不会漏。
+            <br />
+            本页入口在<b>大屏管理 → 风险与屏蔽 → 「被屏蔽明细」</b>（不再单占侧边栏菜单）。
             {data && (
               <>
                 <br />

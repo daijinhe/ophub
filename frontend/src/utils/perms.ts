@@ -37,7 +37,9 @@ export const ROUTE_PERMS: { path: string; perm: string }[] = [
   { path: '/prom/screen', perm: 'prom:screen' },
   // 大屏管理（展示内容 / 风险与屏蔽 / 阈值与采集）：配置动作，用 prom:manage
   { path: '/prom/screen-admin', perm: 'prom:manage' },
-  // 被屏蔽目标（v1.7.43）：大屏的审计视图，属查看动作 → prom:view。
+  // 被屏蔽目标明细（v1.7.43）：大屏的审计视图，属查看动作 → prom:view。
+  // ⚠️ **不占侧边栏菜单**（入口：大屏管理 → 风险与屏蔽 → 「被屏蔽明细」），但路径可达，
+  // 仍需这条映射兜底「手敲 URL / 从别的页跳过来」时的权限判定。
   // 放在最后：firstAccessiblePath 应优先把有 prom:view 的账号送到「数据源管理/监控报表」。
   { path: '/prom/hidden', perm: 'prom:view' },
 ]
