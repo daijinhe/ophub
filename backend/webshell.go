@@ -108,17 +108,24 @@ func getWsOrigins() string {
 	return strings.TrimSpace(os.Getenv("ALLOW_WS_ORIGINS"))
 }
 
-// publicRegistrationAllowed 公开注册开关。
+// publicRegistrationAllowed 环境变量形式的公开注册开关。
+//
+// ⚠️ v1.7.45 起这**只是一个回落值**：真正的开关在 SystemSetting（key `auth.register.enabled`，
+// 页面「系统管理 → 用户管理 → 注册设置」可切、写完立即生效），env 仅在「从没在页面上配置过」
+// 时才生效。判断注册是否开放请一律走 publicRegisterAllow()（handler_auth.go），不要直接调这里。
 func publicRegistrationAllowed() bool {
 	v := strings.ToLower(strings.TrimSpace(os.Getenv("ALLOW_PUBLIC_REGISTER")))
 	return v == "true" || v == "1" || v == "yes"
 }
 
-// publicRegistrationDisabledHandler 注册被关闭时的兜底响应（前端可识别并显示提示）。
+// publicRegistrationDisabledHandler 注册被关闭时的响应（前端可识别并显示提示）。
+//
+// v1.7.45 起它由 Register 内部按运行时开关调用，不再是「启动时绑定的兜底路由」，
+// 文案也要跟着改 —— 否则会告诉管理员「去改环境变量并重启」，而正确做法是去页面上开。
 func publicRegistrationDisabledHandler(c *gin.Context) {
 	c.JSON(http.StatusForbidden, gin.H{
 		"code":    403,
-		"message": "公开注册已关闭（默认安全策略）。如需开启请设置环境变量 ALLOW_PUBLIC_REGISTER=true 并重启后端",
+		"message": "公开注册已关闭。如需开放：管理员可在「系统管理 → 用户管理 → 注册设置」中开启（立即生效，无需重启）",
 	})
 }
 

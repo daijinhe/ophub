@@ -47,8 +47,19 @@ type registerReq struct {
 	Phone    string `json:"phone"`
 }
 
-// Register 公开注册（默认绑定普通成员角色）
+// Register 公开注册。
+//
+// v1.7.45 起两条硬约束：
+//  1. 开关在「系统管理 → 用户管理 → 注册设置」里控制（存 SystemSetting，写完立即生效、不用重启）；
+//     没配置过时回落环境变量 ALLOW_PUBLIC_REGISTER，兼容老的部署方式。
+//  2. 自助注册的账号**不绑定任何角色 = 零权限**。之前默认绑 member 角色，等于「注册即拿一批
+//     默认权限」，与「权限必须由管理员显式授予」冲突。注册后能登录，但只会看到「暂无可用功能」，
+//     需要管理员在用户管理里手动分配角色。
 func Register(c *gin.Context) {
+	if !publicRegisterAllow() {
+		publicRegistrationDisabledHandler(c)
+		return
+	}
 	var r registerReq
 	if err := c.ShouldBindJSON(&r); err != nil {
 		Fail(c, 400, 400, "参数错误")
@@ -70,8 +81,6 @@ func Register(c *gin.Context) {
 	}
 	hash, _ := bcrypt.GenerateFromPassword([]byte(r.Password), bcrypt.DefaultCost)
 	enc, _ := encryptPassword(r.Password)
-	member := Role{}
-	DB.Where("code = ?", "member").First(&member)
 	user := User{
 		Username:     r.Username,
 		PasswordHash: string(hash),
@@ -80,13 +89,69 @@ func Register(c *gin.Context) {
 		Email:        r.Email,
 		Phone:        r.Phone,
 		Status:       1,
-		Roles:        []Role{member},
+		Roles:        []Role{},
 	}
 	if err := DB.Create(&user).Error; err != nil {
 		Fail(c, 500, 500, "注册失败")
 		return
 	}
 	OK(c, gin.H{"id": user.ID, "username": user.Username})
+}
+
+// registerAllowKey 平台级「是否开放公开注册」配置项 key（存 SystemSetting）。
+const registerAllowKey = "auth.register.enabled"
+
+// publicRegisterAllow 运行时判断是否开放公开注册。
+//
+// 优先读 SystemSetting（页面开关，写完立即生效）；没配置过时回落环境变量
+// ALLOW_PUBLIC_REGISTER（老部署方式，保持兼容）。
+func publicRegisterAllow() bool {
+	if v := strings.TrimSpace(strings.ToLower(getSetting(registerAllowKey, ""))); v != "" {
+		return v == "1" || v == "true" || v == "yes" || v == "on"
+	}
+	return publicRegistrationAllowed()
+}
+
+// GetRegisterAllow 公开查询是否开放注册。
+// GET /api/auth/register-allow
+//
+// 登录页据此决定显示「立即注册」还是「注册已关闭，请联系管理员」；不暴露敏感信息。
+func GetRegisterAllow(c *gin.Context) {
+	OK(c, gin.H{"allow": publicRegisterAllow()})
+}
+
+// GetRegisterAllowAdmin 管理端读取注册开关。
+// GET /api/system/register-allow
+//
+// fromEnv=true 表示还没在页面上设置过、当前值来自环境变量 —— 前端据此提示
+// 「当前由环境变量决定，在此保存后将改由页面上开关决定」。
+func GetRegisterAllowAdmin(c *gin.Context) {
+	OK(c, gin.H{
+		"allow":   publicRegisterAllow(),
+		"fromEnv": strings.TrimSpace(getSetting(registerAllowKey, "")) == "",
+	})
+}
+
+// SetRegisterAllow 设置是否开放公开注册。
+// PUT /api/system/register-allow   body: {"allow":true}
+func SetRegisterAllow(c *gin.Context) {
+	// 用 *bool 区分「没传 allow」与「显式传 false」—— 与项目里其它开关字段同一口径
+	var req struct {
+		Allow *bool `json:"allow"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Allow == nil {
+		Fail(c, http.StatusBadRequest, 400, `请求体格式错误：需要 {"allow": true|false}`)
+		return
+	}
+	val := "0"
+	if *req.Allow {
+		val = "1"
+	}
+	if err := setSetting(registerAllowKey, val); err != nil {
+		Fail(c, http.StatusInternalServerError, 500, "保存失败："+err.Error())
+		return
+	}
+	OK(c, gin.H{"allow": *req.Allow})
 }
 
 // Login 登录并签发 JWT

@@ -309,8 +309,13 @@ export default function MainLayout() {
         >
           <CloudOutlined style={{ fontSize: 26, color: 'var(--accent)' }} />
           {!collapsed && (
-            <span className="glow-text" style={{ fontSize: 17, fontWeight: 700 }}>
-              个人工作空间
+            // 侧边栏只有 232px 宽，放全称「云枢 OpsHub」会溢出换行 →
+            // 这里用简称，全称留给登录页与浏览器标题（v1.7.45 品牌统一）
+            <span
+              className="glow-text"
+              style={{ fontSize: 16.5, fontWeight: 700, whiteSpace: 'nowrap' }}
+            >
+              云枢 OpsHub
             </span>
           )}
         </div>

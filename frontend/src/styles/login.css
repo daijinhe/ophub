@@ -1,0 +1,220 @@
+/* ==========================================================================
+   登录 / 注册页（v1.7.45）：固定深色门户
+   --------------------------------------------------------------------------
+   为什么固定深色、不跟随主题：门户页是产品第一印象，固定深色才能保证观感
+   一致可控；登录之后的应用内部仍按用户自己的主题走。
+   antd 组件通过嵌套 ConfigProvider(darkTheme) 变深色，本文件只负责「质感」：
+   背景光晕 / 卡片细节 / 字距 / 输入与按钮的深浅层次。
+
+   两个容易踩的点，这里一次说清：
+   1. 背景（网格 + 光晕 + 暗角）全部写成 .xy-auth 自己的多层 background 并
+      background-attachment: fixed —— 注册页字段多会滚动，用伪元素绝对定位
+      会出现「滚动后背景没铺满」，用 fixed 附着则永远铺满视口。
+   2. 垂直居中用「首尾 margin: auto」而不是 justify-content: center ——
+      后者在内容高于视口时会把顶部裁掉且滚不上去。
+   ========================================================================== */
+
+.xy-auth {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 100vh;
+  padding: 32px 16px;
+  box-sizing: border-box;
+  background-color: #070b14;
+  background-image: linear-gradient(rgba(56, 189, 248, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.045) 1px, transparent 1px),
+    /* 顶部主光晕：稍强且更聚焦，给画面一个「上方来光」的纵深 */
+    radial-gradient(1020px 560px at 50% -8%, rgba(56, 189, 248, 0.16), transparent 62%),
+    /* 左下副光晕：靛紫，避免整屏只有一种蓝 */
+    radial-gradient(760px 520px at 8% 98%, rgba(99, 102, 241, 0.11), transparent 64%),
+    /* 四周暗角：把注意力收回中心 */
+    radial-gradient(125% 125% at 50% 50%, transparent 42%, rgba(0, 0, 0, 0.55) 100%);
+  background-size: 64px 64px, 64px 64px, auto, auto, auto;
+  background-attachment: fixed, fixed, fixed, fixed, fixed;
+}
+
+/* ---------- 卡片 ---------- */
+.xy-card {
+  position: relative;
+  width: 420px;
+  max-width: 100%;
+  margin-top: auto; /* 与 .xy-meta 的 margin-bottom:auto 配对，实现「内容少时整体居中」 */
+  padding: 40px 36px 30px;
+  border-radius: 20px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: linear-gradient(180deg, rgba(18, 27, 45, 0.9) 0%, rgba(10, 16, 30, 0.9) 100%);
+  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  animation: xyRise 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* 顶部一道极细高光：这类 1px 细节是「高级感」的主要来源 */
+.xy-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 12%;
+  right: 12%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.5), transparent);
+}
+
+@keyframes xyRise {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---------- 品牌区 ---------- */
+/* 徽章：直接嵌巡检大屏那份 /inspection-logo-icon.svg。
+   深蓝渐变方块在近黑底上会「陷进去」，所以靠一圈极细青边 + 两层蓝色辉光把它托起来 ——
+   深色门户里最关键的一处体积感就来自这里。 */
+.xy-badge {
+  display: inline-flex;
+  border-radius: 18px;
+  overflow: hidden;
+  box-shadow: 0 0 0 1px rgba(125, 211, 252, 0.22), 0 14px 34px rgba(30, 64, 175, 0.45),
+    0 0 44px rgba(59, 130, 246, 0.22);
+  animation: xyBadgeIn 0.8s 0.06s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.xy-badge img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+@keyframes xyBadgeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.xy-title {
+  margin: 0;
+  font-size: 25px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: #eaf2fb;
+  text-shadow: 0 0 26px rgba(56, 189, 248, 0.18);
+}
+
+/* 英文副标：字距拉开 + 低对比度 —— 中英搭配是「高级感」里最稳的一种做法 */
+.xy-sub {
+  margin-top: 8px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 2.6px;
+  text-transform: uppercase;
+  color: #46586f;
+}
+
+/* ---------- 表单 ---------- */
+/* 输入框比卡片再深一档，形成「凹进去」的层次；聚焦时细青边 + 极淡外发光 */
+.xy-card .ant-input-affix-wrapper,
+.xy-card .ant-input {
+  background: rgba(7, 12, 22, 0.72) !important;
+  border-color: rgba(148, 163, 184, 0.14) !important;
+  color: #e6eef8 !important;
+}
+.xy-card .ant-input-affix-wrapper > .ant-input,
+.xy-card .ant-input-affix-wrapper input.ant-input {
+  background: transparent !important;
+}
+.xy-card .ant-input-affix-wrapper:hover,
+.xy-card .ant-input:hover {
+  border-color: rgba(56, 189, 248, 0.4) !important;
+}
+.xy-card .ant-input-affix-wrapper-focused,
+.xy-card .ant-input:focus {
+  border-color: rgba(56, 189, 248, 0.65) !important;
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.1) !important;
+}
+.xy-card .ant-input::placeholder {
+  color: #4d5b6e !important;
+}
+.xy-card .ant-input-prefix,
+.xy-card .ant-input-suffix {
+  color: #5d6c80;
+}
+
+/* 主按钮：亮青渐变 + 深色字（深色 UI 上比纯色块更高级），hover 提亮并浮起 */
+.xy-card .xy-submit.ant-btn-primary {
+  height: 46px;
+  border: none;
+  border-radius: 12px;
+  font-weight: 600;
+  letter-spacing: 4px;
+  color: #04121f;
+  background: linear-gradient(135deg, #63cbfb 0%, #2f8ff0 100%);
+  box-shadow: 0 10px 26px rgba(56, 189, 248, 0.22);
+  transition: filter 0.2s ease, box-shadow 0.2s ease, transform 0.08s ease;
+}
+.xy-card .xy-submit.ant-btn-primary:hover {
+  color: #04121f;
+  filter: brightness(1.07);
+  box-shadow: 0 14px 32px rgba(56, 189, 248, 0.3);
+}
+.xy-card .xy-submit.ant-btn-primary:active {
+  transform: translateY(1px);
+}
+
+/* ---------- 卡片内文字 ---------- */
+.xy-foot {
+  color: #7c8ba1;
+  font-size: 13px;
+}
+.xy-foot a,
+.xy-card a {
+  color: #7dd3fc;
+}
+.xy-foot a:hover,
+.xy-card a:hover {
+  color: #a5e0ff;
+}
+
+/* 卡片内的提示条压暗：antd 默认给 info/warning 配了高饱和描边，放到深色卡片上太抢眼
+   （看着像「没调过的默认样式」）→ 统一压成暗底 + 细灰边，只让图标保留语义色。
+   必须 !important —— antd 的 .ant-alert-info / .ant-alert-warning 优先级更高。 */
+.xy-card .ant-alert {
+  background: rgba(8, 14, 26, 0.72) !important;
+  border: 1px solid rgba(148, 163, 184, 0.16) !important;
+}
+.xy-card .ant-alert .ant-alert-message {
+  color: #cfe0f2;
+}
+.xy-card .ant-alert .ant-alert-description {
+  color: #7f92a8;
+}
+
+/* 页脚 meta：极低对比度，只提供一个「这是哪个版本」的锚点 */
+.xy-meta {
+  margin-top: 26px;
+  margin-bottom: auto;
+  font-size: 12px;
+  letter-spacing: 1px;
+  color: #3d4d66;
+  animation: xyRise 0.7s 0.12s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (max-width: 520px) {
+  .xy-card {
+    padding: 32px 22px 24px;
+    border-radius: 18px;
+  }
+  .xy-title {
+    font-size: 21px;
+    letter-spacing: 1.6px;
+  }
+}

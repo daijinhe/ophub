@@ -25,6 +25,7 @@ import {
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import api from '../api/client'
+import { getRegisterAllowAdmin, setRegisterAllow } from '../api/system'
 import { useAuth, type Role, type UserInfo } from '../store/AuthContext'
 
 export default function Users() {
@@ -45,6 +46,11 @@ export default function Users() {
     title: '',
     password: '',
   })
+  // 注册开关（v1.7.45）：null = 还没读到，先不渲染这一块，避免闪成「已关闭」
+  const [regAllow, setRegAllow] = useState<boolean | null>(null)
+  // 当前值是否来自环境变量 ALLOW_PUBLIC_REGISTER（= 还没在页面上设置过）
+  const [regFromEnv, setRegFromEnv] = useState(false)
+  const [regSaving, setRegSaving] = useState(false)
 
   const load = async (p = page, keyword = kw) => {
     setLoading(true)
@@ -58,10 +64,38 @@ export default function Users() {
     }
   }
 
+  // 注册开关只对「能编辑用户」的人显示 / 可改（后端同样用 user:update 拦截）
+  const loadRegister = async () => {
+    if (!hasPerm('user:update')) return
+    try {
+      const r = await getRegisterAllowAdmin()
+      setRegAllow(r.allow)
+      setRegFromEnv(r.fromEnv)
+    } catch {
+      /* 读不到就不显示这一块，不影响用户列表主流程 */
+    }
+  }
+
   useEffect(() => {
     load(1)
     api.get('/roles').then((r) => setRoles(r.data.data || []))
+    loadRegister()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  const toggleRegister = async (v: boolean) => {
+    setRegSaving(true)
+    try {
+      await setRegisterAllow(v)
+      setRegAllow(v)
+      setRegFromEnv(false) // 一旦在页面上保存过，就由页面开关说了算
+      message.success(v ? '已开放自助注册' : '已关闭自助注册')
+    } catch (e: any) {
+      message.error(e?.response?.data?.msg || '保存失败')
+    } finally {
+      setRegSaving(false)
+    }
+  }
 
   const openCreate = () => {
     setEditing(null)
@@ -211,6 +245,31 @@ export default function Users() {
         )
       }
     >
+      {/* 注册设置（v1.7.45）：这是「用户从哪来」的总开关 —— 与新建用户按钮同权限，只对能管用户的人显示 */}
+      {hasPerm('user:update') && regAllow !== null && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            flexWrap: 'wrap',
+            padding: '10px 14px',
+            marginBottom: 16,
+            border: '1px solid var(--border-soft)',
+            borderRadius: 10,
+            background: 'rgba(148,163,184,0.08)',
+          }}
+        >
+          <Switch size="small" checked={regAllow} loading={regSaving} onChange={toggleRegister} />
+          <span style={{ fontWeight: 500 }}>允许自助注册</span>
+          <Tag color={regAllow ? 'green' : 'default'}>{regAllow ? '已开启' : '已关闭'}</Tag>
+          <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
+            开启后登录页出现「立即注册」；新注册账号
+            <b>默认没有任何权限</b>，需在本页为其分配角色。
+            {regFromEnv ? '（当前值来自环境变量，在此保存后改由本开关控制）' : ''}
+          </span>
+        </div>
+      )}
       <Space style={{ marginBottom: 16 }}>
         <SearchInput
           allowClear

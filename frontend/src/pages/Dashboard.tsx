@@ -147,7 +147,7 @@ export default function Dashboard() {
             欢迎回来，{user?.nickname || user?.username} 👋
           </Typography.Title>
           <Typography.Text type="secondary">
-            个人工作空间 · 资产与权限总览，数据可随时按维度下钻分析。
+            云枢 OpsHub · 资产与权限总览，数据可随时按维度下钻分析。
           </Typography.Text>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>

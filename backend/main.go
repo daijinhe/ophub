@@ -48,13 +48,12 @@ func main() {
 	{
 		// 公开接口
 		api.POST("/auth/login", Login)
-		// 注册：默认关闭（防白嫖 / 防爆破新口子）。
-		// 真要开放时用 env ALLOW_PUBLIC_REGISTER=true；前端会渲染对应提示。
-		if !publicRegistrationAllowed() {
-			api.POST("/auth/register", publicRegistrationDisabledHandler)
-		} else {
-			api.POST("/auth/register", Register)
-		}
+		// 注册：开关在「系统管理 → 用户管理 → 注册设置」里控制（存 SystemSetting，写完立即生效、
+		// 不用重启）。v1.7.45 之前是启动时按 env 决定绑哪个 handler，改开关必须重启后端 ——
+		// 用户要的是页面上随时能切，所以判断收进 Register 内部，env 只作为「没在页面上配过」时的回落值。
+		api.POST("/auth/register", Register)
+		// 是否开放注册：公开只读，登录页据此显示「立即注册」或「注册已关闭」
+		api.GET("/auth/register-allow", GetRegisterAllow)
 		api.GET("/fields", GetFields)
 		// WebSocket SSH 终端：
 		//   - /api/ws/ssh/ticket 先拿一次性 ticket（v1.7.1+ 替代 ?token= URL 形式，避免 token 进 access log）
@@ -79,6 +78,10 @@ func main() {
 			// 查看 / 重置他人密码：仅内置 admin 角色（不经权限码，避免误配）
 			auth.GET("/users/:id/password", RequireAdminRole(), RevealUserPassword)
 			auth.POST("/users/:id/reset-password", RequireAdminRole(), ResetUserPassword)
+			// 注册开关（v1.7.45）：属于「用户从哪来」的治理，与「编辑用户」同权限 ——
+			// 不新增权限码，避免又多一处要维护的三层拦截。
+			auth.GET("/system/register-allow", RequirePermission("user:update"), GetRegisterAllowAdmin)
+			auth.PUT("/system/register-allow", RequirePermission("user:update"), SetRegisterAllow)
 
 			auth.GET("/roles", RequirePermission("role:view"), ListRoles)
 			auth.POST("/roles", RequirePermission("role:create"), CreateRole)
