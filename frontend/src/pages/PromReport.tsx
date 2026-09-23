@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   Alert,
   Button,
@@ -133,11 +134,24 @@ export default function PromReportPage() {
   // 深链：从「报表模板」页点「生成报告」带过来的 ?template=<id>。
   // 必须在挂载时**同步**读出来：数据源初始化要据此让位 —— 否则「默认选第一个数据源」
   // 会和模板的数据源互相覆盖，最终用哪个取决于两个请求谁先返回（随机踩坑）。
-  const deepLinkTpl = useMemo(() => {
-    const m = /[?&]template=(\d+)/.exec(window.location.search)
-    return m ? Number(m[1]) : 0
-  }, [])
+  //
+  // 注意这里是 useRef(...).current 而不是 useMemo：参数要被清理掉（见下面的 effect），
+  // 若值继续从 searchParams 派生，清理动作会让它变成 0，于是下面那个
+  // `[deepLinkTpl]` 依赖的数据源初始化 effect 二次执行、把模板的数据源覆盖回第一个 ——
+  // 表面症状是「从模板进来，数据源却不对」。所以**只在首次渲染读一次并固化**。
+  const [sp, setSp] = useSearchParams()
+  const deepLinkTpl = useRef(Number(sp.get('template') || 0)).current
   const deepLinkApplied = useRef(false)
+  const deepLinkCleaned = useRef(false)
+
+  // 参数用掉即清：否则刷新 / 回退会再次套用模板，把用户手动改过的选择静默覆盖回去。
+  useEffect(() => {
+    if (deepLinkCleaned.current || !deepLinkTpl) return
+    deepLinkCleaned.current = true
+    const next = new URLSearchParams(sp)
+    next.delete('template')
+    setSp(next, { replace: true })
+  }, [deepLinkTpl, sp, setSp])
 
   useEffect(() => {
     listPromDataSources()
