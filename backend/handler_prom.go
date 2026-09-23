@@ -260,6 +260,63 @@ const promQLDisk = `max by (instance) (100 * (1 - node_filesystem_avail_bytes{fs
 const promQLUname = `node_uname_info`
 
 // ---------------------------------------------------------------------------
+// 监控大屏补齐口径（v1.7.39，大屏与巡检大屏同版面后新增）
+//
+// 这几条解决的都是「巡检大屏有的面板，Prometheus 侧拿什么数」：
+//   - 容量总量：左栏顶部「CPU 核数 / 内存 / 存储」卡；
+//   - 操作系统分布：node_os_info（新版本 node_exporter 才有）优先，
+//     node_uname_info 的内核标记兜底；
+//   - 网络使用率：node_exporter 没有现成的百分比，用「出+入速率 ÷ 网卡带宽」算。
+// ---------------------------------------------------------------------------
+
+// promQLCoresTotal 全集群 CPU 核数。node_cpu_seconds_total 是「每核一条」，
+// 所以 count by (instance) 的序列数就是核数，外层 sum 即全集群核数。
+const promQLCoresTotal = `sum(count by (instance) (node_cpu_seconds_total{mode="idle"}))`
+
+// promQLMemTotalGb 全集群内存总量（GB）
+const promQLMemTotalGb = `sum(node_memory_MemTotal_bytes) / 1024 / 1024 / 1024`
+
+// promFSExclude 文件系统过滤：排除虚拟 / 只读 / 网络文件系统。
+// ⚠️ 不排除 nfs 会算出天文数字的假容量 —— 实测某数据源裸算 4.2 PB，
+// 而真正的本地盘只有 181 TB：共享存储会被每台挂载它的主机各算一遍。
+const promFSExclude = `fstype!~"tmpfs|devtmpfs|overlay|squashfs|iso9660|rootfs|nfs|nfs4|cifs|smb.*|fuse.*|autofs"`
+
+// promMountExclude 挂载点过滤：容器 / 系统运行时挂载不参与容量统计
+const promMountExclude = `mountpoint!~"^/(run|dev|sys|proc|var/lib/kubelet|var/lib/docker)"`
+
+// promQLDiskTotalGb 全集群存储总量（GB）。
+// 先按 (instance, device) 去重再求和：同一块盘挂到多个挂载点时只算一次，
+// 否则 bind mount / 多挂载点会把单机容量放大好几倍。
+const promQLDiskTotalGb = `sum(max by (instance, device) (node_filesystem_size_bytes{` +
+	promFSExclude + `,` + promMountExclude + `})) / 1024 / 1024 / 1024`
+
+// promDevExclude 网卡过滤：只统计物理 / 绑定网卡，排除回环与容器虚拟网卡。
+// 这里用黑名单而不是白名单 —— 物理网卡命名（eth/ens/eno/enp/em/bond/team）在各发行版
+// 差异极大，漏一个就会把整类主机漏掉；而虚拟网卡的前缀是稳定的。
+const promDevExclude = `device!~"^(lo|veth.*|docker.*|br-.*|cali.*|virbr.*|tun.*|tap.*|vnet.*|flannel.*|cni.*)$"`
+
+// promQLOSInfo 操作系统信息。只有较新的 node_exporter 才暴露这个指标，
+// 拿不到时靠 node_uname_info 的 release/version 兜底（见 promOSFamilyOf）。
+const promQLOSInfo = `node_os_info`
+
+// promQLNetSpeed 网卡标称速率（bytes/s）。node_exporter 的口径是 speed(Mbps)*1e6/8，
+// 所以 1 Gbps → 125000000、10 Gbps → 1250000000。实测覆盖率很低（910 台里只有 9 台上报），
+// 未上报的主机按「大屏管理」里配置的参考带宽兜底。
+const promQLNetSpeed = `max by (instance) (node_network_speed_bytes{` + promDevExclude + `} > 0)`
+
+// promQLNetRate 网络出+入速率（bytes/s，per instance）
+func promQLNetRate(window string) string {
+	return fmt.Sprintf(
+		`sum by (instance) (rate(node_network_receive_bytes_total{%s}[%s]) + rate(node_network_transmit_bytes_total{%s}[%s]))`,
+		promDevExclude, window, promDevExclude, window)
+}
+
+// promQLOfflineCount 离线目标数的时间序列（每个采样步一个点）。
+// 刻意写成服务端聚合：区间查询只回 1 条序列。若直接查 up 再回 Go 里数，
+// 1148 个 target × 上百个时间点会把响应撑到几 MB，采集耗时也跟着涨。
+const promQLOfflineCount = `count(up == 0)`
+
+// ---------------------------------------------------------------------------
 // 项目范围过滤（v1.7.38，「监控报表」按项目出报告）
 //
 // 「项目」= Prometheus target label system（与报表「项目名」列同一来源）。

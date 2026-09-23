@@ -51,6 +51,12 @@ export interface PromHostStat {
   cpu: number
   mem: number
   disk: number
+  /** 网络使用率（%，出+入速率 ÷ 参考带宽）。v1.7.39 与巡检大屏同版面后新增 */
+  net: number
+  /** 发行版原文（node_os_info.pretty_name；老 node_exporter 退化成家族名） */
+  osName: string
+  /** 归一后的 OS 家族（「操作系统分布」面板按它聚合） */
+  osFamily: string
 }
 
 export interface PromTopEntry {
@@ -81,6 +87,18 @@ export interface PromIssueStat {
   crit: number
   warn: number
   hosts: number
+  /**
+   * 按指标拆分的严重 / 关注项数（v1.7.39）。
+   * 左栏「磁盘超阈值」那一格必须用它取数 —— `issues` 有条数上限（100），
+   * 真爆了会被截断，从截断后的列表里数会少算。
+   */
+  byMetric?: Record<string, PromMetricIssue>
+}
+
+/** 单个指标的严重 / 关注项数 */
+export interface PromMetricIssue {
+  warn: number
+  crit: number
 }
 
 export interface PromGroupStat {
@@ -109,6 +127,13 @@ export interface PromCfgView {
   showOffline: number
   trendHours: number
   groupBy: 'system' | 'department' | 'env' | 'deployserver'
+  /**
+   * 网络参考带宽（Mbps，默认 1000）。v1.7.39 新增。
+   * 网络使用率 = 出+入速率 ÷ (网卡上报速率 || 参考带宽)。
+   * 网卡上报 `node_network_speed_bytes` 的主机极少（实测 9/910），
+   * 没有它就只能按参考带宽算百分比 —— 否则网络那一列全空、版面与巡检大屏对不齐。
+   */
+  netBaseMbps: number
   masks?: PromMaskRule[]
 }
 
@@ -131,7 +156,28 @@ export interface PromUsageDist {
   mid: number
   high: number
   crit: number
+  /** 离线 / 无数据（后端口径：!up 或 max(CPU,内存,磁盘) 为 0） */
   none: number
+}
+
+/** 名称 / 数量对（操作系统分布、告警等级分布用） */
+export interface PromNameVal {
+  name: string
+  value: number
+}
+
+/** 全集群容量总量（左栏顶部三列卡：CPU 核数 / 内存 / 存储） */
+export interface PromCapacity {
+  cores: number
+  memGb: number
+  diskGb: number
+}
+
+/** 告警趋势的单个时间点（严重 / 关注项数） */
+export interface PromAlertTrendPoint {
+  ts: number
+  crit: number
+  warn: number
 }
 
 export interface PromOverview {
@@ -139,16 +185,25 @@ export interface PromOverview {
   collectMs: number
   source: string
   dsName: string
-  up: { total: number; online: number; offline: number }
-  avg: { cpu: number; mem: number; disk: number }
+  /** hosts = 真正采集到资源的主机数（有 CPU/内存/磁盘 任一数据） */
+  up: { total: number; online: number; offline: number; hosts: number }
+  avg: { cpu: number; mem: number; disk: number; net: number }
   usageDist: PromUsageDist
   trend: PromTrendPoint[]
   hosts: PromHostStat[]
-  top: { cpu: PromTopEntry[]; mem: PromTopEntry[]; disk: PromTopEntry[] }
+  top: { cpu: PromTopEntry[]; mem: PromTopEntry[]; disk: PromTopEntry[]; net: PromTopEntry[] }
   issues: PromIssue[]
   issueStat: PromIssueStat
   groups: PromGroupStat[]
   config: PromCfgView
+  // ---- v1.7.39：与巡检大屏同版面后补齐的面板数据 ----
+  capacity: PromCapacity
+  osDist: PromNameVal[]
+  /** 项目数（target label `system` 去重） */
+  projects: number
+  /** 部门数（target label `department` 去重） */
+  depts: number
+  alertTrend: PromAlertTrendPoint[]
 }
 
 export interface PromSnapshotResp {

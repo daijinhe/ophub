@@ -376,6 +376,22 @@ export default function PromScreenAdmin() {
                     </Form.Item>
                   </Col>
                 </Row>
+                <Divider orientation="left" plain style={{ margin: '4px 0 12px' }}>
+                  网络
+                </Divider>
+                <Row gutter={12}>
+                  <Col xs={24} md={8}>
+                    <Form.Item
+                      label="参考带宽（Mbps）"
+                      name="netBaseMbps"
+                      rules={[{ required: true, message: '请填写参考带宽' }]}
+                      tooltip="网络使用率 = 出+入速率 ÷ 带宽。只有极少数主机会上报网卡标称速率（node_network_speed_bytes），其余一律按这个参考带宽折算 —— 不填就算不出网络使用率，大屏的「网络平均」「网络负载 TOP」「NET 小条」会整片空着。按机房最常见的网卡选：1G 填 1000，10G 填 10000。"
+                    >
+                      <InputNumber min={100} max={100000} step={100} style={{ width: '100%' }} />
+                    </Form.Item>
+                  </Col>
+                </Row>
+
                 <Row>
                   <Col xs={24}>
                     <Form.Item label="主机列表展示离线主机" name="showOffline" valuePropName="checked">
@@ -425,6 +441,9 @@ export default function PromScreenAdmin() {
                 </Descriptions.Item>
                 <Descriptions.Item label="磁盘">
                   <Tag color="orange">≥ {cfg.diskWarn}% 关注</Tag> <Tag color="red">≥ {cfg.diskCrit}% 严重</Tag>
+                </Descriptions.Item>
+                <Descriptions.Item label="网络">
+                  <Tag color="cyan">按参考带宽 {cfg.netBaseMbps ?? 1000} Mbps 折算使用率</Tag>
                 </Descriptions.Item>
                 <Descriptions.Item label="离线主机">
                   <Tag color="red">一律计为严重（连通性）</Tag>

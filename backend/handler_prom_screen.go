@@ -65,21 +65,24 @@ func promMasksToJSON(rules []promMaskRule) datatypes.JSON {
 
 // PromScreenConfig 监控大屏配置（全局单例，id=1）
 type PromScreenConfig struct {
-	ID          uint           `gorm:"primaryKey" json:"id"`
-	Title       string         `gorm:"size:64" json:"title"`   // 大屏标题
-	AutoCollect int            `json:"autoCollect"`            // 1=开启定期采集
-	IntervalSec int            `json:"intervalSec"`            // 采集间隔（秒）
-	CPUWarn     float64        `json:"cpuWarn"`                // CPU 关注阈值
-	CPUCrit     float64        `json:"cpuCrit"`                // CPU 严重阈值
-	MemWarn     float64        `json:"memWarn"`                // 内存 关注阈值
-	MemCrit     float64        `json:"memCrit"`                // 内存 严重阈值
-	DiskWarn    float64        `json:"diskWarn"`               // 磁盘 关注阈值
-	DiskCrit    float64        `json:"diskCrit"`               // 磁盘 严重阈值
-	TopN        int            `json:"topN"`                   // TOP N
-	HostLimit   int            `json:"hostLimit"`              // 大屏主机列表最多展示多少台
-	ShowOffline int            `json:"showOffline"`            // 1=展示离线主机
-	TrendHours  int            `json:"trendHours"`             // 趋势窗口（小时）
-	GroupBy     string         `gorm:"size:16" json:"groupBy"` // 分组维度：system|department|env|deployserver
+	ID          uint    `gorm:"primaryKey" json:"id"`
+	Title       string  `gorm:"size:64" json:"title"`   // 大屏标题
+	AutoCollect int     `json:"autoCollect"`            // 1=开启定期采集
+	IntervalSec int     `json:"intervalSec"`            // 采集间隔（秒）
+	CPUWarn     float64 `json:"cpuWarn"`                // CPU 关注阈值
+	CPUCrit     float64 `json:"cpuCrit"`                // CPU 严重阈值
+	MemWarn     float64 `json:"memWarn"`                // 内存 关注阈值
+	MemCrit     float64 `json:"memCrit"`                // 内存 严重阈值
+	DiskWarn    float64 `json:"diskWarn"`               // 磁盘 关注阈值
+	DiskCrit    float64 `json:"diskCrit"`               // 磁盘 严重阈值
+	TopN        int     `json:"topN"`                   // TOP N
+	HostLimit   int     `json:"hostLimit"`              // 大屏主机列表最多展示多少台
+	ShowOffline int     `json:"showOffline"`            // 1=展示离线主机
+	TrendHours  int     `json:"trendHours"`             // 趋势窗口（小时）
+	GroupBy     string  `gorm:"size:16" json:"groupBy"` // 分组维度：system|department|env|deployserver
+	// NetBaseMbps 网络参考带宽（Mbps，v1.7.39）。网络使用率 = 出+入速率 ÷ 参考带宽；
+	// 优先用主机自己上报的 node_network_speed_bytes，未上报的（实测绝大多数）按这个值算。
+	NetBaseMbps int            `json:"netBaseMbps"`
 	Masks       datatypes.JSON `gorm:"type:text" json:"masks"` // 屏蔽规则（超阈值面板过滤，v1.7.35）
 	Remark      string         `gorm:"size:255" json:"remark"`
 	UpdatedAt   time.Time      `json:"updatedAt"`
@@ -111,6 +114,7 @@ type promCfgView struct {
 	ShowOffline int            `json:"showOffline"`
 	TrendHours  int            `json:"trendHours"`
 	GroupBy     string         `json:"groupBy"`
+	NetBaseMbps int            `json:"netBaseMbps"`
 	Masks       []promMaskRule `json:"masks"`
 }
 
@@ -134,6 +138,16 @@ type promIssueStat struct {
 	Crit  int `json:"crit"`
 	Warn  int `json:"warn"`
 	Hosts int `json:"hosts"` // 涉及主机数
+	// ByMetric 按指标拆分的严重 / 关注项数（v1.7.39）。
+	// 大屏左栏「磁盘超阈值」那一格要单独看磁盘，不能从 Issues 里数 ——
+	// Issues 有条数上限（100），真爆了会截断，从截断后的列表里数会少算。
+	ByMetric map[string]promMetricIssue `json:"byMetric"`
+}
+
+// promMetricIssue 单个指标的严重 / 关注项数
+type promMetricIssue struct {
+	Warn int `json:"warn"`
+	Crit int `json:"crit"`
 }
 
 // promGroupStat 按业务维度分组的资源水位（大屏「项目水位 TOP」面板）
@@ -166,6 +180,7 @@ func promDefaultConfig() *PromScreenConfig {
 		ShowOffline: 1,
 		TrendHours:  24,
 		GroupBy:     "system",
+		NetBaseMbps: 1000,
 	}
 }
 
@@ -185,6 +200,7 @@ func (c *PromScreenConfig) view() promCfgView {
 		ShowOffline: c.ShowOffline,
 		TrendHours:  c.TrendHours,
 		GroupBy:     c.GroupBy,
+		NetBaseMbps: c.NetBaseMbps,
 		Masks:       promParseMasks(c.Masks),
 	}
 }
@@ -245,6 +261,15 @@ func promNormalizeConfig(c *PromScreenConfig) {
 	}
 	if c.TrendHours > 720 {
 		c.TrendHours = 720
+	}
+	// 参考带宽：0（老数据升级上来根本没这个字段）或负数一律回落默认 1 Gbps ——
+	// 留着 0 会让 promNetPercent 的分母为 0，结果是整屏网络使用率恒为 0.0%，看着像没数据。
+	// 上限 100 Gbps：再大就不是「参考带宽」而是多打了几个 0，同样会把面板压成一条平线。
+	if c.NetBaseMbps <= 0 {
+		c.NetBaseMbps = d.NetBaseMbps
+	}
+	if c.NetBaseMbps > 100000 {
+		c.NetBaseMbps = 100000
 	}
 	switch c.GroupBy {
 	case "system", "department", "env", "deployserver":
@@ -377,6 +402,11 @@ func promHostName(system, env, deploySvr, instance, hostname string) string {
 
 // promBuildIssues 按阈值生成超阈值清单（离线单列为「连通性」严重项）。
 // v1.7.35：先过屏蔽规则 —— 命中的 (主机, 指标) 不进清单也不计入统计。
+// v1.7.39：统计口径修正为「截断前全量」，并按指标拆出 byMetric。
+//
+// ⚠️ 原来是在 items 截断成 limit 条之后才统计 Crit/Warn，于是清单超过 100 条时
+// 左栏 KPI 会显示「≤100」而真实超阈值项可能是 300 —— 数字看着正常但是错的。
+// 现在先在截断前把统计做完，清单该截还是截（大屏列不下）。
 func promBuildIssues(hosts []promHostStat, cfg *PromScreenConfig, limit int) ([]promIssue, promIssueStat) {
 	type item struct {
 		iss  promIssue
@@ -384,6 +414,16 @@ func promBuildIssues(hosts []promHostStat, cfg *PromScreenConfig, limit int) ([]
 	}
 	items := make([]item, 0, len(hosts))
 	hostSet := map[string]bool{}
+	byMetric := map[string]promMetricIssue{}
+	tally := func(metric, level string) {
+		cur := byMetric[metric]
+		if level == "crit" {
+			cur.Crit++
+		} else {
+			cur.Warn++
+		}
+		byMetric[metric] = cur
+	}
 	for _, h := range hosts {
 		name := promHostName(h.System, h.Env, h.DeploySvr, h.Instance, h.Hostname)
 		base := promIssue{
@@ -404,6 +444,7 @@ func promBuildIssues(hosts []promHostStat, cfg *PromScreenConfig, limit int) ([]
 			iss.Value = 100
 			items = append(items, item{iss: iss, rank: 1000})
 			hostSet[h.Instance] = true
+			tally("offline", "crit")
 			continue
 		}
 		push := func(metric, cn string, v, warn, crit float64) {
@@ -427,24 +468,28 @@ func promBuildIssues(hosts []promHostStat, cfg *PromScreenConfig, limit int) ([]
 			}
 			items = append(items, item{iss: iss, rank: rank})
 			hostSet[h.Instance] = true
+			tally(metric, iss.Level)
 		}
 		push("cpu", "CPU", h.CPU, cfg.CPUWarn, cfg.CPUCrit)
 		push("mem", "内存", h.Mem, cfg.MemWarn, cfg.MemCrit)
 		push("disk", "磁盘", h.Disk, cfg.DiskWarn, cfg.DiskCrit)
+	}
+	// 先统计（全量），再截断
+	st := promIssueStat{Hosts: len(hostSet), ByMetric: byMetric}
+	for _, it := range items {
+		if it.iss.Level == "crit" {
+			st.Crit++
+		} else {
+			st.Warn++
+		}
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].rank > items[j].rank })
 	if limit > 0 && len(items) > limit {
 		items = items[:limit]
 	}
 	out := make([]promIssue, 0, len(items))
-	st := promIssueStat{Hosts: len(hostSet)}
 	for _, it := range items {
 		out = append(out, it.iss)
-		if it.iss.Level == "crit" {
-			st.Crit++
-		} else {
-			st.Warn++
-		}
 	}
 	return out, st
 }
@@ -742,6 +787,7 @@ type promScreenCfgBody struct {
 	ShowOffline *int            `json:"showOffline"`
 	TrendHours  int             `json:"trendHours"`
 	GroupBy     string          `json:"groupBy"`
+	NetBaseMbps int             `json:"netBaseMbps"`
 	Masks       *[]promMaskRule `json:"masks"` // 指针：nil=未传（保持原值），传了=整体覆盖
 	Remark      string          `json:"remark"`
 }
@@ -947,6 +993,9 @@ func PromSaveScreenConfig(c *gin.Context) {
 	}
 	if body.TrendHours > 0 {
 		old.TrendHours = body.TrendHours
+	}
+	if body.NetBaseMbps > 0 {
+		old.NetBaseMbps = body.NetBaseMbps
 	}
 	if body.GroupBy != "" {
 		old.GroupBy = body.GroupBy

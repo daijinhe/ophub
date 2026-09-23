@@ -34,6 +34,12 @@ type promHostStat struct {
 	CPU        float64 `json:"cpu"`
 	Mem        float64 `json:"mem"`
 	Disk       float64 `json:"disk"`
+	// Net 网络使用率（%，出+入速率 ÷ 参考带宽），v1.7.39 与巡检大屏对齐后新增
+	Net float64 `json:"net"`
+	// OSName 发行版原文（node_os_info.pretty_name；老 node_exporter 退化成家族名）
+	OSName string `json:"osName"`
+	// OSFamily 归一后的 OS 家族（「操作系统分布」面板按它聚合）
+	OSFamily string `json:"osFamily"`
 }
 
 // promUsageDist 资源健康分布（按主机 max(CPU,内存,磁盘) 分档；离线/无数据归 none）
@@ -94,11 +100,12 @@ type promTrendPoint struct {
 	Disk *float64 `json:"disk"`
 }
 
-// promAvg 三个资源均值（大屏仪表盘）
+// promAvg 资源均值（大屏仪表盘；network 为 v1.7.39 新增）
 type promAvg struct {
 	CPU  float64 `json:"cpu"`
 	Mem  float64 `json:"mem"`
 	Disk float64 `json:"disk"`
+	Net  float64 `json:"net"`
 }
 
 // promTopEntry TOP5 条目
@@ -125,21 +132,33 @@ type promOverviewResp struct {
 	Hosts       []promHostStat   `json:"hosts"`
 	Top         promTopSets      `json:"top"`
 	Issues      []promIssue      `json:"issues"`    // 超阈值清单（按「大屏管理」里配的阈值自算）
-	IssueStat   promIssueStat    `json:"issueStat"` // 严重 / 关注 / 涉及主机
+	IssueStat   promIssueStat    `json:"issueStat"` // 严重 / 关注 / 涉及主机 / 分指标
 	Groups      []promGroupStat  `json:"groups"`    // 按项目（或其他维度）聚合的水位排行
 	Config      promCfgView      `json:"config"`    // 本次快照生效的配置（前端直接用）
+
+	// ---- v1.7.39：与巡检大屏同版面后补齐的面板数据 ----
+	Capacity   promCapacity          `json:"capacity"`   // 左栏顶部：CPU 核数 / 内存 / 存储
+	OSDist     []promNameVal         `json:"osDist"`     // 左栏底部：操作系统分布
+	Projects   int                   `json:"projects"`   // 项目数（target label system 去重）
+	Depts      int                   `json:"depts"`      // 部门数（target label department 去重）
+	AlertTrend []promAlertTrendPoint `json:"alertTrend"` // 右栏：告警趋势（每时间点 严重/关注 项数）
 }
 
 type promUpStat struct {
 	Total   int `json:"total"`
 	Online  int `json:"online"`
 	Offline int `json:"offline"`
+	// Hosts 真正采集到资源的主机数（有 CPU/内存/磁盘 任一数据）。
+	// 与 Total 的差 = 在线但不是 node_exporter 的目标（blackbox / 各种 exporter），
+	// 左栏「监控目标 / 主机」卡的「已采集 / 未采集」就是拿这两个数算的。
+	Hosts int `json:"hosts"`
 }
 
 type promTopSets struct {
 	CPU  []promTopEntry `json:"cpu"`
 	Mem  []promTopEntry `json:"mem"`
 	Disk []promTopEntry `json:"disk"`
+	Net  []promTopEntry `json:"net"`
 }
 
 // PromOverview GET /api/prom/overview?ds=
@@ -190,23 +209,50 @@ func buildPromSnapshot(ctx context.Context, cli *promClient, dsName string, cfg 
 	}
 	out.Up.Total = len(upSamples)
 
-	// ---- 2. 主机名（node_uname_info：instance -> nodename） ----
+	// ---- 2. 主机名 + 内核信息（node_uname_info：instance -> nodename / release / version） ----
 	hostnames := map[string]string{}
+	releaseByInst := map[string]string{}
+	versionByInst := map[string]string{}
 	unameSamples, _ := cli.query(ctx, promQLUname, "")
 	for _, s := range unameSamples {
 		inst := s.Metric["instance"]
 		if hn := s.Metric["nodename"]; hn != "" && hostnames[inst] == "" {
 			hostnames[inst] = hn
 		}
+		if releaseByInst[inst] == "" {
+			releaseByInst[inst] = s.Metric["release"]
+			versionByInst[inst] = s.Metric["version"]
+		}
+	}
+
+	// ---- 2.1 操作系统信息（node_os_info；老 node_exporter 根本没这个指标）----
+	// 查失败不算错：全集群退回到「内核 release/version 推断」那条路，面板照样出得来。
+	// 存整张标签 map 而不是只存名字 —— 归一化时 name / id 都要用（见 promOSInfoHaystack）。
+	osInfoByInst := map[string]map[string]string{}
+	if osInfoSamples, oerr := cli.query(ctx, promQLOSInfo, ""); oerr == nil {
+		for _, s := range osInfoSamples {
+			inst := s.Metric["instance"]
+			if inst == "" || osInfoByInst[inst] != nil {
+				continue
+			}
+			osInfoByInst[inst] = s.Metric
+		}
 	}
 
 	// ---- 2.5 业务标签（department/system/env/deployserver，target labels） ----
 	instLabels := promCollectLabels(upSamples, unameSamples)
 
-	// ---- 3. 实时资源（CPU / 内存 / 磁盘 per instance） ----
+	// ---- 3. 实时资源（CPU / 内存 / 磁盘 / 网络 per instance） ----
 	cpuMap := promCurrentMap(ctx, cli, promQLCPU("5m"))
 	memMap := promCurrentMap(ctx, cli, promQLMem)
 	diskMap := promCurrentMap(ctx, cli, promQLDisk)
+	// 网络：出+入速率 ÷ 参考带宽。网卡标称速率只有极少数主机上报，缺失按配置兜底。
+	netRateMap := promCurrentMap(ctx, cli, promQLNetRate("5m"))
+	netSpeedMap := promCurrentMap(ctx, cli, promQLNetSpeed)
+	netMap := make(map[string]float64, len(netRateMap))
+	for inst, rate := range netRateMap {
+		netMap[inst] = promNetPercent(rate, netSpeedMap[inst], cfg.NetBaseMbps)
+	}
 
 	// 汇总主机列表（以 up 的 instance 为全集，资源缺失记 0）
 	hosts := make([]promHostStat, 0, len(upMap))
@@ -217,6 +263,15 @@ func buildPromSnapshot(ctx context.Context, cli *promClient, dsName string, cfg 
 		}
 		seen[inst] = true
 		lb := instLabels[inst]
+		// OS：家族用于分布聚合（两来源归一到同一粒度），原文用于主机卡片副行。
+		// 老 node_exporter 没有 node_os_info 时原文退化成家族名 —— 副行宁可显示家族名，
+		// 也不要空着或塞一串内核版本号。
+		osInfo := osInfoByInst[inst]
+		fam := promOSFamilyOf(osInfo, releaseByInst[inst], versionByInst[inst])
+		osName := promOSInfoName(osInfo)
+		if osName == "" {
+			osName = fam
+		}
 		h := promHostStat{
 			Instance: inst,
 			Hostname: hostnames[inst],
@@ -224,6 +279,9 @@ func buildPromSnapshot(ctx context.Context, cli *promClient, dsName string, cfg 
 			CPU:      cpuMap[inst],
 			Mem:      memMap[inst],
 			Disk:     diskMap[inst],
+			Net:      netMap[inst],
+			OSName:   osName,
+			OSFamily: fam,
 		}
 		if lb != nil {
 			h.Department = lb.Department
@@ -245,30 +303,96 @@ func buildPromSnapshot(ctx context.Context, cli *promClient, dsName string, cfg 
 	for inst := range diskMap {
 		addHost(inst)
 	}
+	for inst := range netMap {
+		addHost(inst)
+	}
 	sort.Slice(hosts, func(i, j int) bool { return hosts[i].Instance < hosts[j].Instance })
 
 	// 资源均值（只统计在线且有值的）—— 全量口径，不受展示上限影响
-	out.Avg = promAvgOf(hosts)
+	out.Avg = promAvgOf(hosts, netRateMap)
 	// 资源健康分布（正常/关注/预警/严重/离线）
 	out.UsageDist = promUsageDistOf(hosts)
 
-	// ---- 4. TOP N（CPU / 内存 / 磁盘） ----
+	// ---- 3.5 采集到资源的主机数 + 项目 / 部门数（左栏 KPI 用）----
+	out.Up.Hosts = promResourceHostCount(hosts)
+	out.Projects, out.Depts = promGroupCounts(hosts)
+
+	// ---- 3.6 操作系统分布（左栏底部环形图）----
+	out.OSDist = promOSDist(hosts)
+
+	// ---- 3.7 容量总量（左栏顶部三列卡）----
+	// 三个标量各查一次；任一查不到都只记 0，不牵连整块快照。
+	out.Capacity = promCapacity{
+		Cores:  promScalar(ctx, cli, promQLCoresTotal),
+		MemGb:  promScalar(ctx, cli, promQLMemTotalGb),
+		DiskGb: promScalar(ctx, cli, promQLDiskTotalGb),
+	}
+
+	// ---- 4. TOP N（CPU / 内存 / 磁盘 / 网络） ----
 	out.Top = promTopSets{
 		CPU:  promTopN(hosts, instLabels, cfg.TopN, func(h promHostStat) float64 { return h.CPU }),
 		Mem:  promTopN(hosts, instLabels, cfg.TopN, func(h promHostStat) float64 { return h.Mem }),
 		Disk: promTopN(hosts, instLabels, cfg.TopN, func(h promHostStat) float64 { return h.Disk }),
+		Net:  promTopN(hosts, instLabels, cfg.TopN, func(h promHostStat) float64 { return h.Net }),
 	}
 
 	// ---- 5. 超阈值清单 + 分组水位（阈值来自「大屏管理」配置） ----
 	out.Issues, out.IssueStat = promBuildIssues(hosts, cfg, 100)
 	out.Groups = promBuildGroups(hosts, cfg, 12)
 
-	// ---- 6. 趋势（窗口与步长由配置决定，保证点数恒定在 ~100） ----
-	out.Trend = promFleetTrend(ctx, cli, int64(cfg.TrendHours)*3600, promTrendStep(cfg.TrendHours))
+	// ---- 6. 趋势 + 告警趋势（窗口与步长由配置决定，点数恒定在 ~100） ----
+	// 两者共用同一批区间查询结果：口径必然一致（趋势图与告警趋势不会自相矛盾），
+	// 且不额外增加采集时间。
+	out.Trend, out.AlertTrend = promFleetTrend(ctx, cli, cfg, int64(cfg.TrendHours)*3600, promTrendStep(cfg.TrendHours))
 
 	// ---- 7. 输出主机列表（离线过滤 + 展示上限裁剪） ----
 	out.Hosts = promTrimHosts(hosts, cfg)
 	return out, nil
+}
+
+// promResourceHostCount 真正采集到资源的主机数（CPU / 内存 / 磁盘 任一有值）
+func promResourceHostCount(hosts []promHostStat) int {
+	n := 0
+	for _, h := range hosts {
+		if h.CPU > 0 || h.Mem > 0 || h.Disk > 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// promGroupCounts 项目数 / 部门数（按业务标签去重；标签为空的主机不计入）
+func promGroupCounts(hosts []promHostStat) (projects, depts int) {
+	ps := map[string]bool{}
+	ds := map[string]bool{}
+	for _, h := range hosts {
+		if s := strings.TrimSpace(h.System); s != "" {
+			ps[s] = true
+		}
+		if d := strings.TrimSpace(h.Department); d != "" {
+			ds[d] = true
+		}
+	}
+	return len(ps), len(ds)
+}
+
+// promOSDist 操作系统分布：按 OS 家族聚合。
+// 刻意不用「内核 release 原值」当类别 —— 实测 19 个内核版本对应其实只有 7~10 个发行版家族，
+// 按原值画图例会变成一屏看不懂的版本号。
+func promOSDist(hosts []promHostStat) []promNameVal {
+	m := map[string]int{}
+	for _, h := range hosts {
+		f := strings.TrimSpace(h.OSFamily)
+		if f == "" {
+			f = "未知"
+		}
+		m[f]++
+	}
+	out := make([]promNameVal, 0, len(m))
+	for k, v := range m {
+		out = append(out, promNameVal{Name: k, Value: v})
+	}
+	return promSortNameVal(out)
 }
 
 // promTrendStep 按窗口选步长，保证趋势点数稳定在 60~140 之间（点数太多前端卡、太少看不出波动）
@@ -339,10 +463,14 @@ func promCurrentMap(ctx context.Context, cli *promClient, expr string) map[strin
 	return out
 }
 
-// promAvgOf 在线主机资源均值
-func promAvgOf(hosts []promHostStat) promAvg {
-	var sc, sm, sd float64
-	var nc, nm, nd int
+// promAvgOf 在线主机资源均值。
+//
+// netOK 传「采集到网络速率」的 instance 集合（值是什么不重要，只看在不在里面）：
+// 网络的分母必须是「真的采到速率的主机」，不能把没接网络指标的主机按 0% 混进分母 ——
+// 那会把均值稀释成 0.0%，面板看着像没数据。CPU/内存/磁盘 则是沿用「> 0 才算」的老口径。
+func promAvgOf(hosts []promHostStat, netOK map[string]float64) promAvg {
+	var sc, sm, sd, sn float64
+	var nc, nm, nd, nn int
 	for _, h := range hosts {
 		if !h.Up {
 			continue
@@ -359,6 +487,10 @@ func promAvgOf(hosts []promHostStat) promAvg {
 			sd += h.Disk
 			nd++
 		}
+		if _, ok := netOK[h.Instance]; ok {
+			sn += h.Net
+			nn++
+		}
 	}
 	avg := promAvg{}
 	if nc > 0 {
@@ -369,6 +501,9 @@ func promAvgOf(hosts []promHostStat) promAvg {
 	}
 	if nd > 0 {
 		avg.Disk = round1(sd / float64(nd))
+	}
+	if nn > 0 {
+		avg.Net = round1(sn / float64(nn))
 	}
 	return avg
 }
@@ -433,8 +568,17 @@ func promTopN(hosts []promHostStat, labels map[string]*promInstLabels, n int, pi
 	return out
 }
 
-// promFleetTrend 全集群资源趋势：区间查询 → 每个时间点对所有 instance 取均值
-func promFleetTrend(ctx context.Context, cli *promClient, window, step int64) []promTrendPoint {
+// promFleetTrend 全集群资源趋势 + 告警趋势（v1.7.39 起一并产出）。
+//
+// 两者共用同一批区间查询结果：
+//   - 均值趋势：每个时间点对所有 instance 取均值；
+//   - 告警趋势：每个时间点按配置阈值数「严重 / 关注」的 (主机 × 指标) 项数，离线计入严重。
+//
+// 共用一批查询的意义是口径必然一致：不会出现「趋势图上 CPU 都 95% 了、告警趋势却是 0 项」
+// 这种自相矛盾；顺带也不增加采集时间。
+func promFleetTrend(
+	ctx context.Context, cli *promClient, cfg *PromScreenConfig, window, step int64,
+) ([]promTrendPoint, []promAlertTrendPoint) {
 	end := time.Now().Unix()
 	start := end - window
 	// rate 窗口必须 ≥ 2*step，否则区间查询会出现空洞（Prometheus 官方口径）
@@ -446,7 +590,7 @@ func promFleetTrend(ctx context.Context, cli *promClient, window, step int64) []
 	memSeries, err2 := cli.queryRange(ctx, promQLMem, start, end, step)
 	diskSeries, err3 := cli.queryRange(ctx, promQLDisk, start, end, step)
 	if err1 != nil && err2 != nil && err3 != nil {
-		return []promTrendPoint{}
+		return []promTrendPoint{}, []promAlertTrendPoint{}
 	}
 	cpuByTs := promAvgByTs(cpuSeries)
 	memByTs := promAvgByTs(memSeries)
@@ -464,7 +608,19 @@ func promFleetTrend(ctx context.Context, cli *promClient, window, step int64) []
 		out = append(out, p)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].TS < out[j].TS })
-	return out
+
+	// 告警趋势：就在上面这三批序列上数超阈值项，不再额外发全量区间查询
+	alerts := promAlertTrendFromSeries([]promThresholdSeries{
+		{Series: cpuSeries, Warn: cfg.CPUWarn, Crit: cfg.CPUCrit},
+		{Series: memSeries, Warn: cfg.MemWarn, Crit: cfg.MemCrit},
+		{Series: diskSeries, Warn: cfg.DiskWarn, Crit: cfg.DiskCrit},
+	})
+	// 离线并入严重项（离线在 promBuildIssues 里本就是严重级）。
+	// 这条查询是服务端聚合的 count(up == 0)，只回 1 条序列，代价可忽略。
+	if offSeries, oerr := cli.queryRange(ctx, promQLOfflineCount, start, end, step); oerr == nil {
+		alerts = promAlertTrendAddOffline(alerts, offSeries)
+	}
+	return out, alerts
 }
 
 // promAvgByTs 矩阵序列 → 每个时间戳上所有 instance 的均值
