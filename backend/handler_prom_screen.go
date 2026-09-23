@@ -63,6 +63,80 @@ func promMasksToJSON(rules []promMaskRule) datatypes.JSON {
 	return datatypes.JSON(b)
 }
 
+// promPanelKeys 大屏面板白名单（v1.7.41「内容控制」）—— 与前端 utils/promPanels.ts 一一对应，
+// 新增面板必须两边同时加，否则配置存不下来（会被清洗掉）。
+//
+// 左栏：capacity 容量卡 / kpiTarget 监控目标·主机 / kpiOnline 目标在线·离线 /
+// kpiIssue 告警项·主机 / kpiDisk 磁盘告警 / kpiProject 项目·部门 / osDist 操作系统分布。
+// 中栏：gauges 平均使用率仪表 / topN 负载 TOP / hostBars 各主机实时使用率 /
+// healthDist 资源健康分布 / trend 资源使用率趋势。
+// 右栏：alerts 实时告警列表 / alertLevel 告警等级 / alertTrend 告警趋势 / hostScroll 主机实时资源。
+// 底部：footer 页脚采集信息。
+var promPanelKeys = []string{
+	"capacity", "kpiTarget", "kpiOnline", "kpiIssue", "kpiDisk", "kpiProject", "osDist",
+	"gauges", "topN", "hostBars", "healthDist", "trend",
+	"alerts", "alertLevel", "alertTrend", "hostScroll",
+	"footer",
+}
+
+var promPanelKeySet = func() map[string]bool {
+	m := make(map[string]bool, len(promPanelKeys))
+	for _, k := range promPanelKeys {
+		m[k] = true
+	}
+	return m
+}()
+
+// promCleanPanels 只保留白名单内的面板键（未知键丢弃，避免前端改名后残留垃圾配置）
+func promCleanPanels(in map[string]bool) map[string]bool {
+	out := map[string]bool{}
+	for k, v := range in {
+		if promPanelKeySet[k] {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// promParsePanels 落库 JSON → 面板开关表。
+//
+// ⚠️ 语义：**表里没有的键 = 展示**（缺省全开）—— 这样历史库（没这个字段）升级后行为不变。
+// 前端做同样处理，所以后端只需如实透传。
+func promParsePanels(raw datatypes.JSON) map[string]bool {
+	out := map[string]bool{}
+	if len(raw) == 0 {
+		return out
+	}
+	_ = json.Unmarshal([]byte(raw), &out)
+	return promCleanPanels(out)
+}
+
+// promCompactPanels 去掉冗余的「显式 true」项，只留 false（= 关闭的面板）。
+//
+// 语义是「表里没有的键 = 展示」，所以 true 是冗余的。紧凑化有两个好处：
+// ① 配置 JSON 不会随手点几下就膨胀；② 前端拿到的开关表就是「被关掉的面板」清单，一眼能看出差异。
+func promCompactPanels(in map[string]bool) map[string]bool {
+	out := map[string]bool{}
+	for k, v := range in {
+		if !v {
+			out[k] = false
+		}
+	}
+	return out
+}
+
+// promPanelsToJSON 面板开关表 → 落库 JSON（nil 也归一成 "{}"，避免库里出现 null）
+func promPanelsToJSON(m map[string]bool) datatypes.JSON {
+	if m == nil {
+		m = map[string]bool{}
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return datatypes.JSON("{}")
+	}
+	return datatypes.JSON(b)
+}
+
 // PromScreenConfig 监控大屏配置（全局单例，id=1）
 type PromScreenConfig struct {
 	ID          uint    `gorm:"primaryKey" json:"id"`
@@ -82,10 +156,19 @@ type PromScreenConfig struct {
 	GroupBy     string  `gorm:"size:16" json:"groupBy"` // 分组维度：system|department|env|deployserver
 	// NetBaseMbps 网络参考带宽（Mbps，v1.7.39）。网络使用率 = 出+入速率 ÷ 参考带宽；
 	// 优先用主机自己上报的 node_network_speed_bytes，未上报的（实测绝大多数）按这个值算。
-	NetBaseMbps int            `json:"netBaseMbps"`
-	Masks       datatypes.JSON `gorm:"type:text" json:"masks"` // 屏蔽规则（超阈值面板过滤，v1.7.35）
-	Remark      string         `gorm:"size:255" json:"remark"`
-	UpdatedAt   time.Time      `json:"updatedAt"`
+	NetBaseMbps int `json:"netBaseMbps"`
+	// MaskMode 规则模式（v1.7.41）：blacklist=命中规则的(主机,指标)不展示（默认）；whitelist=只展示命中规则的，
+	// 用于「我只想在大屏上盯这几台机器/这几个指标」的白名单控屏。
+	MaskMode string `gorm:"size:16" json:"maskMode"`
+	// RiskLevel 风险项等级口径（v1.7.41）：all=全部；crit=只展示严重；warn=只展示关注。
+	// 控的是「有风险的项」的可见范围，屏蔽规则控的是「哪台机器的哪个指标」。
+	RiskLevel string `gorm:"size:16" json:"riskLevel"`
+	// Panels 大屏面板显示开关（v1.7.41）：{面板key: bool}。**表里没有的键 = 展示**（缺省全开），
+	// 这样历史库升级后行为不变；前端改动开关时也只写显式 false 的键。
+	Panels    datatypes.JSON `gorm:"type:text" json:"panels"`
+	Masks     datatypes.JSON `gorm:"type:text" json:"masks"` // 屏蔽规则（超阈值面板过滤，v1.7.35）
+	Remark    string         `gorm:"size:255" json:"remark"`
+	UpdatedAt time.Time      `json:"updatedAt"`
 }
 
 // PromScreenSnapshot 最近一次采集快照落库（重启后可立即恢复大屏，不必等下一轮）
@@ -100,22 +183,25 @@ type PromScreenSnapshot struct {
 
 // promCfgView 下发给大屏的配置（只读视图，不含落库字段）
 type promCfgView struct {
-	Title       string         `json:"title"`
-	AutoCollect int            `json:"autoCollect"`
-	IntervalSec int            `json:"intervalSec"`
-	CPUWarn     float64        `json:"cpuWarn"`
-	CPUCrit     float64        `json:"cpuCrit"`
-	MemWarn     float64        `json:"memWarn"`
-	MemCrit     float64        `json:"memCrit"`
-	DiskWarn    float64        `json:"diskWarn"`
-	DiskCrit    float64        `json:"diskCrit"`
-	TopN        int            `json:"topN"`
-	HostLimit   int            `json:"hostLimit"`
-	ShowOffline int            `json:"showOffline"`
-	TrendHours  int            `json:"trendHours"`
-	GroupBy     string         `json:"groupBy"`
-	NetBaseMbps int            `json:"netBaseMbps"`
-	Masks       []promMaskRule `json:"masks"`
+	Title       string          `json:"title"`
+	AutoCollect int             `json:"autoCollect"`
+	IntervalSec int             `json:"intervalSec"`
+	CPUWarn     float64         `json:"cpuWarn"`
+	CPUCrit     float64         `json:"cpuCrit"`
+	MemWarn     float64         `json:"memWarn"`
+	MemCrit     float64         `json:"memCrit"`
+	DiskWarn    float64         `json:"diskWarn"`
+	DiskCrit    float64         `json:"diskCrit"`
+	TopN        int             `json:"topN"`
+	HostLimit   int             `json:"hostLimit"`
+	ShowOffline int             `json:"showOffline"`
+	TrendHours  int             `json:"trendHours"`
+	GroupBy     string          `json:"groupBy"`
+	NetBaseMbps int             `json:"netBaseMbps"`
+	MaskMode    string          `json:"maskMode"`
+	RiskLevel   string          `json:"riskLevel"`
+	Panels      map[string]bool `json:"panels"`
+	Masks       []promMaskRule  `json:"masks"`
 }
 
 // promIssue 超阈值条目（平台自算，不依赖 Prometheus 的 ALERTS）
@@ -181,6 +267,9 @@ func promDefaultConfig() *PromScreenConfig {
 		TrendHours:  24,
 		GroupBy:     "system",
 		NetBaseMbps: 1000,
+		MaskMode:    "blacklist",
+		RiskLevel:   "all",
+		Panels:      datatypes.JSON("{}"),
 	}
 }
 
@@ -201,6 +290,9 @@ func (c *PromScreenConfig) view() promCfgView {
 		TrendHours:  c.TrendHours,
 		GroupBy:     c.GroupBy,
 		NetBaseMbps: c.NetBaseMbps,
+		MaskMode:    c.MaskMode,
+		RiskLevel:   c.RiskLevel,
+		Panels:      promParsePanels(c.Panels),
 		Masks:       promParseMasks(c.Masks),
 	}
 }
@@ -282,6 +374,22 @@ func promNormalizeConfig(c *PromScreenConfig) {
 	if c.ShowOffline != 0 {
 		c.ShowOffline = 1
 	}
+	// 内容控制枚举兜底：老数据（这俩字段根本不存在 → 空串）统一落到默认档，
+	// 否则 promBuildIssues 里 MaskMode=="" 既不是 blacklist 也不是 whitelist，
+	// 会走到 `return !hit` 分支 —— 行为上碰巧等于 blacklist，但一旦有人改判断顺序就会「全隐藏」。
+	switch c.MaskMode {
+	case "blacklist", "whitelist":
+	default:
+		c.MaskMode = "blacklist"
+	}
+	switch c.RiskLevel {
+	case "all", "crit", "warn":
+	default:
+		c.RiskLevel = "all"
+	}
+	// 面板开关：只留白名单键，并去掉「值为 true」的冗余项 —— 语义是「表里没有的键 = 展示」，
+	// 显式写 true 没有意义（还让配置 JSON 越存越长），所以落库前紧凑化一次。
+	c.Panels = promPanelsToJSON(promCompactPanels(promParsePanels(c.Panels)))
 	// 屏蔽规则清洗：去空 target、metric 归一到白名单、条数上限 200
 	if rules := promParseMasks(c.Masks); len(rules) > 0 {
 		clean := make([]promMaskRule, 0, len(rules))
@@ -403,6 +511,7 @@ func promHostName(system, env, deploySvr, instance, hostname string) string {
 // promBuildIssues 按阈值生成超阈值清单（离线单列为「连通性」严重项）。
 // v1.7.35：先过屏蔽规则 —— 命中的 (主机, 指标) 不进清单也不计入统计。
 // v1.7.39：统计口径修正为「截断前全量」，并按指标拆出 byMetric。
+// v1.7.41：可见性加两道闸门 —— 等级口径（all/crit/warn）× 规则模式（blacklist/whitelist）。
 //
 // ⚠️ 原来是在 items 截断成 limit 条之后才统计 Crit/Warn，于是清单超过 100 条时
 // 左栏 KPI 会显示「≤100」而真实超阈值项可能是 300 —— 数字看着正常但是错的。
@@ -411,6 +520,21 @@ func promBuildIssues(hosts []promHostStat, cfg *PromScreenConfig, limit int) ([]
 	type item struct {
 		iss  promIssue
 		rank float64 // 排序权重：严重优先，其次数值大优先
+	}
+	// keep 判定「这条风险项该不该出现在大屏上」：先按等级口径筛，再按规则模式处理。
+	// ⚠️ 被过滤掉的项**既不进清单也不进统计**（否则大屏 KPI 与清单对不上）。
+	keep := func(level, metric, instance, name string) bool {
+		if cfg.RiskLevel == "crit" && level != "crit" {
+			return false
+		}
+		if cfg.RiskLevel == "warn" && level != "warn" {
+			return false
+		}
+		hit := promMasked(cfg, metric, instance, name)
+		if cfg.MaskMode == "whitelist" {
+			return hit
+		}
+		return !hit
 	}
 	items := make([]item, 0, len(hosts))
 	hostSet := map[string]bool{}
@@ -435,7 +559,7 @@ func promBuildIssues(hosts []promHostStat, cfg *PromScreenConfig, limit int) ([]
 			DeploySvr:  h.DeploySvr,
 		}
 		if !h.Up {
-			if promMasked(cfg, "offline", h.Instance, name) {
+			if !keep("crit", "offline", h.Instance, name) {
 				continue
 			}
 			iss := base
@@ -451,13 +575,17 @@ func promBuildIssues(hosts []promHostStat, cfg *PromScreenConfig, limit int) ([]
 			if v < warn {
 				return
 			}
-			if promMasked(cfg, metric, h.Instance, name) {
+			level := "warn"
+			if v >= crit {
+				level = "crit"
+			}
+			if !keep(level, metric, h.Instance, name) {
 				return
 			}
 			iss := base
 			iss.Metric, iss.MetricCN = metric, cn
 			iss.Value = round1(v)
-			if v >= crit {
+			if level == "crit" {
 				iss.Level, iss.LevelCN = "crit", "严重"
 			} else {
 				iss.Level, iss.LevelCN = "warn", "关注"
@@ -773,23 +901,27 @@ func jsonUnmarshalSnapshot(s string) (*promOverviewResp, error) {
 
 // promScreenCfgBody 保存大屏配置的请求体（开关类字段用指针区分「未传」与「显式 0」）
 type promScreenCfgBody struct {
-	Title       string          `json:"title"`
-	AutoCollect *int            `json:"autoCollect"`
-	IntervalSec int             `json:"intervalSec"`
-	CPUWarn     float64         `json:"cpuWarn"`
-	CPUCrit     float64         `json:"cpuCrit"`
-	MemWarn     float64         `json:"memWarn"`
-	MemCrit     float64         `json:"memCrit"`
-	DiskWarn    float64         `json:"diskWarn"`
-	DiskCrit    float64         `json:"diskCrit"`
-	TopN        int             `json:"topN"`
-	HostLimit   int             `json:"hostLimit"`
-	ShowOffline *int            `json:"showOffline"`
-	TrendHours  int             `json:"trendHours"`
-	GroupBy     string          `json:"groupBy"`
-	NetBaseMbps int             `json:"netBaseMbps"`
-	Masks       *[]promMaskRule `json:"masks"` // 指针：nil=未传（保持原值），传了=整体覆盖
-	Remark      string          `json:"remark"`
+	Title       string  `json:"title"`
+	AutoCollect *int    `json:"autoCollect"`
+	IntervalSec int     `json:"intervalSec"`
+	CPUWarn     float64 `json:"cpuWarn"`
+	CPUCrit     float64 `json:"cpuCrit"`
+	MemWarn     float64 `json:"memWarn"`
+	MemCrit     float64 `json:"memCrit"`
+	DiskWarn    float64 `json:"diskWarn"`
+	DiskCrit    float64 `json:"diskCrit"`
+	TopN        int     `json:"topN"`
+	HostLimit   int     `json:"hostLimit"`
+	ShowOffline *int    `json:"showOffline"`
+	TrendHours  int     `json:"trendHours"`
+	GroupBy     string  `json:"groupBy"`
+	NetBaseMbps int     `json:"netBaseMbps"`
+	MaskMode    string  `json:"maskMode"`
+	RiskLevel   string  `json:"riskLevel"`
+	// Panels 指针：nil=未传（保持原值），传了=整体覆盖（v1.7.41 内容控制）
+	Panels *map[string]bool `json:"panels"`
+	Masks  *[]promMaskRule  `json:"masks"` // 指针：nil=未传（保持原值），传了=整体覆盖
+	Remark string           `json:"remark"`
 }
 
 type promCollectStatus struct {
@@ -945,8 +1077,10 @@ func PromSaveScreenConfig(c *gin.Context) {
 	old := promLoadConfig()
 	// 只覆盖前端可调字段，避免前端漏传导致结构字段被清空。
 	//
-	// ⚠️ 数值/文本字段一律「非零才覆盖」：屏蔽规则页（独立菜单）只会提交 masks，
-	// 若在这里无条件赋值，保存一次屏蔽规则会把标题、采集间隔、阈值全部打回默认值。
+	// ⚠️ 数值/文本字段一律「非零才覆盖」：
+	// v1.7.36 起屏蔽规则一度是独立菜单，只提交 masks，无条件赋值会把标题/间隔/阈值全部打回默认值。
+	// v1.7.41 屏蔽规则并回大屏管理后（全页一个保存按钮、字段一起提交），这条防护依然保留：
+	// 老前端缓存、部分提交、导入脚本都在打这个接口，少传字段就该保持原值而不是被清零。
 	if t := strings.TrimSpace(body.Title); t != "" {
 		old.Title = t
 	}
@@ -1000,6 +1134,15 @@ func PromSaveScreenConfig(c *gin.Context) {
 	if body.GroupBy != "" {
 		old.GroupBy = body.GroupBy
 	}
+	if body.MaskMode != "" {
+		old.MaskMode = body.MaskMode
+	}
+	if body.RiskLevel != "" {
+		old.RiskLevel = body.RiskLevel
+	}
+	if body.Panels != nil {
+		old.Panels = promPanelsToJSON(promCompactPanels(promCleanPanels(*body.Panels)))
+	}
 	if body.Masks != nil {
 		old.Masks = promMasksToJSON(*body.Masks)
 	}
@@ -1010,12 +1153,19 @@ func PromSaveScreenConfig(c *gin.Context) {
 		Fail(c, http.StatusInternalServerError, 1, "保存失败："+err.Error())
 		return
 	}
-	// 屏蔽规则不必等下一轮采集：立即对内存快照重算超阈值清单（阈值类字段照旧等下一轮）
+	// 屏蔽规则 / 风险口径 / 面板开关都不必等下一轮采集：立即对内存快照重算。
+	// （阈值类字段仍照旧等下一轮采集 —— 重算只影响 issues，不重算主机水位曲线。）
 	promReapplyMasks(old)
-	OK(c, gin.H{"msg": "已保存，屏蔽规则立即生效；其它配置下一轮采集生效", "config": old})
+	OK(c, gin.H{"msg": "已保存：内容与屏蔽规则立即生效；阈值/间隔下一轮采集生效", "config": old.view()})
 }
 
-// promReapplyMasks 按最新配置重算所有内存快照的超阈值清单（保存屏蔽规则后立刻可见）
+// promReapplyMasks 按最新配置重算所有内存快照的超阈值清单。
+//
+// v1.7.35：保存屏蔽规则后立刻可见（不等下一轮采集）。
+// v1.7.41：风险口径（RiskLevel）与规则模式（MaskMode）也走这里 —— 它们同样只影响
+// 「哪些超阈值项进清单」，全部由 promBuildIssues 一处收口，所以一次重算即可三档生效。
+//
+// ⚠️ 别把这里扩成「重算一切」：主机水位/网络/分组统计是采集期产物，重算它们等于就地伪造数据。
 func promReapplyMasks(cfg *PromScreenConfig) {
 	promSnapMu.Lock()
 	defer promSnapMu.Unlock()

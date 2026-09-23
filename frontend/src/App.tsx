@@ -26,10 +26,7 @@ import DeployRecords from './pages/DeployRecords'
 import InspectionScreen from './pages/InspectionScreen'
 import InspectionReport from './pages/InspectionReport'
 import PromDataSources from './pages/PromDataSources'
-import PromMaskRules from './pages/PromMaskRules'
 import PromReport from './pages/PromReport'
-import PromReportRecords from './pages/PromReportRecords'
-import PromReportTemplates from './pages/PromReportTemplates'
 import PromScreen from './pages/PromScreen'
 import PromScreenAdmin from './pages/PromScreenAdmin'
 import WebTerminalPage from './pages/WebTerminalPage'
@@ -52,6 +49,17 @@ function IndexRedirect() {
     )
   }
   return <Navigate to={p} replace />
+}
+
+/**
+ * 老链接兼容（v1.7.41）：「报表模板 / 报告记录」已并入「监控报表」的三个页签。
+ * 这里把旧路径原样转到对应页签，并**保留 query**（?view=<id> 这类深链不能丢）。
+ * 直接读 window.location.search：这个组件只在旧链接被访问时渲染一次。
+ */
+function PromTabRedirect({ tab }: { tab: string }) {
+  const q = new URLSearchParams(window.location.search)
+  q.set('tab', tab)
+  return <Navigate to={`/prom/report?${q.toString()}`} replace />
 }
 
 export default function App() {
@@ -104,16 +112,17 @@ export default function App() {
         <Route path="inspection/tasks" element={<RequirePerm perm="inspection:view"><InspectionTasks /></RequirePerm>} />
         <Route path="inspection/records" element={<RequirePerm perm="inspection:view"><InspectionRecords /></RequirePerm>} />
         <Route path="inspection/alert-rules" element={<RequirePerm perm="inspection:manage"><InspectionAlertRules /></RequirePerm>} />
-        {/* Prometheus 监控（v1.8.0 独立大类）：数据源 / 报表 / 报告记录在主布局内，大屏新标签页 */}
+        {/* Prometheus 监控（v1.8.0 独立大类）：数据源 / 监控报表在主布局内，大屏新标签页 */}
         <Route path="prom/datasources" element={<RequirePerm perm="prom:view"><PromDataSources /></RequirePerm>} />
+        {/* 监控报表（v1.7.41 起内含「生成报告 / 报表模板 / 报告记录」三页签） */}
         <Route path="prom/report" element={<RequirePerm perm="prom:view"><PromReport /></RequirePerm>} />
-        {/* 报表模板（v1.7.38）：建模板是普通使用者的日常动作（prom:view），
-            改 / 删只能动自己的 —— 行级权限在后端按 owner 判定，前端按 canEdit 显示按钮 */}
-        <Route path="prom/report-templates" element={<RequirePerm perm="prom:view"><PromReportTemplates /></RequirePerm>} />
-        <Route path="prom/report-records" element={<RequirePerm perm="prom:view"><PromReportRecords /></RequirePerm>} />
-        {/* 大屏管理（阈值 / 采集频率）与屏蔽规则属配置动作 → prom:manage */}
+        {/* 老链接兼容：两个独立菜单已合并，旧路径重定向到对应页签 */}
+        <Route path="prom/report-templates" element={<RequirePerm perm="prom:view"><PromTabRedirect tab="templates" /></RequirePerm>} />
+        <Route path="prom/report-records" element={<RequirePerm perm="prom:view"><PromTabRedirect tab="records" /></RequirePerm>} />
+        {/* 大屏管理（展示内容 / 风险与屏蔽 / 阈值与采集）：配置动作 → prom:manage。
+            v1.7.36 独立出去的「屏蔽规则」v1.7.41 已并回本页，/prom/masks 一并重定向。 */}
         <Route path="prom/screen-admin" element={<RequirePerm perm="prom:manage"><PromScreenAdmin /></RequirePerm>} />
-        <Route path="prom/masks" element={<RequirePerm perm="prom:manage"><PromMaskRules /></RequirePerm>} />
+        <Route path="prom/masks" element={<RequirePerm perm="prom:manage"><Navigate to="/prom/screen-admin" replace /></RequirePerm>} />
       </Route>
       <Route
         path="/webterm/:assetId"

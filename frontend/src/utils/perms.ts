@@ -27,17 +27,16 @@ export const ROUTE_PERMS: { path: string; perm: string }[] = [
   // 巡检大屏：独立权限码，可单独授予「只看大屏」的账号。
   // 放在最后，保证同时有 inspection:view 的账号仍首选落到「智能巡检」而非大屏。
   { path: '/inspection/screen', perm: 'inspection:screen' },
-  // Prometheus 监控（v1.8.0）：数据源/指标/报表用 prom:view（页面内按 prom:manage 收口）；
+  // Prometheus 监控（v1.8.0）：数据源/监控报表用 prom:view（页面内按 prom:manage 收口）；
   // 大屏独立权限码，可单独授予「只看大屏」的账号（路由侧 RequireAnyPerm 放行两种）。
   { path: '/prom/datasources', perm: 'prom:view' },
+  // 监控报表（v1.7.41 起内含「生成报告 / 报表模板 / 报告记录」三页签）。
+  // ⚠️ /prom/report-templates、/prom/report-records 只剩重定向，**不列在这里** ——
+  // 否则 firstAccessiblePath 可能把用户送到一个立刻跳走的路径上。
   { path: '/prom/report', perm: 'prom:view' },
-  // 报表模板（v1.7.38）：按项目出报告的模板由使用者自己维护，用 prom:view
-  { path: '/prom/report-templates', perm: 'prom:view' },
-  { path: '/prom/report-records', perm: 'prom:view' },
   { path: '/prom/screen', perm: 'prom:screen' },
-  // 大屏管理（阈值 / 采集频率 / 手动采集）与屏蔽规则：配置动作，用 prom:manage
+  // 大屏管理（展示内容 / 风险与屏蔽 / 阈值与采集）：配置动作，用 prom:manage
   { path: '/prom/screen-admin', perm: 'prom:manage' },
-  { path: '/prom/masks', perm: 'prom:manage' },
 ]
 
 // 路由路径 -> 所需权限码

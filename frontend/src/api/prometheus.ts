@@ -134,6 +134,24 @@ export interface PromCfgView {
    * 没有它就只能按参考带宽算百分比 —— 否则网络那一列全空、版面与巡检大屏对不齐。
    */
   netBaseMbps: number
+  /**
+   * 规则模式（v1.7.41）：
+   *  - `blacklist`（默认）：命中规则的 (主机,指标) **不展示**
+   *  - `whitelist`：**只展示**命中规则的，用于「只想在大屏上盯这几台机器/这几个指标」
+   */
+  maskMode: PromMaskMode
+  /**
+   * 风险项等级口径（v1.7.41）：
+   *  - `all`（默认）全部超阈值项都上屏
+   *  - `crit` 只展示严重（`warn` 全隐藏）
+   *  - `warn` 只展示关注（`crit` 全隐藏）
+   */
+  riskLevel: PromRiskLevel
+  /**
+   * 面板显示开关（v1.7.41）：`{ 面板key: false }`。
+   * ⚠️ 语义是「**表里没有的键 = 展示**」（缺省全开）—— 历史配置没有这个字段，升级后行为不变。
+   */
+  panels?: Record<string, boolean>
   masks?: PromMaskRule[]
 }
 
@@ -150,6 +168,12 @@ export interface PromMaskRule {
   metric: 'all' | 'cpu' | 'mem' | 'disk' | 'offline'
   note?: string
 }
+
+/** 屏蔽规则模式（v1.7.41）：黑名单=命中即隐藏；白名单=只展示命中的 */
+export type PromMaskMode = 'blacklist' | 'whitelist'
+
+/** 风险项等级口径（v1.7.41）：大屏上允许出现哪种等级的超阈值项 */
+export type PromRiskLevel = 'all' | 'crit' | 'warn'
 
 export interface PromUsageDist {
   low: number

@@ -60,7 +60,18 @@ const PERIOD_LABEL: Record<Period, string> = {
  * 权限：建模板人人都行（prom:view），改 / 删只能动自己的（或 prom:manage 管理员）；
  * 别人共享的模板只能「用」和「复制成自己的」。
  */
-export default function PromReportTemplates() {
+export default function PromReportTemplates({
+  embedded = false,
+  onUse,
+}: {
+  /** 嵌在「监控报表」页签里时置 true：不渲染页面级标题栏（标题由外层 Tabs 承载） */
+  embedded?: boolean
+  /**
+   * 点「使用」时的回调。嵌入在监控报表里时由外层切换到「生成报告」页签并带上模板参数，
+   * 而不是新开一个浏览器标签页 —— 同一页里来回跳转比开一堆标签更好用。
+   */
+  onUse?: (t: PromReportTemplate) => void
+} = {}) {
   const [dss, setDss] = useState<PromDataSource[]>([])
   const [list, setList] = useState<PromReportTemplate[]>([])
   const [myUid, setMyUid] = useState(0)
@@ -294,12 +305,17 @@ export default function PromReportTemplates() {
         width: 240,
         render: (_: any, r: PromReportTemplate) => (
           <Space size={4}>
-            <Tooltip title="带着模板的数据源 / 项目范围 / 周期打开「监控报表」">
+            <Tooltip title="带着模板的数据源 / 项目范围 / 周期跳到「生成报告」">
               <Button
                 type="primary"
                 size="small"
                 icon={<FundOutlined />}
-                onClick={() => window.open(`/prom/report?template=${r.id}`, '_blank')}
+                onClick={() => {
+                  // 嵌在监控报表里 → 就地切到「生成报告」页签（同一页内跳转，不开新标签）；
+                  // 独立路由访问时保持原行为：新标签打开监控报表并带上模板。
+                  if (onUse) onUse(r)
+                  else window.open(`/prom/report?template=${r.id}`, '_blank')
+                }}
               >
                 生成报告
               </Button>
@@ -321,7 +337,7 @@ export default function PromReportTemplates() {
         ),
       },
     ],
-    [openEdit, openCreate, onDelete, myUid],
+    [openEdit, openCreate, onDelete, myUid, onUse],
   )
 
   // 按 ownerId 判断「我的」，不能用 canEdit：管理员对所有人的模板都能改，
@@ -330,28 +346,43 @@ export default function PromReportTemplates() {
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
-        <Title level={4} style={{ margin: 0 }}>
-          <ProfileOutlined style={{ marginRight: 8 }} />
-          报表模板
-        </Title>
-        <Tag color="purple">v1.7.38</Tag>
-        <Space style={{ marginLeft: 'auto' }}>
-          <Button icon={<ReloadOutlined />} onClick={load} loading={loading}>
-            刷新
-          </Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate()}>
-            新建模板
-          </Button>
-        </Space>
-      </div>
+      {!embedded && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+          <Title level={4} style={{ margin: 0 }}>
+            <ProfileOutlined style={{ marginRight: 8 }} />
+            报表模板
+          </Title>
+          <Tag color="purple">v1.7.41</Tag>
+          <Space style={{ marginLeft: 'auto' }}>
+            <Button icon={<ReloadOutlined />} onClick={load} loading={loading}>
+              刷新
+            </Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate()}>
+              新建模板
+            </Button>
+          </Space>
+        </div>
+      )}
+
+      {embedded && (
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12 }}>
+          <Space style={{ marginLeft: 'auto' }}>
+            <Button icon={<ReloadOutlined />} onClick={load} loading={loading}>
+              刷新
+            </Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate()}>
+              新建模板
+            </Button>
+          </Space>
+        </div>
+      )}
 
       <Alert
         type="info"
         showIcon
         style={{ marginBottom: 12 }}
         message="模板 = 数据源 + 项目范围 + 周期，用来固定「我负责的这些项目」的报告口径"
-        description="每个人负责的项目不同，各自建自己的模板即可：在「监控报表」里选好项目后点「另存为模板」，或在这里直接新建。模板只保存口径、不保存报告数据，改模板不影响已归档的历史报告。"
+        description="每个人负责的项目不同，各自建自己的模板即可：在「生成报告」里选好项目后点「另存为模板」，或在这里直接新建。模板只保存口径、不保存报告数据，改模板不影响已归档的历史报告。"
       />
 
       <Card size="small">

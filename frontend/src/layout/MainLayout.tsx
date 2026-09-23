@@ -25,8 +25,6 @@ import {
   FundOutlined,
   NodeIndexOutlined,
   BarChartOutlined,
-  ProfileOutlined,
-  StopOutlined,
   SettingOutlined,
   TeamOutlined,
   KeyOutlined,
@@ -206,10 +204,9 @@ export default function MainLayout() {
       label: 'Prometheus 监控',
       children: [
         { key: '/prom/datasources', icon: <ApiOutlined />, label: '数据源管理', perm: 'prom:view' },
+        // 监控报表（v1.7.41）：内含「生成报告 / 报表模板 / 报告记录」三个页签。
+        // 原本三样各占一个菜单，用户反馈「太乱了」，合并后菜单只留这一个入口。
         { key: '/prom/report', icon: <BarChartOutlined />, label: '监控报表', perm: 'prom:view' },
-        // 报表模板（v1.7.38）：普通使用者给自己负责的项目建模板 / 出季度报告，用 prom:view
-        { key: '/prom/report-templates', icon: <ProfileOutlined />, label: '报表模板', perm: 'prom:view' },
-        { key: '/prom/report-records', icon: <FileTextOutlined />, label: '报告记录', perm: 'prom:view' },
         {
           key: '/prom/screen',
           icon: <DotChartOutlined />,
@@ -225,8 +222,9 @@ export default function MainLayout() {
           ),
           perms: ['prom:screen', 'prom:view'],
         },
+        // 大屏管理（v1.7.41）：展示内容 / 风险与屏蔽 / 阈值与采集 三页签，
+        // v1.7.36 独立出去的「屏蔽规则」已并回本页。
         { key: '/prom/screen-admin', icon: <ControlOutlined />, label: '大屏管理', perm: 'prom:manage' },
-        { key: '/prom/masks', icon: <StopOutlined />, label: '屏蔽规则', perm: 'prom:manage' },
       ],
     },
 

@@ -17,6 +17,7 @@ import {
   Spin,
   Statistic,
   Table,
+  Tabs,
   Tag,
   Tooltip,
   Typography,
@@ -38,6 +39,8 @@ import {
 } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
 import dayjs, { type Dayjs } from 'dayjs'
+import PromReportRecords from './PromReportRecords'
+import PromReportTemplates from './PromReportTemplates'
 import {
   createPromReportTemplate,
   deletePromReportTemplate,
@@ -98,7 +101,18 @@ function fmtPct(v: number | undefined | null): string {
  *
  * 不选项目 = 不限项目，覆盖数据源下全部主机（与 v1.7.37 及以前口径一致）。
  */
-export default function PromReportPage() {
+function PromReportGenerate({
+  onOpenArchived,
+  tplReq,
+}: {
+  /** 点归档提示里的「查看」→ 由外层切到「报告记录」页签并带上 ?view= */
+  onOpenArchived?: (id: number) => void
+  /**
+   * 外层（报表模板页签）带着模板跳过来。用「请求序号」而不是裸 id：
+   * 同一个模板被点第二次也要能再次生效，裸 id 相同的话 effect 不会触发。
+   */
+  tplReq?: { id: number; seq: number } | null
+} = {}) {
   const [dss, setDss] = useState<PromDataSource[]>([])
   const [ds, setDs] = useState<number | null>(null)
   const [period, setPeriod] = useState<Period>('month')
@@ -250,6 +264,20 @@ export default function PromReportPage() {
       message.warning('链接里的报表模板不存在或已被删除')
     }
   }, [deepLinkTpl, templates, applyTemplate])
+
+  // 页内「报表模板」页签点「生成报告」→ 就地套用该模板（不开新标签页）。
+  // 同样要等模板列表到位，否则找不到模板会被误报成「已删除」。
+  const lastTplSeq = useRef(0)
+  useEffect(() => {
+    if (!tplReq || tplReq.seq === lastTplSeq.current || templates.length === 0) return
+    lastTplSeq.current = tplReq.seq
+    if (templates.some((t) => t.id === tplReq.id)) {
+      applyTemplate(tplReq.id)
+      message.success('已套用该模板的项目范围与周期')
+    } else {
+      message.warning('该报表模板不存在或已被删除')
+    }
+  }, [tplReq, templates, applyTemplate])
 
   // 已选项目在当前数据源里已不存在的（项目改名 / target 下线）——必须提示，
   // 否则用户以为报告覆盖了 5 个项目，实际只统计到 3 个
@@ -592,36 +620,20 @@ export default function PromReportPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
-        <Title level={4} style={{ margin: 0 }}>
-          <BarChartOutlined style={{ marginRight: 8 }} />
-          Prometheus 监控报表
-        </Title>
-        <Tag color="purple">v1.7.38</Tag>
-        <Space style={{ marginLeft: 'auto' }}>
-          <Button icon={<ProfileOutlined />} onClick={() => window.open('/prom/report-templates', '_blank')}>
-            报表模板
-          </Button>
-          <Button
-            icon={<HistoryOutlined />}
-            onClick={() => window.open('/prom/report-records', '_blank')}
-          >
-            报告记录
-          </Button>
-        </Space>
-      </div>
-
       {archivedId && (
         <Alert
           type="success"
           showIcon
           style={{ marginBottom: 12 }}
           message={`本次报告已归档为「报告记录 #${archivedId}」`}
-          description="可在「报告记录」里随时回看这份报告并重新导出 Excel —— 数据是生成时冻结的快照，不会随后续采集变化。"
+          description="可在「报告记录」页签里随时回看这份报告并重新导出 Excel —— 数据是生成时冻结的快照，不会随后续采集变化。"
           action={
             <Button
               size="small"
-              onClick={() => window.open(`/prom/report-records?view=${archivedId}`, '_blank')}
+              onClick={() => {
+                if (onOpenArchived) onOpenArchived(archivedId)
+                else window.open(`/prom/report-records?view=${archivedId}`, '_blank')
+              }}
             >
               查看
             </Button>
@@ -1025,6 +1037,140 @@ export default function PromReportPage() {
           </Text>
         </div>
       </Modal>
+    </div>
+  )
+}
+
+/**
+ * Prometheus 监控报表（v1.7.38 建模板/记录 → v1.7.41 合并成三个页签）
+ *
+ * 原来「监控报表 / 报表模板 / 报告记录」是三个并列菜单，用户抱怨「太乱了」：
+ * 它们本来就是同一条工作流的三步（定口径 → 出报告 → 回看历史），
+ * 拆成三个菜单后每次都要在菜单里来回跳，模板点「生成报告」还得开新标签页。
+ * 现在合成一页三页签，菜单只留一个「监控报表」。
+ *
+ * ⚠️ 三个页签都 forceRender：一是让深链（?view= / ?template=）在首次渲染就能落到目标页签，
+ * 二是切页签保留各自状态（筛选条件、已生成的报告）—— 用户不会因为去看了眼模板就丢掉手上的报告。
+ *
+ * 兼容旧链接：
+ *   - `/prom/report?template=<id>` 仍按老逻辑套用模板（由「生成报告」页签自己解析）；
+ *   - `/prom/report?view=<id>` 打开「报告记录」并弹出对应详情抽屉；
+ *   - `/prom/report-templates`、`/prom/report-records` 在路由层重定向到本页对应页签。
+ */
+export default function PromReportPage() {
+  const [sp, setSp] = useSearchParams()
+  const [tab, setTab] = useState<string>(() => {
+    if (sp.get('view')) return 'records'
+    const t = sp.get('tab')
+    if (t === 'templates' || t === 'records') return t
+    return 'generate'
+  })
+  const [tplReq, setTplReq] = useState<{ id: number; seq: number } | null>(null)
+
+  // 深链 ?view=<id>：取出来交给「报告记录」页签打开详情抽屉
+  const viewId = useMemo(() => {
+    const n = Number(sp.get('view') || 0)
+    return n > 0 ? n : null
+  }, [sp])
+
+  const clearView = useCallback(() => {
+    // 抽屉关掉就把参数清掉：否则分享出去的链接「一打开就弹抽屉」
+    setSp(
+      (cur) => {
+        const next = new URLSearchParams(cur)
+        next.delete('view')
+        return next
+      },
+      { replace: true },
+    )
+  }, [setSp])
+
+  const openArchived = useCallback(
+    (id: number) => {
+      setTab('records')
+      setSp(
+        (cur) => {
+          const next = new URLSearchParams(cur)
+          next.set('view', String(id))
+          return next
+        },
+        { replace: true },
+      )
+    },
+    [setSp],
+  )
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
+        <Title level={4} style={{ margin: 0 }}>
+          <BarChartOutlined style={{ marginRight: 8 }} />
+          Prometheus 监控报表
+        </Title>
+        <Tag color="purple">v1.7.41</Tag>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          定口径（模板）→ 出报告 → 回看历史，都在这一页
+        </Text>
+      </div>
+
+      <Tabs
+        activeKey={tab}
+        onChange={(k) => {
+          setTab(k)
+          // 页签写回 URL：刷新 / 分享链接能落到同一个页签。
+          // 离开「报告记录」时顺手清掉 view —— 否则再切回来会莫名其妙弹出上次的抽屉。
+          setSp(
+            (cur) => {
+              const next = new URLSearchParams(cur)
+              next.set('tab', k)
+              if (k !== 'records') next.delete('view')
+              return next
+            },
+            { replace: true },
+          )
+        }}
+        items={[
+          {
+            key: 'generate',
+            label: (
+              <span>
+                <BarChartOutlined /> 生成报告
+              </span>
+            ),
+            forceRender: true,
+            children: <PromReportGenerate tplReq={tplReq} onOpenArchived={openArchived} />,
+          },
+          {
+            key: 'templates',
+            label: (
+              <span>
+                <ProfileOutlined /> 报表模板
+              </span>
+            ),
+            forceRender: true,
+            children: (
+              <PromReportTemplates
+                embedded
+                onUse={(t) => {
+                  // 就地切到「生成报告」并套用模板 —— 不再开新标签页
+                  setTplReq({ id: t.id, seq: Date.now() })
+                  setTab('generate')
+                }}
+              />
+            ),
+          },
+          {
+            key: 'records',
+            label: (
+              <span>
+                <HistoryOutlined /> 报告记录
+              </span>
+            ),
+            forceRender: true,
+            children: <PromReportRecords embedded viewId={viewId} onCloseView={clearView} />,
+          },
+        ]}
+      />
     </div>
   )
 }

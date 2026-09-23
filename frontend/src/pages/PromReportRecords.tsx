@@ -84,7 +84,21 @@ function scoreColor(s: number): string {
  * ⚠️ 归档存的是报告数据（rows/trend/fleet/config），不是 xlsx 文件：
  * 数据是生成时的冻结快照，用同一套产出口径重新生成即可，且「≤5MB 降级策略」继续生效。
  */
-export default function PromReportRecords() {
+export default function PromReportRecords({
+  embedded = false,
+  viewId = null,
+  onCloseView,
+}: {
+  /**
+   * 嵌在「监控报表」页签里时置 true：不渲染页面级标题栏（标题由外层的 Tabs 承载），
+   * 避免同一页出现「Prometheus 监控报表」+「报告记录」两级标题。
+   */
+  embedded?: boolean
+  /** 深链要打开的报告 id（由外层从 ?view= 解析后传入；为 null 表示没有深链） */
+  viewId?: number | null
+  /** 抽屉被关掉时通知外层清掉 ?view= 参数 */
+  onCloseView?: () => void
+} = {}) {
   // 重命名 / 删除是配置动作，只有 prom:manage 才显示（后端同样按 prom:manage 收口）
   const { hasPerm } = useAuth()
   const canManage = hasPerm('prom:manage')
@@ -150,12 +164,19 @@ export default function PromReportRecords() {
     load()
   }, [load])
 
-  // 深链支持：从监控报表页「查看」带过来的 ?view=<id>
+  // 深链支持：从监控报表页「查看」带过来的 ?view=<id>。
+  // 嵌入模式由外层解析 URL 后通过 viewId 传入（外层还负责在关抽屉时清掉参数）；
+  // 独立路由访问时仍然自己读一次 URL，保证老书签 / 直链不失效。
   useEffect(() => {
+    if (viewId) {
+      openDetail(viewId)
+      return
+    }
+    if (embedded) return
     const m = /[?&]view=(\d+)/.exec(window.location.search)
     if (m) openDetail(Number(m[1]))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [viewId, embedded])
 
   const openDetail = useCallback(async (id: number) => {
     setDetailOpen(true)
@@ -517,24 +538,26 @@ export default function PromReportRecords() {
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
-        <Title level={4} style={{ margin: 0 }}>
-          <FileTextOutlined style={{ marginRight: 8 }} />
-          报告记录
-        </Title>
-        <Tag color="purple">v1.7.38</Tag>
-        <Space style={{ marginLeft: 'auto' }}>
-          <Button icon={<ReloadOutlined />} onClick={load} loading={loading}>
-            刷新
-          </Button>
-        </Space>
-      </div>
+      {!embedded && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+          <Title level={4} style={{ margin: 0 }}>
+            <FileTextOutlined style={{ marginRight: 8 }} />
+            报告记录
+          </Title>
+          <Tag color="purple">v1.7.41</Tag>
+          <Space style={{ marginLeft: 'auto' }}>
+            <Button icon={<ReloadOutlined />} onClick={load} loading={loading}>
+              刷新
+            </Button>
+          </Space>
+        </div>
+      )}
 
       <Alert
         type="info"
         showIcon
         style={{ marginBottom: 12 }}
-        message="每次在「监控报表」点「生成报告」都会自动归档一条记录"
+        message="每次在「生成报告」里出报告都会自动归档一条记录"
         description="记录里保存的是报告生成时冻结的数据快照：可随时回看、按同一口径重新导出 Excel（仍受 5MB 上限保护），也可重命名或删除。按项目生成的报告会连同「项目范围」一起冻结，回看时能确认它覆盖了哪些项目。"
       />
 
@@ -627,7 +650,11 @@ export default function PromReportRecords() {
       <Drawer
         width={1100}
         open={detailOpen}
-        onClose={() => setDetailOpen(false)}
+        onClose={() => {
+          setDetailOpen(false)
+          // 通知外层把 ?view= 清掉：否则分享出去的链接会「一打开就弹抽屉」
+          onCloseView?.()
+        }}
         title={detail ? `报告详情 · ${detail.title}` : '报告详情'}
         extra={
           detail && (

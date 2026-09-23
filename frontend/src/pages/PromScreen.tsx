@@ -31,6 +31,7 @@ import {
 } from '../api/prometheus'
 import { useAuth } from '../store/AuthContext'
 import { firstAccessiblePath } from '../utils/perms'
+import { promColOn, promPanelOn, promRowsCss } from '../utils/promPanels'
 
 /**
  * Prometheus 监控大屏（v1.7.39：完全复刻「巡检大屏」版面）
@@ -510,6 +511,65 @@ export default function PromScreen() {
   const TOP_COLS = canvas.w >= 2000 ? 4 : 3
   const TOP_N = cfg?.topN ?? 5
 
+  /* ---------- 内容控制（v1.7.41）：面板开关 → 行模板 / 整栏显隐 ---------- */
+  // 面板可见性：缺省 = 展示。关掉的面板不渲染，同一栏里其余面板自动接管它的高度。
+  const on = (k: Parameters<typeof promPanelOn>[1]) => promPanelOn(cfg?.panels, k)
+
+  // 风险项是否被「等级口径」收窄（≠ 全部）。KPI / 空清单文案要据此解释「为什么数字变小了」——
+  // 否则运维会以为漏统计了，反过来把阈值调错。
+  const riskControlled = cfg?.riskLevel === 'crit' || cfg?.riskLevel === 'warn'
+
+  // 左栏 7 格：整体占满的是「操作系统分布」，其余按设计稿固定高。
+  const LEFT_ROWS = promRowsCss([
+    { on: on('capacity'), h: '96px' },
+    { on: on('kpiTarget'), h: '88px' },
+    { on: on('kpiOnline'), h: '88px' },
+    { on: on('kpiIssue'), h: '88px' },
+    { on: on('kpiDisk'), h: '88px' },
+    { on: on('kpiProject'), h: '88px' },
+    { on: on('osDist'), h: 'FR' },
+  ])
+  // 中栏：「各主机实时使用率」与「资源健康分布」**同一行并排**，
+  // 所以按「行」而不是「面板」来算模板 —— 只剩一个时它就独占整行。
+  const MID_SPLIT = on('hostBars') || on('healthDist')
+  const MID_ROWS = promRowsCss([
+    { on: on('gauges'), h: '86px' },
+    { on: on('topN'), h: '196px' },
+    { on: MID_SPLIT, h: 'FR' },
+    { on: on('trend'), h: '230px' },
+  ])
+  // 右栏：「告警等级」与「告警趋势」同样同一行并排。
+  const RIGHT_SPLIT = on('alertLevel') || on('alertTrend')
+  const RIGHT_ROWS = promRowsCss([
+    { on: on('alerts'), h: 'FR' },
+    { on: RIGHT_SPLIT, h: '190px' },
+    { on: on('hostScroll'), h: '240px' },
+  ])
+
+  const LEFT_ON = promColOn(cfg?.panels, 'left')
+  const MID_ON = promColOn(cfg?.panels, 'mid')
+  const RIGHT_ON = promColOn(cfg?.panels, 'right')
+  const BODY_EMPTY = !LEFT_ON && !MID_ON && !RIGHT_ON
+  const FOOT_ON = on('footer')
+
+  // 页面栅格：整栏面板全关时把该栏摘掉，剩余栏位自动占满 —— 否则会留下一整条空白栏。
+  // 中栏（1fr）被关掉时，左右两栏从「设计固定宽」改成 minmax 平分，避免只占中间一小块。
+  const bodyTracks = (() => {
+    const all = [
+      { key: 'left', on: LEFT_ON, fixed: 'clamp(260px, 17%, 420px)', min: 260 },
+      { key: 'mid', on: MID_ON, fixed: '1fr', min: 0 },
+      { key: 'right', on: RIGHT_ON, fixed: 'clamp(290px, 19%, 460px)', min: 290 },
+    ].filter((c) => c.on)
+    if (all.length === 0) return ''
+    if (all.length === 1) return '1fr'
+    return all
+      .map((c) => {
+        if (c.key === 'mid') return '1fr'
+        return MID_ON ? c.fixed : `minmax(${c.min}px, 1fr)`
+      })
+      .join(' ')
+  })()
+
   if (!snap && loading) {
     return (
       <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#060b18' }}>
@@ -762,21 +822,41 @@ export default function PromScreen() {
               </span>
             </div>
           )
+        ) : BODY_EMPTY ? (
+          /* 所有面板都被关掉：给一句明确指引，而不是留一块纯黑 —— 投屏上纯黑看着像大屏坏了 */
+          <div style={{ height: BODY_H, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div className="dash-panel" style={{ padding: '30px 44px', textAlign: 'center', maxWidth: 600 }}>
+              <div style={{ fontSize: 15, color: '#e2e8f0', marginBottom: 10 }}>当前大屏没有显示任何面板</div>
+              <div style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.9 }}>
+                左 / 中 / 右三栏的面板都在「大屏管理」里被关闭了。
+                <br />
+                {hasPerm('prom:manage') ? (
+                  <a href="/prom/screen-admin" style={{ color: '#38bdf8' }}>
+                    前往「大屏管理 → 展示内容」重新勾选需要展示的面板
+                  </a>
+                ) : (
+                  <>请联系管理员在「大屏管理 → 展示内容」里重新勾选需要展示的面板</>
+                )}
+              </div>
+            </div>
+          </div>
         ) : (
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: 'clamp(260px, 17%, 420px) 1fr clamp(290px, 19%, 460px)',
+              gridTemplateColumns: bodyTracks,
               gap: 12,
               padding: `0 ${BODY_PAD}px`,
               height: BODY_H,
               alignItems: 'stretch',
             }}
           >
-            {/* ===== 左栏 集群总览（5 KPI 固定高 + OS 分布占满） ===== */}
-            <div style={{ display: 'grid', gridTemplateRows: '96px 88px 88px 88px 88px 88px 1fr', gap: 10, minHeight: 0 }}>
+            {/* ===== 左栏 集群总览（面板可关；关掉后同一栏里其余面板自动补位，不留空白） ===== */}
+            {LEFT_ON && (
+            <div style={{ display: 'grid', gridTemplateRows: LEFT_ROWS, gap: 10, minHeight: 0 }}>
               {/* 容量卡：三列等分（CPU 核数 / 内存 / 存储） */}
-              <div className="dash-panel" style={{ height: 96, padding: '0 14px', display: 'flex', alignItems: 'center' }}>
+              {on('capacity') && (
+              <div className="dash-panel" style={{ height: '100%', minHeight: 96, padding: '0 14px', display: 'flex', alignItems: 'center' }}>
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                   <div style={{ color: '#94a3b8', fontSize: 10, letterSpacing: 1 }}>CPU 核数</div>
                   <div className="dash-num" style={{ fontSize: 24, color: '#38bdf8', textShadow: '0 0 12px rgba(56,189,248,0.4)' }}>
@@ -798,8 +878,10 @@ export default function PromScreen() {
                   </div>
                 </div>
               </div>
+              )}
 
               {/* 监控目标 / 主机（≈ 巡检的「资产 / 主机」） */}
+              {on('kpiTarget') && (
               <KpiRow
                 icon={<CloudServerOutlined />}
                 color="#38bdf8"
@@ -807,7 +889,9 @@ export default function PromScreen() {
                 value={`${up?.total || 0} / ${up?.hosts || 0}`}
                 sub={`已采集 ${up?.hosts || 0} · 未采集 ${Math.max(0, (up?.total || 0) - (up?.hosts || 0))}`}
               />
+              )}
               {/* 目标在线 / 离线（≈ 巡检的「虚拟机运行」） */}
+              {on('kpiOnline') && (
               <KpiRow
                 icon={<DashboardOutlined />}
                 color={up?.offline ? '#f59e0b' : '#22c55e'}
@@ -815,15 +899,25 @@ export default function PromScreen() {
                 value={`${up?.online || 0} / ${up?.offline || 0}`}
                 sub={`在线率 ${up && up.total > 0 ? ((up.online / up.total) * 100).toFixed(1) : '0.0'}% · 目标 ${up?.total || 0} 台`}
               />
+              )}
               {/* 告警项 / 主机（≈ 巡检的「告警项 / 资产」，阈值自算） */}
+              {on('kpiIssue') && (
               <KpiRow
                 icon={<AlertOutlined />}
                 color={issueStat.crit ? '#ef4444' : issueStat.warn ? '#f59e0b' : '#22c55e'}
                 label="告警项 / 主机"
                 value={`${issueStat.crit + issueStat.warn} / ${issueStat.hosts}`}
-                sub={`严重 ${issueStat.crit} · 关注 ${issueStat.warn}（阈值在大屏管理里调）`}
+                // 风险口径被收窄（只看严重/只看关注）时，这里的数字会小于「全部超阈值」，
+                // 不加说明会被当成「漏统计了」——在副标题里把当前口径点出来。
+                sub={
+                  riskControlled
+                    ? `${cfg?.riskLevel === 'crit' ? '仅统计严重项' : '仅统计关注项'} · 已按大屏内容策略过滤`
+                    : `严重 ${issueStat.crit} · 关注 ${issueStat.warn}（阈值在大屏管理里调）`
+                }
               />
+              )}
               {/* 磁盘告警（≈ 巡检的「磁盘告警」；用 byMetric 取数，不受 issues 100 条截断影响） */}
+              {on('kpiDisk') && (
               <KpiRow
                 icon={<HddOutlined />}
                 color={diskCrit ? '#ef4444' : diskWarn ? '#f59e0b' : '#22c55e'}
@@ -831,7 +925,9 @@ export default function PromScreen() {
                 value={`${diskWarn} / ${diskCrit}`}
                 sub="预警 / 严重（按大屏阈值）"
               />
+              )}
               {/* 项目 / 部门（≈ 巡检的「巡检任务 / 记录」） */}
+              {on('kpiProject') && (
               <KpiRow
                 icon={<FundOutlined />}
                 color="#818cf8"
@@ -839,8 +935,10 @@ export default function PromScreen() {
                 value={`${data.projects || 0} / ${data.depts || 0}`}
                 sub="按 target label 去重"
               />
+              )}
 
               {/* 操作系统分布：环形图 + 自绘可换行图例（家族名较长，交给图例承载） */}
+              {on('osDist') && (
               <div className="dash-panel" style={{ display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%' }}>
                 <div className="dash-title"><DashboardOutlined /> 操作系统分布</div>
                 <div style={{ flex: '1 1 auto', minHeight: 0, position: 'relative' }}>
@@ -895,11 +993,15 @@ export default function PromScreen() {
                   )}
                 </div>
               </div>
+              )}
             </div>
+            )}
 
-            {/* ===== 中栏 资源详情（4 行严格等高） ===== */}
-            <div style={{ display: 'grid', gridTemplateRows: '86px 196px 1fr 230px', gap: 10, minHeight: 0 }}>
+            {/* ===== 中栏 资源详情（面板可关，关掉后剩余行自动补位） ===== */}
+            {MID_ON && (
+            <div style={{ display: 'grid', gridTemplateRows: MID_ROWS, gap: 10, minHeight: 0 }}>
               {/* Gauge ×4 一行 */}
+              {on('gauges') && (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, height: 86 }}>
                 <Gauge label="CPU 平均" value={avg?.cpu || 0} color="#38bdf8" />
                 <Gauge label="内存平均" value={avg?.mem || 0} color="#a78bfa" />
@@ -907,8 +1009,10 @@ export default function PromScreen() {
                 {/* 网络平均：按参考带宽算百分比（网卡上报标称速率的主机极少） */}
                 <Gauge label="网络平均" value={avg?.net || 0} color="#fbbf24" />
               </div>
+              )}
 
               {/* 负载 TOP N：宽屏自动展开为 4 列（含网络），窄屏 3 列 */}
+              {on('topN') && (
               <div
                 style={{
                   display: 'grid',
@@ -932,35 +1036,53 @@ export default function PromScreen() {
                     </div>
                   ))}
               </div>
+              )}
 
-              {/* 主机柱状图 + 资源健康分布 */}
-              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10, flex: 1, minHeight: 0 }}>
+              {/* 各主机柱状图 + 资源健康分布（同一行并排；关掉其中一个时另一个独占整行） */}
+              {MID_SPLIT && (
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: on('hostBars') && on('healthDist') ? '2fr 1fr' : '1fr',
+                  gap: 10, flex: 1, minHeight: 0,
+                }}
+              >
+                {on('hostBars') && (
                 <div className="dash-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
                   <div className="dash-title"><DashboardOutlined /> 各主机 CPU/内存/磁盘/网络 实时使用率</div>
                   <div style={{ flex: 1, minHeight: 0 }}>
                     <ReactECharts option={barsOpt} style={{ height: '100%', width: '100%' }} notMerge lazyUpdate />
                   </div>
                 </div>
+                )}
+                {on('healthDist') && (
                 <div className="dash-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
                   <div className="dash-title"><DashboardOutlined /> 资源健康分布</div>
                   <div style={{ flex: 1, minHeight: 0 }}>
                     <ReactECharts option={distOpt} style={{ height: '100%', width: '100%' }} notMerge lazyUpdate />
                   </div>
                 </div>
+                )}
               </div>
+              )}
 
-              {/* 趋势图：固定高 230 */}
-              <div className="dash-panel" style={{ height: 230, display: 'flex', flexDirection: 'column' }}>
+              {/* 趋势图：设计高 230，成为最后一个可见行时自动占满剩余高度 */}
+              {on('trend') && (
+              <div className="dash-panel" style={{ height: '100%', minHeight: 230, display: 'flex', flexDirection: 'column' }}>
                 <div className="dash-title"><FundOutlined /> 资源使用率趋势（近 {trendHours} 小时）</div>
                 <div style={{ flex: 1, minHeight: 0 }}>
                   <ReactECharts option={trendOpt} style={{ height: '100%', width: '100%' }} notMerge lazyUpdate />
                 </div>
               </div>
+              )}
             </div>
+            )}
 
-            {/* ===== 右栏 告警区（告警列表占满 + 固定两块） ===== */}
-            <div style={{ display: 'grid', gridTemplateRows: '1fr 190px 240px', gap: 10, minHeight: 0 }}>
+            {/* ===== 右栏 告警区（面板可关，关掉后剩余面板自动补位） ===== */}
+            {RIGHT_ON && (
+            <div style={{ display: 'grid', gridTemplateRows: RIGHT_ROWS, gap: 10, minHeight: 0 }}>
               {/* 告警列表（阈值自算，替代原先恒空的 Prometheus ALERTS） */}
+              {on('alerts') && (
               <div className="dash-panel" style={{ display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%' }}>
                 <div className="dash-title">
                   <AlertOutlined /> 实时告警列表
@@ -971,7 +1093,15 @@ export default function PromScreen() {
                 {issues.length === 0 ? (
                   <div className="dash-empty" style={{ flex: 1, minHeight: 0, flexDirection: 'column', gap: 8 }}>
                     <InboxOutlined style={{ fontSize: 32, color: '#22c55e' }} />
-                    <span style={{ color: '#22c55e' }}>当前无告警 · 系统运行平稳</span>
+                    <span style={{ color: '#22c55e' }}>
+                      {riskControlled ? '当前策略下没有需要展示的风险项' : '当前无告警 · 系统运行平稳'}
+                    </span>
+                    {riskControlled && (
+                      <span style={{ fontSize: 11, color: '#64748b' }}>
+                        已按「{cfg?.riskLevel === 'crit' ? '仅严重' : '仅关注'}」口径过滤
+                        {cfg?.maskMode === 'whitelist' ? ' + 白名单' : ''}，可在「大屏管理」调整
+                      </span>
+                    )}
                   </div>
                 ) : (
                   <AutoScroll speed={SCROLL_SPEED.alert} fade={14} style={{ padding: '6px 12px' }}>
@@ -981,9 +1111,18 @@ export default function PromScreen() {
                   </AutoScroll>
                 )}
               </div>
+              )}
 
-              {/* 告警等级 + 告警趋势（原「项目水位 TOP10」占位，按需求严格删除） */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, height: 190 }}>
+              {/* 告警等级 + 告警趋势（同一行并排；关掉其中一个时另一个独占整行） */}
+              {RIGHT_SPLIT && (
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: on('alertLevel') && on('alertTrend') ? '1fr 1fr' : '1fr',
+                  gap: 10, height: 190,
+                }}
+              >
+                {on('alertLevel') && (
                 <div className="dash-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
                   <div className="dash-title"><AlertOutlined /> 告警等级</div>
                   <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
@@ -1017,16 +1156,21 @@ export default function PromScreen() {
                     ))}
                   </div>
                 </div>
+                )}
+                {on('alertTrend') && (
                 <div className="dash-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
                   <div className="dash-title"><AlertOutlined /> 告警趋势</div>
                   <div style={{ flex: 1, minHeight: 0 }}>
                     <ReactECharts option={altTrendOpt} style={{ height: '100%', width: '100%' }} notMerge lazyUpdate />
                   </div>
                 </div>
+                )}
               </div>
+              )}
 
               {/* 主机实时资源（自动滚动，单列） */}
-              <div className="dash-panel" style={{ height: 240, display: 'flex', flexDirection: 'column' }}>
+              {on('hostScroll') && (
+              <div className="dash-panel" style={{ height: '100%', minHeight: 240, display: 'flex', flexDirection: 'column' }}>
                 <div className="dash-title"><CloudServerOutlined /> 主机实时资源（自动滚动）</div>
                 {(data.hosts || []).length === 0 ? (
                   <div className="dash-empty" style={{ flex: 1, minHeight: 0, flexDirection: 'column', gap: 8 }}>
@@ -1042,11 +1186,14 @@ export default function PromScreen() {
                   </AutoScroll>
                 )}
               </div>
+              )}
             </div>
+            )}
           </div>
         )}
 
-        {/* ============= 页脚（高 36，全平台元信息一致） ============= */}
+        {/* ============= 页脚（高 36，全平台元信息一致；可在「大屏管理 → 展示内容」关掉） ============= */}
+        {FOOT_ON && (
         <div
           style={{
             height: FOOT_H,
@@ -1076,6 +1223,7 @@ export default function PromScreen() {
             严重 {issueStat.crit} · 关注 {issueStat.warn}
           </span>
         </div>
+        )}
       </div>
     </div>
   )
@@ -1084,7 +1232,9 @@ export default function PromScreen() {
 // ====== 小组件 ======
 function KpiRow({ icon, label, value, color, sub }: { icon: React.ReactNode; label: string; value: any; color: string; sub?: string }) {
   return (
-    <div className="dash-panel" style={{ height: 88, padding: '10px 14px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+    // height:'100%' + minHeight:88 —— 关掉「操作系统分布」之类的同行面板后，
+    // KPI 卡会被 grid 拉伸去补位，固定 height:88 会变成「卡片间空出一条缝」。
+    <div className="dash-panel" style={{ height: '100%', minHeight: 88, padding: '10px 14px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#94a3b8', fontSize: 11 }}>
         <span style={{ color, fontSize: 13 }}>{icon}</span> {label}
       </div>
