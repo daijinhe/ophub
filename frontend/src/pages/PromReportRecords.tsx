@@ -33,15 +33,17 @@ import {
   deletePromReport,
   getPromReport,
   listPromDataSources,
+  listPromProjects,
   listPromReports,
   updatePromReport,
   type PromDataSource,
+  type PromProject,
   type PromReport,
   type PromReportRecord,
   type PromReportRecordDetail,
   type PromReportRow,
 } from '../api/prometheus'
-import { exportPromReportXlsx, healthScore, riskLevel, thOf } from '../utils/promReportExcel'
+import { exportPromReportXlsx, healthScore, riskLevel, scopeFileSuffix, thOf } from '../utils/promReportExcel'
 import { useAuth } from '../store/AuthContext'
 
 const { Title, Text } = Typography
@@ -89,6 +91,11 @@ export default function PromReportRecords() {
   const [dss, setDss] = useState<PromDataSource[]>([])
   const [ds, setDs] = useState<number | undefined>(undefined)
   const [period, setPeriod] = useState<string | undefined>(undefined)
+  // 项目筛选（v1.7.38）：项目名是「按数据源」取的，没选数据源就无从列出，
+  // 所以这个筛选在未选数据源时置灰（而不是给一个会搜不到东西的输入框）
+  const [projects, setProjects] = useState<PromProject[]>([])
+  const [projLoading, setProjLoading] = useState(false)
+  const [sysFilter, setSysFilter] = useState<string | undefined>(undefined)
   const [kw, setKw] = useState('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
@@ -107,7 +114,7 @@ export default function PromReportRecords() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const r = await listPromReports({ ds, period, kw: kw || undefined, page, pageSize })
+      const r = await listPromReports({ ds, period, system: sysFilter, kw: kw || undefined, page, pageSize })
       setList(r.list || [])
       setTotal(r.total || 0)
     } catch (e) {
@@ -117,13 +124,27 @@ export default function PromReportRecords() {
     } finally {
       setLoading(false)
     }
-  }, [ds, period, kw, page, pageSize])
+  }, [ds, period, sysFilter, kw, page, pageSize])
 
   useEffect(() => {
     listPromDataSources()
       .then((r) => setDss(r.list || []))
       .catch(() => undefined)
   }, [])
+
+  // 切数据源时重拉项目清单，并清掉上一个数据源的项目筛选
+  useEffect(() => {
+    setSysFilter(undefined)
+    if (!ds) {
+      setProjects([])
+      return
+    }
+    setProjLoading(true)
+    listPromProjects(ds)
+      .then((r) => setProjects(r.list || []))
+      .catch(() => setProjects([]))
+      .finally(() => setProjLoading(false))
+  }, [ds])
 
   useEffect(() => {
     load()
@@ -162,8 +183,13 @@ export default function PromReportRecords() {
       trend: d.trend || [],
       rows: d.rows || [],
       config: d.config,
+      systems: d.systems || [],
+      scopeText: d.scopeText || '',
+      scopeTargets: 0,
+      hint: '',
     }
-    const file = `Prometheus监控报表_${d.periodCN}_${dayjs(d.createdAt).format('YYYYMMDD-HHmm')}.xlsx`
+    // 文件名带范围后缀：同一周期的多份项目报告要能区分开
+    const file = `Prometheus监控报表_${d.periodCN}${scopeFileSuffix(rep)}_${dayjs(d.createdAt).format('YYYYMMDD-HHmm')}.xlsx`
     const r = exportPromReportXlsx(rep, d.dsName, file, dayjs(d.createdAt).format('YYYY-MM-DD HH:mm'))
     if (r.ok) {
       message.success(`已导出（${(r.bytes / 1024 / 1024).toFixed(2)}MB）${r.tip ? ' · ' + r.tip : ''}`)
@@ -242,6 +268,40 @@ export default function PromReportRecords() {
             <div style={{ fontSize: 12, color: '#94a3b8' }}>{r.periodCN}</div>
           </div>
         ),
+      },
+      {
+        title: '报告范围',
+        key: 'scope',
+        width: 210,
+        render: (_: any, r: PromReportRecord) => {
+          const sys = r.systems || []
+          if (sys.length === 0) {
+            return (
+              <div>
+                <Tag color="gold" style={{ margin: 0 }}>
+                  全部项目
+                </Tag>
+                <div style={{ fontSize: 11, color: '#94a3b8' }}>不限项目范围</div>
+              </div>
+            )
+          }
+          return (
+            <div>
+              <Tag color="blue" style={{ margin: 0 }}>
+                {sys.length} 个项目
+              </Tag>
+              <Tooltip title={sys.join('、')}>
+                <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
+                  {sys.slice(0, 2).join('、')}
+                  {sys.length > 2 ? ` 等 ${sys.length} 个` : ''}
+                </div>
+              </Tooltip>
+              {r.templateName && (
+                <div style={{ fontSize: 11, color: '#94a3b8' }}>模板：{r.templateName}</div>
+              )}
+            </div>
+          )
+        },
       },
       {
         title: '数据源',
@@ -462,7 +522,7 @@ export default function PromReportRecords() {
           <FileTextOutlined style={{ marginRight: 8 }} />
           报告记录
         </Title>
-        <Tag color="purple">v1.7.36</Tag>
+        <Tag color="purple">v1.7.38</Tag>
         <Space style={{ marginLeft: 'auto' }}>
           <Button icon={<ReloadOutlined />} onClick={load} loading={loading}>
             刷新
@@ -475,7 +535,7 @@ export default function PromReportRecords() {
         showIcon
         style={{ marginBottom: 12 }}
         message="每次在「监控报表」点「生成报告」都会自动归档一条记录"
-        description="记录里保存的是报告生成时冻结的数据快照：可随时回看、按同一口径重新导出 Excel（仍受 5MB 上限保护），也可重命名或删除。"
+        description="记录里保存的是报告生成时冻结的数据快照：可随时回看、按同一口径重新导出 Excel（仍受 5MB 上限保护），也可重命名或删除。按项目生成的报告会连同「项目范围」一起冻结，回看时能确认它覆盖了哪些项目。"
       />
 
       <Card size="small" style={{ marginBottom: 12 }}>
@@ -506,6 +566,29 @@ export default function PromReportRecords() {
               { value: 'year', label: '年度' },
             ]}
           />
+          <Tooltip
+            title={
+              ds
+                ? '只看包含该项目的报告（匹配生成时冻结的项目范围）'
+                : '先选择数据源，才能列出该数据源下的项目'
+            }
+          >
+            <Select
+              allowClear
+              showSearch
+              style={{ width: 220 }}
+              placeholder="全部项目"
+              disabled={!ds}
+              loading={projLoading}
+              value={sysFilter}
+              onChange={(v) => {
+                setSysFilter(v)
+                setPage(1)
+              }}
+              options={projects.map((p) => ({ value: p.name, label: `${p.name}（${p.hosts} 台）` }))}
+              optionFilterProp="label"
+            />
+          </Tooltip>
           <Input.Search
             allowClear
             style={{ width: 260 }}
@@ -536,7 +619,7 @@ export default function PromReportRecords() {
               setPageSize(ps)
             },
           }}
-          scroll={{ x: 1400 }}
+          scroll={{ x: 1600 }}
         />
       </Card>
 
@@ -562,6 +645,28 @@ export default function PromReportRecords() {
           <Empty description="报告不存在或已删除" />
         ) : (
           <div>
+            {/* 报告范围：回看历史报告时，第一个要知道的就是「这份报告覆盖了哪些项目」 */}
+            <Alert
+              type={(detail.systems || []).length > 0 ? 'info' : 'warning'}
+              showIcon
+              style={{ marginBottom: 12 }}
+              message={
+                (detail.systems || []).length > 0
+                  ? `报告范围：项目（${detail.systems.length} 个）`
+                  : '报告范围：全部项目（不限项目范围）'
+              }
+              description={
+                (detail.systems || []).length > 0 ? (
+                  <span>
+                    {(detail.systems || []).join('、')}
+                    {detail.templateName ? ` · 生成模板：${detail.templateName}` : ''}
+                  </span>
+                ) : (
+                  '该报告生成时未限定项目，统计了数据源下的全部主机'
+                )
+              }
+            />
+
             {detail.rowsTruncated === 1 && (
               <Alert
                 type="warning"

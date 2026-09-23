@@ -211,7 +211,7 @@ var PermissionCatalog = []PermissionDef{
 	{Code: "inspection:screen", Name: "查看巡检大屏（只看大屏）", Group: "巡检大屏"},
 
 	// ===== Prometheus 监控（v1.8.0 独立大类） =====
-	{Code: "prom:view", Name: "查看监控（数据源/指标/报表）", Group: "Prometheus监控"},
+	{Code: "prom:view", Name: "查看监控（数据源/指标/报表/自建报表模板）", Group: "Prometheus监控"},
 	{Code: "prom:manage", Name: "管理数据源（增删改/测试）", Group: "Prometheus监控"},
 	{Code: "prom:screen", Name: "查看监控大屏（只看大屏）", Group: "Prometheus监控"},
 }

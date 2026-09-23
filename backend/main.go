@@ -293,6 +293,15 @@ func main() {
 			auth.GET("/prom/reports/:id", RequireAnyPermission("prom:view", "prom:screen"), PromGetReport)
 			auth.PUT("/prom/reports/:id", RequirePermission("prom:manage"), PromUpdateReport)
 			auth.DELETE("/prom/reports/:id", RequirePermission("prom:manage"), PromDeleteReport)
+			// v1.7.38：按项目出报告 —— 项目清单 + 报表模板。
+			// 模板刻意**不用 prom:manage 收口**（那会把功能锁死在管理员手上）：
+			// 路由只要求 prom:view（大屏专属账号不应看到报表模板，故不含 prom:screen），
+			// 「改 / 删只能动自己的」在 handler 里按 owner 判定（改他人需 prom:manage）。
+			auth.GET("/prom/projects", RequireAnyPermission("prom:view", "prom:manage"), PromListProjects)
+			auth.GET("/prom/report-templates", RequireAnyPermission("prom:view", "prom:manage"), PromListReportTemplates)
+			auth.POST("/prom/report-templates", RequireAnyPermission("prom:view", "prom:manage"), PromCreateReportTemplate)
+			auth.PUT("/prom/report-templates/:id", RequireAnyPermission("prom:view", "prom:manage"), PromUpdateReportTemplate)
+			auth.DELETE("/prom/report-templates/:id", RequireAnyPermission("prom:view", "prom:manage"), PromDeleteReportTemplate)
 			// v1.7.33：大屏改为「服务端定期采集 → 读快照」，并支持阈值/采集频率的集中管理
 			auth.GET("/prom/screen-config", RequireAnyPermission("prom:view", "prom:manage"), PromGetScreenConfig)
 			auth.PUT("/prom/screen-config", RequirePermission("prom:manage"), PromSaveScreenConfig)

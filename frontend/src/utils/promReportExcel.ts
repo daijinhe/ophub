@@ -46,6 +46,35 @@ export function riskLevel(r: PromReportRow, th: Thresholds): '高' | '中' | '�
   return '正常'
 }
 
+/**
+ * 报告范围文案（v1.7.38）。
+ *
+ * 按项目出的报告**必须在文件里写明覆盖了哪些项目**：同一周期的报告可能有好几份
+ * （每人负责的项目不同），只看到数字而不知道范围，报告就没法用于汇报与追责。
+ */
+export function scopeTextOf(report: PromReport): string {
+  const sys = report.systems || []
+  if (sys.length === 0) return '全部项目（数据源下所有主机）'
+  return `项目（${sys.length} 个）：${sys.join('、')}`
+}
+
+/** 报告范围是否为「指定项目」（false = 全集群口径） */
+export function isScoped(report: PromReport): boolean {
+  return (report.systems || []).length > 0
+}
+
+/**
+ * 文件名里的范围后缀。同一周期导出多份项目报告时，
+ * 没有后缀会得到一批同名文件（浏览器自动加 (1)(2)），根本分不清谁是谁。
+ */
+export function scopeFileSuffix(report: PromReport): string {
+  const sys = report.systems || []
+  if (sys.length === 0) return ''
+  const head = sys.length <= 2 ? sys.join('、') : `${sys[0]}等${sys.length}个项目`
+  // 文件名非法字符替换掉，避免下载时被浏览器截断
+  return `_${head.replace(/[\\/:*?"<>|\s]/g, '_')}`
+}
+
 /** 该主机最主要的风险项（取峰值最高的那一项） */
 export function mainRisk(r: PromReportRow): { name: string; value: number } {
   const items = [
@@ -147,6 +176,9 @@ export function buildWorkbook(
     .filter((x) => riskLevel(x.r, th) !== '正常')
     .sort((a, b) => b.m.value - a.m.value)
     .slice(0, 10)
+  const scoped = isScoped(report)
+  // 「全集群」这个说法在按项目出报告时是错的，会让人误以为覆盖了全部机器
+  const fleetWord = scoped ? '所选项目' : '全集群'
   const conclusion =
     hs.crit > 0
       ? `本期 ${report.hostCount} 台主机中 ${hs.crit} 台出现严重水位（峰值达严重阈值），建议优先排查下方风险主机清单。`
@@ -157,17 +189,23 @@ export function buildWorkbook(
   const ov: (string | number)[][] = [
     [`Prometheus 监控报表 · ${report.periodCN}`],
     [],
+    ['报告范围', scopeTextOf(report)],
     ['报告周期', report.periodCN],
     ['数据窗口', `${report.start} ~ ${report.end}`],
     ['生成时间', now],
     ['数据源', dsName],
     ['统计范围', `${report.hostCount} 台主机 · 每主机 ${report.points} 个采样点`],
+    ...(scoped
+      ? ([
+          ['范围说明', `本报告仅统计上述项目的主机，未包含数据源内的其他项目`],
+        ] as (string | number)[][])
+      : []),
     [],
     ['一、整体结论'],
     ['健康评分', `${hs.score} 分（${hs.level}）`],
     ['结论摘要', conclusion],
     [],
-    ['二、全集群资源水位'],
+    [`二、${fleetWord}资源水位`],
     ['指标', '均值', '峰值', '判定'],
     ['CPU 使用率', report.fleet.cpuAvg, report.fleet.cpuMax, judge(report.fleet.cpuMax)],
     ['内存使用率', report.fleet.memAvg, report.fleet.memMax, judge(report.fleet.memMax)],
@@ -196,7 +234,7 @@ export function buildWorkbook(
     ['五、Sheet 说明'],
     ['分组汇总', '按所属部门 / 项目名聚合的均值与峰值，用于横向对比'],
     ['主机资源明细', `每台主机的均值 / 峰值与风险判定${opts.detailNote}`],
-    ['资源趋势', opts.trendLimit === 0 ? '（数据量超限，本期已省略）' : '全集群均值随时间变化'],
+    ['资源趋势', opts.trendLimit === 0 ? '（数据量超限，本期已省略）' : `${fleetWord}均值随时间变化`],
   ]
   const wsOv = XLSX.utils.aoa_to_sheet(ov)
   setCols(wsOv, [24, 20, 18, 14, 14, 14, 14, 12])
@@ -253,7 +291,7 @@ export function buildWorkbook(
   if (opts.trendLimit !== 0) {
     const pts = downsample(report.trend, opts.trendLimit)
     const t: (string | number)[][] = [
-      ['时间', 'CPU使用率%(全集群均值)', '内存使用率%(全集群均值)', '磁盘使用率%(全集群均值)'],
+      ['时间', `CPU使用率%(${fleetWord}均值)`, `内存使用率%(${fleetWord}均值)`, `磁盘使用率%(${fleetWord}均值)`],
       ...pts.map((p) => [
         dayjs(p.ts * 1000).format('YYYY-MM-DD HH:mm'),
         p.cpu ?? '',
@@ -308,7 +346,8 @@ export function exportPromReportXlsx(
       const a = document.createElement('a')
       a.href = URL.createObjectURL(blob)
       a.download =
-        fileName || `Prometheus监控报表_${report.periodCN}_${dayjs().format('YYYYMMDD')}.xlsx`
+        fileName ||
+        `Prometheus监控报表_${report.periodCN}${scopeFileSuffix(report)}_${dayjs().format('YYYYMMDD')}.xlsx`
       a.click()
       URL.revokeObjectURL(a.href)
       return { ok: true, bytes: out.byteLength, tip: s.tip }

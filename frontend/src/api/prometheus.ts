@@ -196,6 +196,93 @@ export interface PromReport {
   trend: PromTrendPoint[]
   rows: PromReportRow[]
   config: PromCfgView
+  // 项目范围（v1.7.38）：systems 为空数组 = 不限项目（覆盖数据源全部主机）
+  systems: string[]
+  scopeText: string
+  scopeTargets: number
+  hint: string
+}
+
+/* ---------------- 项目清单 / 报表模板（v1.7.38） ---------------- */
+
+/** 项目（Prometheus target label `system`）及其主机数 */
+export interface PromProject {
+  name: string
+  hosts: number
+  online: number
+  offline: number
+  department: string
+}
+
+export interface PromProjectList {
+  list: PromProject[]
+  total: number
+  /** 该数据源下 Prometheus 采集目标总数 */
+  targets: number
+  /** 没打 system 标签的目标数 —— 这类主机不属于任何项目，按项目出报告时不会被包含 */
+  unlabeled: number
+  dsId: number
+  dsName: string
+}
+
+export interface PromReportTemplate {
+  id: number
+  name: string
+  dsId: number
+  dsName: string
+  period: 'month' | 'quarter' | 'year'
+  systems: string[]
+  remark: string
+  /** 1=共享给他人可用（只读） */
+  shared: number
+  ownerId: number
+  ownerName: string
+  createdAt: string
+  updatedAt: string
+  /** 当前登录人是否可改 / 删（本人或 prom:manage） */
+  canEdit: boolean
+}
+
+export interface PromReportTemplateList {
+  list: PromReportTemplate[]
+  total: number
+  /** 其中属于当前登录人的个数 */
+  mine: number
+  uid: number
+}
+
+export interface PromReportTemplateBody {
+  name: string
+  dsId: number
+  period: 'month' | 'quarter' | 'year'
+  systems: string[]
+  remark?: string
+  shared?: number
+}
+
+export function listPromProjects(ds?: number): Promise<PromProjectList> {
+  return unwrap(api.get('/prom/projects', { params: ds ? { ds } : {} }))
+}
+
+export function listPromReportTemplates(): Promise<PromReportTemplateList> {
+  return unwrap(api.get('/prom/report-templates'))
+}
+
+export function createPromReportTemplate(
+  body: PromReportTemplateBody,
+): Promise<{ msg: string; template: PromReportTemplate }> {
+  return unwrap(api.post('/prom/report-templates', body))
+}
+
+export function updatePromReportTemplate(
+  id: number,
+  body: PromReportTemplateBody,
+): Promise<{ msg: string; template: PromReportTemplate }> {
+  return unwrap(api.put(`/prom/report-templates/${id}`, body))
+}
+
+export function deletePromReportTemplate(id: number): Promise<{ msg: string }> {
+  return unwrap(api.delete(`/prom/report-templates/${id}`))
 }
 
 const unwrap = <T,>(p: Promise<any>): Promise<T> =>
@@ -268,12 +355,27 @@ export function promOverview(ds?: number): Promise<PromOverview> {
   return unwrap(api.get('/prom/overview', { params: ds ? { ds } : {} }))
 }
 
+/**
+ * 预览报告（不算归档记录）。「生成并归档」走 promGenerateReport。
+ *
+ * `systems` 是**项目范围**（v1.7.38）：传数组 = 只统计这些项目，传 `[]` 或不传 = 不限项目
+ * （全集群口径）。刻意用**重复参数**序列化（`systems=A&systems=B`，靠 `indexes: null`
+ * 关掉 axios 默认的 `systems[]=` 写法），因为后端按 `c.QueryArray("systems")` 读；
+ * 一旦写成 `systems[]=`，后端取不到值会**静默退化成全集群**，报告数字看着正常但是错的。
+ * 也正因为项目名可能自带逗号，这里不能用 `join(',')` 糊过去。
+ */
 export function promReport(
   ds: number,
   period: 'month' | 'quarter' | 'year',
   ref?: string,
+  systems?: string[],
 ): Promise<PromReport> {
-  return unwrap(api.get('/prom/report', { params: { ds, period, ref } }))
+  return unwrap(
+    api.get('/prom/report', {
+      params: { ds, period, ref, systems: systems && systems.length ? systems : undefined },
+      paramsSerializer: { indexes: null },
+    }),
+  )
 }
 
 /* ---------------- 大屏采集 / 配置管理（v1.7.33） ---------------- */
@@ -351,6 +453,12 @@ export interface PromReportRecord {
   createdBy: number
   createdByName: string
   createdAt: string
+  // 项目范围（v1.7.38）：归档时冻结，回看历史报告才知道它覆盖了哪些项目
+  systems: string[]
+  systemCount: number
+  scopeText: string
+  templateId: number
+  templateName: string
 }
 
 /** 详情（列表字段 + 冻结的报告数据） */
@@ -368,19 +476,42 @@ export interface PromReportRecordList {
   pageSize: number
 }
 
-/** 生成报告并归档（一次聚合，两个用途：页面展示 + 报告记录） */
+export interface PromGenerateResult {
+  report: PromReport
+  archived: boolean
+  id?: number
+  title?: string
+  scopeText?: string
+  templateId?: number
+  templateName?: string
+  msg?: string
+}
+
+/**
+ * 生成报告并归档（一次聚合，两个用途：页面展示 + 报告记录）。
+ *
+ * systems 是**项目范围**：传数组 = 只统计这些项目；传 `[]` = 不限项目（全集群口径）；
+ * 传 undefined 且带 templateId 时沿用模板范围。三者语义不同，别图省事都传 undefined。
+ */
 export function promGenerateReport(
   ds: number,
   period: 'month' | 'quarter' | 'year',
   ref?: string,
   title?: string,
-): Promise<{ report: PromReport; archived: boolean; id?: number; title?: string; msg?: string }> {
-  return unwrap(api.post('/prom/reports/generate', { ds, period, ref, title }))
+  systems?: string[],
+  templateId?: number,
+): Promise<PromGenerateResult> {
+  const body: Record<string, unknown> = { ds, period, ref, title }
+  if (systems !== undefined) body.systems = systems
+  if (templateId) body.templateId = templateId
+  return unwrap(api.post('/prom/reports/generate', body))
 }
 
 export function listPromReports(params: {
   ds?: number
   period?: string
+  /** 按项目名查历史报告（匹配归档时冻结的项目范围） */
+  system?: string
   kw?: string
   page?: number
   pageSize?: number

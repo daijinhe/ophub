@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -257,6 +258,107 @@ const promQLMem = `100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTo
 const promQLDisk = `max by (instance) (100 * (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|devtmpfs|overlay|squashfs|iso9660",mountpoint!~"^/(run|dev|sys)"} / node_filesystem_size_bytes{fstype!~"tmpfs|devtmpfs|overlay|squashfs|iso9660",mountpoint!~"^/(run|dev|sys)"}))`
 
 const promQLUname = `node_uname_info`
+
+// ---------------------------------------------------------------------------
+// 项目范围过滤（v1.7.38，「监控报表」按项目出报告）
+//
+// 「项目」= Prometheus target label system（与报表「项目名」列同一来源）。
+// node_exporter 的**所有**序列都带 target 注入的 system 标签，因此把范围条件
+// 直接下推到 PromQL，就能让「明细 / 汇总 / 趋势」一次性只覆盖所选项目 ——
+// 不必先把 1000+ 主机全量拉回来再筛（对 100+ 项目的大源是数量级差别）。
+//
+// 两个必须记住的点：
+//  1. Prometheus 的 `=~` 是**整体锚定**的：`=~"esb"` 等价于精确匹配 "esb"，
+//     不会命中 "esb2"。所以字面量拼接即可，不需要再补 ^...$。
+//  2. 项目名是**用户可控文本**，要过两道转义才安全：先按正则元字符转义
+//     （regexp.QuoteMeta），再按 PromQL 双引号字符串字面量转义（\ 和 "）。
+//     顺序不能反，否则把刚加的转义反斜杠又加了一倍。
+// ---------------------------------------------------------------------------
+
+// promNormalizeScope 规范化项目范围：去空白、去空值、去重、丢弃含换行的非法值
+// （PromQL 字符串字面量不允许换行；真实项目名也不会含换行）。
+// 返回 nil 表示「不限项目」——调用方一律用它做唯一判据，避免各处重复判空。
+func promNormalizeScope(scope []string) []string {
+	if len(scope) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(scope))
+	seen := map[string]bool{}
+	for _, s := range scope {
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			continue
+		}
+		if strings.ContainsAny(s, "\r\n") {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// promScopeLabel 生成标签匹配器表达式（不含大括号），例：system=~"ESB|ONES"。
+// scope 已由 promNormalizeScope 规范化，这里只管转义与拼接。
+func promScopeLabel(scope []string) string {
+	parts := make([]string, 0, len(scope))
+	for _, s := range scope {
+		// ① 正则元字符转义
+		rx := regexp.QuoteMeta(s)
+		// ② PromQL 双引号字符串字面量转义（反斜杠在前，避免把新加的反斜杠再加倍）
+		rx = strings.ReplaceAll(rx, `\`, `\\`)
+		rx = strings.ReplaceAll(rx, `"`, `\"`)
+		parts = append(parts, rx)
+	}
+	return `system=~"` + strings.Join(parts, "|") + `"`
+}
+
+// promScopeSel 生成选择器后缀（含大括号）；不限项目时返回空串（保持与原查询逐字节一致）
+func promScopeSel(scope []string) string {
+	if len(scope) == 0 {
+		return ""
+	}
+	return "{" + promScopeLabel(scope) + "}"
+}
+
+// promQLCPUScoped CPU 使用率（scope 非空时只统计所选项目）
+func promQLCPUScoped(window string, scope []string) string {
+	inner := `mode="idle"`
+	if len(scope) > 0 {
+		inner += "," + promScopeLabel(scope)
+	}
+	return fmt.Sprintf(`100 * (1 - avg by (instance) (rate(node_cpu_seconds_total{%s}[%s])))`, inner, window)
+}
+
+// promQLMemScoped 内存使用率
+func promQLMemScoped(scope []string) string {
+	sel := promScopeSel(scope)
+	return `100 * (1 - node_memory_MemAvailable_bytes` + sel + ` / node_memory_MemTotal_bytes` + sel + `)`
+}
+
+// promQLDiskScoped 磁盘使用率（沿用原伪文件系统排除规则，scope 追加在同一选择器内）
+func promQLDiskScoped(scope []string) string {
+	inner := `fstype!~"tmpfs|devtmpfs|overlay|squashfs|iso9660",mountpoint!~"^/(run|dev|sys)"`
+	if len(scope) > 0 {
+		inner += "," + promScopeLabel(scope)
+	}
+	sel := "{" + inner + "}"
+	return `max by (instance) (100 * (1 - node_filesystem_avail_bytes` + sel + ` / node_filesystem_size_bytes` + sel + `))`
+}
+
+// promQLUpScoped 采集目标在线状态（报表用它取「该项目的 target 数」，区分
+// 「项目没数据」与「主机没接 node_exporter」）
+func promQLUpScoped(scope []string) string {
+	return "up" + promScopeSel(scope)
+}
+
+// promQLUnameScoped 主机名来源（node_uname_info 的 nodename）
+func promQLUnameScoped(scope []string) string {
+	return "node_uname_info" + promScopeSel(scope)
+}
 
 // sampleValue 取样本值（value[1] 是 string 形式的浮点数）
 func sampleValue(v []interface{}) (float64, bool) {

@@ -524,6 +524,12 @@ type promReportResp struct {
 	Trend     []promTrendPoint `json:"trend"`
 	Rows      []promReportRow  `json:"rows"`
 	Config    promCfgView      `json:"config"` // 生效阈值（导出 Excel 的「风险」判定与之一致）
+
+	// 项目范围（v1.7.38）。Systems 为空 = 不限项目（老口径，覆盖数据源全部主机）。
+	Systems      []string `json:"systems"`
+	ScopeText    string   `json:"scopeText"`
+	ScopeTargets int      `json:"scopeTargets"` // 该范围内 Prometheus 的采集目标数
+	Hint         string   `json:"hint"`         // 0 台主机时的诊断提示（区分「没接 node_exporter」与「项目已无 target」）
 }
 
 // promReportFleet 全集群峰值 / 均值
@@ -578,10 +584,11 @@ func promReportWindow(period, ref string) (start, end time.Time, periodCN string
 	return
 }
 
-// PromReport GET /api/prom/report?ds=&period=month|quarter|year&ref=2026-09-15
+// PromReport GET /api/prom/report?ds=&period=month|quarter|year&ref=2026-09-15&systems=A&systems=B
 //
 // 只查不归档（页面直接展示用）。「生成报告」走 POST /api/prom/reports/generate，
 // 两者共用 promBuildReport，避免同一份聚合写两遍。
+// systems 为空 = 不限项目（覆盖数据源全部主机，老口径）。
 func PromReport(c *gin.Context) {
 	ds, _, err := resolvePromDS(c)
 	if err != nil {
@@ -589,7 +596,7 @@ func PromReport(c *gin.Context) {
 		return
 	}
 	period := strings.TrimSpace(c.DefaultQuery("period", "month"))
-	resp, err := promBuildReport(ds, period, c.Query("ref"))
+	resp, err := promBuildReport(ds, period, c.Query("ref"), promQueryScope(c))
 	if err != nil {
 		Fail(c, http.StatusBadRequest, 1, err.Error())
 		return

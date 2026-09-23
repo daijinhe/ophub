@@ -29,6 +29,7 @@ import PromDataSources from './pages/PromDataSources'
 import PromMaskRules from './pages/PromMaskRules'
 import PromReport from './pages/PromReport'
 import PromReportRecords from './pages/PromReportRecords'
+import PromReportTemplates from './pages/PromReportTemplates'
 import PromScreen from './pages/PromScreen'
 import PromScreenAdmin from './pages/PromScreenAdmin'
 import WebTerminalPage from './pages/WebTerminalPage'
@@ -106,6 +107,9 @@ export default function App() {
         {/* Prometheus 监控（v1.8.0 独立大类）：数据源 / 报表 / 报告记录在主布局内，大屏新标签页 */}
         <Route path="prom/datasources" element={<RequirePerm perm="prom:view"><PromDataSources /></RequirePerm>} />
         <Route path="prom/report" element={<RequirePerm perm="prom:view"><PromReport /></RequirePerm>} />
+        {/* 报表模板（v1.7.38）：建模板是普通使用者的日常动作（prom:view），
+            改 / 删只能动自己的 —— 行级权限在后端按 owner 判定，前端按 canEdit 显示按钮 */}
+        <Route path="prom/report-templates" element={<RequirePerm perm="prom:view"><PromReportTemplates /></RequirePerm>} />
         <Route path="prom/report-records" element={<RequirePerm perm="prom:view"><PromReportRecords /></RequirePerm>} />
         {/* 大屏管理（阈值 / 采集频率）与屏蔽规则属配置动作 → prom:manage */}
         <Route path="prom/screen-admin" element={<RequirePerm perm="prom:manage"><PromScreenAdmin /></RequirePerm>} />

@@ -25,6 +25,7 @@ import {
   FundOutlined,
   NodeIndexOutlined,
   BarChartOutlined,
+  ProfileOutlined,
   StopOutlined,
   SettingOutlined,
   TeamOutlined,
@@ -206,6 +207,8 @@ export default function MainLayout() {
       children: [
         { key: '/prom/datasources', icon: <ApiOutlined />, label: '数据源管理', perm: 'prom:view' },
         { key: '/prom/report', icon: <BarChartOutlined />, label: '监控报表', perm: 'prom:view' },
+        // 报表模板（v1.7.38）：普通使用者给自己负责的项目建模板 / 出季度报告，用 prom:view
+        { key: '/prom/report-templates', icon: <ProfileOutlined />, label: '报表模板', perm: 'prom:view' },
         { key: '/prom/report-records', icon: <FileTextOutlined />, label: '报告记录', perm: 'prom:view' },
         {
           key: '/prom/screen',

@@ -106,6 +106,20 @@ func RequireAnyPermission(codes ...string) gin.HandlerFunc {
 	}
 }
 
+// hasPerm 在当前请求上下文里判断是否持有某个权限码。
+// 用于「路由级放行、行级再收口」的场景：报表模板路由只要求 prom:view（人人可建自己的模板），
+// 但改 / 删他人模板要 prom:manage —— 这种「同一接口内按行区分权限」无法用中间件表达。
+func hasPerm(c *gin.Context, code string) bool {
+	perms, _ := c.Get(ctxPerms)
+	plist, _ := perms.([]string)
+	for _, p := range plist {
+		if p == code {
+			return true
+		}
+	}
+	return false
+}
+
 // RequireAdminRole 仅内置 admin 角色可通过。
 // 用于「查看 / 重置他人密码」这类高敏感操作：不通过权限码授予，避免误配。
 func RequireAdminRole() gin.HandlerFunc {

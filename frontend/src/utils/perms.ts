@@ -31,6 +31,8 @@ export const ROUTE_PERMS: { path: string; perm: string }[] = [
   // 大屏独立权限码，可单独授予「只看大屏」的账号（路由侧 RequireAnyPerm 放行两种）。
   { path: '/prom/datasources', perm: 'prom:view' },
   { path: '/prom/report', perm: 'prom:view' },
+  // 报表模板（v1.7.38）：按项目出报告的模板由使用者自己维护，用 prom:view
+  { path: '/prom/report-templates', perm: 'prom:view' },
   { path: '/prom/report-records', perm: 'prom:view' },
   { path: '/prom/screen', perm: 'prom:screen' },
   // 大屏管理（阈值 / 采集频率 / 手动采集）与屏蔽规则：配置动作，用 prom:manage

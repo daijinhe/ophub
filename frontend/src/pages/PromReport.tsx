@@ -1,11 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Col,
   DatePicker,
+  Divider,
   Empty,
+  Input,
+  Modal,
   Row,
   Select,
   Space,
@@ -13,29 +17,50 @@ import {
   Statistic,
   Table,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from 'antd'
 import {
   AlertOutlined,
   BarChartOutlined,
+  DeleteOutlined,
   FileExcelOutlined,
+  FileTextOutlined,
   FundOutlined,
   HddOutlined,
   HistoryOutlined,
+  ProfileOutlined,
+  ReloadOutlined,
+  SaveOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
 import dayjs, { type Dayjs } from 'dayjs'
 import {
+  createPromReportTemplate,
+  deletePromReportTemplate,
   listPromDataSources,
+  listPromProjects,
+  listPromReportTemplates,
   promGenerateReport,
+  updatePromReportTemplate,
   type PromDataSource,
+  type PromProject,
   type PromReport,
   type PromReportRow,
+  type PromReportTemplate,
 } from '../api/prometheus'
 // Excel 产出与健康评分抽到公共模块：「报告记录」页回看时要用同一套口径重新导出
-import { exportPromReportXlsx, healthScore, riskLevel, thOf } from '../utils/promReportExcel'
+import {
+  exportPromReportXlsx,
+  healthScore,
+  isScoped,
+  riskLevel,
+  scopeFileSuffix,
+  scopeTextOf,
+  thOf,
+} from '../utils/promReportExcel'
 
 const { Title, Text } = Typography
 
@@ -62,6 +87,16 @@ function fmtPct(v: number | undefined | null): string {
   return `${v.toFixed(1)}%`
 }
 
+/**
+ * Prometheus 监控报表
+ *
+ * v1.7.38 起支持**按项目出报告**：每个人负责的项目不同，可以：
+ *   1. 选一个或多个项目（多选 / 单选都行）→ 只统计这些项目的主机；
+ *   2. 把这套「数据源 + 项目范围 + 周期」存成**报表模板**，下次一键复用；
+ *   3. 按模板生成自己的季度报告，报告与归档记录都会写明覆盖了哪些项目。
+ *
+ * 不选项目 = 不限项目，覆盖数据源下全部主机（与 v1.7.37 及以前口径一致）。
+ */
 export default function PromReportPage() {
   const [dss, setDss] = useState<PromDataSource[]>([])
   const [ds, setDs] = useState<number | null>(null)
@@ -72,33 +107,198 @@ export default function PromReportPage() {
   // 归档结果（v1.7.36）：生成即写入「报告记录」
   const [archivedId, setArchivedId] = useState<number | null>(null)
 
+  /* ---------- 项目范围（v1.7.38） ---------- */
+  const [projects, setProjects] = useState<PromProject[]>([])
+  const [projLoading, setProjLoading] = useState(false)
+  const [systems, setSystems] = useState<string[]>([])
+  const [projMeta, setProjMeta] = useState<{ targets: number; unlabeled: number; dsName: string } | null>(null)
+
+  /* ---------- 报表模板（v1.7.38） ---------- */
+  const [templates, setTemplates] = useState<PromReportTemplate[]>([])
+  const [myUid, setMyUid] = useState<number>(0)
+  const [templateId, setTemplateId] = useState<number | undefined>(undefined)
+  // 选了模板后又改了范围 = 不再是那个模板的口径，生成时不再挂模板名（避免归档记录张冠李戴）
+  const [tplDirty, setTplDirty] = useState(false)
+  const [tplModal, setTplModal] = useState<{ open: boolean; mode: 'create' | 'overwrite'; id?: number }>({
+    open: false,
+    mode: 'create',
+  })
+  const [tplForm, setTplForm] = useState<{ name: string; remark: string; shared: boolean }>({
+    name: '',
+    remark: '',
+    shared: false,
+  })
+  const [tplSaving, setTplSaving] = useState(false)
+
+  // 深链：从「报表模板」页点「生成报告」带过来的 ?template=<id>。
+  // 必须在挂载时**同步**读出来：数据源初始化要据此让位 —— 否则「默认选第一个数据源」
+  // 会和模板的数据源互相覆盖，最终用哪个取决于两个请求谁先返回（随机踩坑）。
+  const deepLinkTpl = useMemo(() => {
+    const m = /[?&]template=(\d+)/.exec(window.location.search)
+    return m ? Number(m[1]) : 0
+  }, [])
+  const deepLinkApplied = useRef(false)
+
   useEffect(() => {
     listPromDataSources()
       .then((r) => {
         const usable = (r.list || []).filter((x) => x.enabled === 1)
         setDss(usable)
-        if (usable.length > 0) setDs(usable[0].id)
+        if (usable.length > 0 && deepLinkTpl === 0) setDs(usable[0].id)
       })
       .catch((e) => message.error('加载数据源失败:' + errMsg(e)))
+  }, [deepLinkTpl])
+
+  const loadTemplates = useCallback(async () => {
+    try {
+      const r = await listPromReportTemplates()
+      setTemplates(r.list || [])
+      setMyUid(r.uid || 0)
+    } catch (e) {
+      // 模板加载失败不该挡住出报告：只是没有模板可选用
+      message.warning('加载报表模板失败:' + errMsg(e))
+      setTemplates([])
+    }
   }, [])
+
+  useEffect(() => {
+    loadTemplates()
+  }, [loadTemplates])
+
+  /** 拉当前数据源的项目清单（项目范围的唯一来源，避免手输项目名写错） */
+  const loadProjects = useCallback(async (dsId: number | null) => {
+    if (!dsId) {
+      setProjects([])
+      setProjMeta(null)
+      return
+    }
+    setProjLoading(true)
+    try {
+      const r = await listPromProjects(dsId)
+      setProjects(r.list || [])
+      setProjMeta({ targets: r.targets || 0, unlabeled: r.unlabeled || 0, dsName: r.dsName || '' })
+    } catch (e) {
+      message.error('加载项目清单失败:' + errMsg(e))
+      setProjects([])
+      setProjMeta(null)
+    } finally {
+      setProjLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    loadProjects(ds)
+  }, [ds, loadProjects])
+
+  // 切数据源时清空已选项目：项目名是按数据源的 target 来的，跨源沿用会静默查出 0 台
+  const onDsChange = useCallback(
+    (v: number) => {
+      setDs(v)
+      setSystems([])
+      setTemplateId(undefined)
+      setTplDirty(false)
+      setReport(null)
+      setArchivedId(null)
+    },
+    [],
+  )
+
+  const curTemplate = useMemo(
+    () => templates.find((t) => t.id === templateId),
+    [templates, templateId],
+  )
+
+  /** 套用模板：数据源 / 周期 / 项目范围一起带出来 */
+  const applyTemplate = useCallback(
+    (id: number | undefined) => {
+      setTemplateId(id)
+      setTplDirty(false)
+      if (!id) return
+      const t = templates.find((x) => x.id === id)
+      if (!t) return
+      setDs(t.dsId)
+      setPeriod(t.period)
+      setSystems(t.systems || [])
+      setReport(null)
+      setArchivedId(null)
+    },
+    [templates],
+  )
+
+  // 模板列表到位后套用深链模板（套用会一并设置数据源 / 周期 / 项目范围）。
+  // 只套一次：之后模板列表刷新（如另存为后重新加载）不该覆盖用户当前的调整。
+  useEffect(() => {
+    if (deepLinkApplied.current || !deepLinkTpl || templates.length === 0) return
+    deepLinkApplied.current = true
+    if (templates.some((t) => t.id === deepLinkTpl)) {
+      applyTemplate(deepLinkTpl)
+    } else {
+      message.warning('链接里的报表模板不存在或已被删除')
+    }
+  }, [deepLinkTpl, templates, applyTemplate])
+
+  // 已选项目在当前数据源里已不存在的（项目改名 / target 下线）——必须提示，
+  // 否则用户以为报告覆盖了 5 个项目，实际只统计到 3 个
+  const missingSystems = useMemo(() => {
+    if (systems.length === 0 || projects.length === 0) return []
+    const set = new Set(projects.map((p) => p.name))
+    return systems.filter((s) => !set.has(s))
+  }, [systems, projects])
+
+  const selectedHosts = useMemo(() => {
+    if (systems.length === 0) return projMeta?.targets ?? 0
+    const m = new Map(projects.map((p) => [p.name, p.hosts]))
+    return systems.reduce((a, s) => a + (m.get(s) || 0), 0)
+  }, [systems, projects, projMeta])
+
+  const projectOptions = useMemo(
+    () =>
+      projects.map((p) => ({
+        value: p.name,
+        label: `${p.name}（${p.hosts} 台${p.offline > 0 ? ` · 离线 ${p.offline}` : ''}）`,
+      })),
+    [projects],
+  )
+
+  const markDirty = useCallback(() => {
+    if (templateId) setTplDirty(true)
+  }, [templateId])
 
   const generate = useCallback(async () => {
     if (!ds) {
       message.warning('请先选择数据源')
       return
     }
+    if (systems.length > 0 && selectedHosts === 0) {
+      message.warning('所选项目在当前数据源里没有采集到任何主机，请检查项目选择或数据源')
+    }
     setLoading(true)
     setArchivedId(null)
     try {
-      // 服务端「生成 + 归档」一次完成，不再额外查一遍 Prometheus
-      const r = await promGenerateReport(ds, period, ref ? ref.format('YYYY-MM-DD') : undefined)
+      // systems 每次都**显式**传（空数组=全集群口径）：
+      // 不传的话后端会沿用模板范围，与页面上看到的选择不一致
+      const r = await promGenerateReport(
+        ds,
+        period,
+        ref ? ref.format('YYYY-MM-DD') : undefined,
+        undefined,
+        systems,
+        tplDirty ? undefined : templateId,
+      )
       const rep = r.report
       setReport(rep)
       if (r.id) setArchivedId(r.id)
       if (!rep.rows || rep.rows.length === 0) {
-        message.warning(`${PERIOD_LABEL[period]}窗口内没有采到任何主机数据（确认 node_exporter 已接入且 Prometheus 有历史数据）`)
+        // 后端会给出「没数据」的具体原因（是没接 node_exporter，还是项目没 target）
+        message.warning(
+          rep.hint ||
+            `${PERIOD_LABEL[period]}窗口内没有采到任何主机数据（确认 node_exporter 已接入且 Prometheus 有历史数据）`,
+        )
       } else if (r.id) {
-        message.success(`已生成 ${rep.periodCN} 报告：${rep.hostCount} 台主机，并归档到「报告记录」#${r.id}`)
+        const scopeTip = rep.systems?.length ? ` · ${rep.systems.length} 个项目` : ''
+        message.success(
+          `已生成 ${rep.periodCN} 报告：${rep.hostCount} 台主机${scopeTip}，并归档到「报告记录」#${r.id}`,
+        )
       } else {
         message.success(`已生成 ${rep.periodCN} 报告：${rep.hostCount} 台主机`)
       }
@@ -108,13 +308,101 @@ export default function PromReportPage() {
     } finally {
       setLoading(false)
     }
-  }, [ds, period, ref])
+  }, [ds, period, ref, systems, templateId, tplDirty, selectedHosts])
 
   const refPicker = useMemo(() => {
     if (period === 'month') return <DatePicker picker="month" value={ref} onChange={setRef} allowClear={false} />
     if (period === 'quarter') return <DatePicker picker="quarter" value={ref} onChange={setRef} allowClear={false} />
     return <DatePicker picker="year" value={ref} onChange={setRef} allowClear={false} />
   }, [period, ref])
+
+  /* ---------- 模板保存 ---------- */
+  const openSaveAsNew = useCallback(() => {
+    if (!ds) {
+      message.warning('请先选择数据源')
+      return
+    }
+    if (systems.length === 0) {
+      message.warning('请先选择要纳入模板的项目（模板必须包含至少一个项目）')
+      return
+    }
+    const base = curTemplate?.name ? `${curTemplate.name}-副本` : `${projects[0]?.name || '监控'}报告模板`
+    setTplForm({ name: base, remark: curTemplate?.remark || '', shared: curTemplate?.shared === 1 })
+    setTplModal({ open: true, mode: 'create' })
+  }, [ds, systems, curTemplate, projects])
+
+  const openOverwrite = useCallback(() => {
+    if (!curTemplate) return
+    setTplForm({ name: curTemplate.name, remark: curTemplate.remark || '', shared: curTemplate.shared === 1 })
+    setTplModal({ open: true, mode: 'overwrite', id: curTemplate.id })
+  }, [curTemplate])
+
+  const submitTemplate = useCallback(async () => {
+    const name = tplForm.name.trim()
+    if (!name) {
+      message.warning('请填写模板名称')
+      return
+    }
+    if (!ds) {
+      message.warning('请先选择数据源')
+      return
+    }
+    if (systems.length === 0) {
+      message.warning('模板必须包含至少一个项目')
+      return
+    }
+    setTplSaving(true)
+    try {
+      const body = {
+        name,
+        dsId: ds,
+        period,
+        systems,
+        remark: tplForm.remark.trim(),
+        shared: tplForm.shared ? 1 : 0,
+      }
+      if (tplModal.mode === 'overwrite' && tplModal.id) {
+        const r = await updatePromReportTemplate(tplModal.id, body)
+        message.success(`模板「${r.template.name}」已更新`)
+        setTplModal({ open: false, mode: 'create' })
+        await loadTemplates()
+        setTplDirty(false)
+      } else {
+        const r = await createPromReportTemplate(body)
+        message.success(`模板「${r.template.name}」已创建`)
+        setTplModal({ open: false, mode: 'create' })
+        await loadTemplates()
+        setTemplateId(r.template.id)
+        setTplDirty(false)
+      }
+    } catch (e) {
+      message.error(errMsg(e))
+    } finally {
+      setTplSaving(false)
+    }
+  }, [tplForm, ds, period, systems, tplModal, loadTemplates])
+
+  const removeTemplate = useCallback(() => {
+    if (!curTemplate) return
+    Modal.confirm({
+      title: '删除报表模板',
+      content: `确认删除模板「${curTemplate.name}」？已归档的历史报告不受影响，但模板本身无法恢复。`,
+      okText: '确认删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          await deletePromReportTemplate(curTemplate.id)
+          message.success('模板已删除')
+          setTemplateId(undefined)
+          setTplDirty(false)
+          await loadTemplates()
+        } catch (e) {
+          message.error(errMsg(e))
+        }
+      },
+    })
+  }, [curTemplate, loadTemplates])
 
   /* ---------- 图表 ---------- */
   const barOption = useMemo(() => {
@@ -175,6 +463,7 @@ export default function PromReportPage() {
 
   const trendOption = useMemo(() => {
     if (!report || !report.trend.length) return null
+    const scopeCN = isScoped(report) ? '所选项目' : '全集群'
     return {
       grid: { left: 56, right: 16, top: 34, bottom: 44 },
       tooltip: { trigger: 'axis' },
@@ -187,7 +476,7 @@ export default function PromReportPage() {
       yAxis: { type: 'value', max: 100, axisLabel: { formatter: '{value}%' } },
       series: [
         {
-          name: 'CPU 使用率（全集群均值）',
+          name: `CPU 使用率（${scopeCN}均值）`,
           type: 'line',
           showSymbol: false,
           data: report.trend.map((p) => p.cpu ?? null),
@@ -195,7 +484,7 @@ export default function PromReportPage() {
           areaStyle: { color: 'rgba(56,189,248,0.12)' },
         },
         {
-          name: '内存使用率（全集群均值）',
+          name: `内存使用率（${scopeCN}均值）`,
           type: 'line',
           showSymbol: false,
           data: report.trend.map((p) => p.mem ?? null),
@@ -203,7 +492,7 @@ export default function PromReportPage() {
           areaStyle: { color: 'rgba(167,139,250,0.12)' },
         },
         {
-          name: '磁盘使用率（全集群均值）',
+          name: `磁盘使用率（${scopeCN}均值）`,
           type: 'line',
           showSymbol: false,
           data: report.trend.map((p) => p.disk ?? null),
@@ -219,7 +508,8 @@ export default function PromReportPage() {
     if (!report) return
     const dsName = dss.find((x) => x.id === ds)?.name || '—'
     try {
-      const r = exportPromReportXlsx(report, dsName)
+      const file = `Prometheus监控报表_${report.periodCN}${scopeFileSuffix(report)}_${dayjs().format('YYYYMMDD-HHmm')}.xlsx`
+      const r = exportPromReportXlsx(report, dsName, file)
       if (r.ok) {
         message.success(`导出成功（${(r.bytes / 1024 / 1024).toFixed(2)}MB）${r.tip ? ' · ' + r.tip : ''}`)
       } else {
@@ -293,8 +583,11 @@ export default function PromReportPage() {
           <BarChartOutlined style={{ marginRight: 8 }} />
           Prometheus 监控报表
         </Title>
-        <Tag color="purple">v1.7.36</Tag>
+        <Tag color="purple">v1.7.38</Tag>
         <Space style={{ marginLeft: 'auto' }}>
+          <Button icon={<ProfileOutlined />} onClick={() => window.open('/prom/report-templates', '_blank')}>
+            报表模板
+          </Button>
           <Button
             icon={<HistoryOutlined />}
             onClick={() => window.open('/prom/report-records', '_blank')}
@@ -322,15 +615,59 @@ export default function PromReportPage() {
         />
       )}
 
-      {/* 生成条件 */}
+      {/* 生成条件：模板 + 数据源 + 周期 + 项目范围 */}
       <Card size="small" style={{ marginBottom: 12 }}>
+        <Row gutter={[8, 8]} align="middle">
+          <Col>
+            <Select
+              style={{ minWidth: 240 }}
+              placeholder="选择报表模板（可选）"
+              allowClear
+              value={templateId}
+              onChange={(v) => applyTemplate(v)}
+              options={templates.map((t) => ({
+                value: t.id,
+                // 别人的共享模板标出创建人 —— 否则列表里几个同名模板根本分不清哪个是自己的
+                label: `${t.name}（${t.systems?.length || 0} 个项目 · ${PERIOD_LABEL[t.period]}${
+                  t.ownerId === myUid ? '' : ` · ${t.ownerName || '他人'}`
+                }）`,
+              }))}
+            />
+          </Col>
+          <Col>
+            <Tooltip title="把当前的数据源 / 项目范围 / 周期存成模板，下次一键复用">
+              <Button icon={<SaveOutlined />} onClick={openSaveAsNew}>
+                另存为模板
+              </Button>
+            </Tooltip>
+          </Col>
+          {curTemplate && (
+            <>
+              <Col>
+                <Tooltip title={curTemplate.canEdit ? '用当前设置覆盖该模板' : '只有创建人可修改该模板'}>
+                  <Button disabled={!curTemplate.canEdit} onClick={openOverwrite}>
+                    更新模板
+                  </Button>
+                </Tooltip>
+              </Col>
+              <Col>
+                <Button danger disabled={!curTemplate.canEdit} icon={<DeleteOutlined />} onClick={removeTemplate}>
+                  删除模板
+                </Button>
+              </Col>
+            </>
+          )}
+        </Row>
+
+        <Divider style={{ margin: '10px 0' }} />
+
         <Row gutter={[8, 8]} align="middle">
           <Col>
             <Select
               style={{ minWidth: 200 }}
               placeholder="选择数据源"
               value={ds}
-              onChange={setDs}
+              onChange={onDsChange}
               options={dss.map((d) => ({ value: d.id, label: `${d.name}（${d.url}）` }))}
             />
           </Col>
@@ -338,7 +675,10 @@ export default function PromReportPage() {
             <Select
               style={{ width: 110 }}
               value={period}
-              onChange={(v) => setPeriod(v)}
+              onChange={(v) => {
+                setPeriod(v)
+                markDirty()
+              }}
               options={(Object.keys(PERIOD_LABEL) as Period[]).map((p) => ({
                 value: p,
                 label: PERIOD_LABEL[p],
@@ -357,6 +697,104 @@ export default function PromReportPage() {
             </Space>
           </Col>
         </Row>
+
+        <Divider style={{ margin: '10px 0' }} />
+
+        {/* 项目范围 */}
+        <Row gutter={[8, 8]} align="middle">
+          <Col flex="auto">
+            <Select
+              mode="multiple"
+              allowClear
+              style={{ width: '100%' }}
+              placeholder="选择项目（可多选；不选 = 统计数据源下全部主机）"
+              value={systems}
+              onChange={(v) => {
+                setSystems(v)
+                markDirty()
+              }}
+              options={projectOptions}
+              optionFilterProp="label"
+              maxTagCount="responsive"
+              loading={projLoading}
+              notFoundContent={projLoading ? <Spin size="small" /> : '该数据源下没有带 system 标签的采集目标'}
+            />
+          </Col>
+          <Col>
+            <Space>
+              <Checkbox
+                checked={systems.length > 0 && systems.length === projects.length}
+                indeterminate={systems.length > 0 && systems.length < projects.length}
+                disabled={projects.length === 0}
+                onChange={(e) => {
+                  setSystems(e.target.checked ? projects.map((p) => p.name) : [])
+                  markDirty()
+                }}
+              >
+                全选
+              </Checkbox>
+              <Button
+                size="small"
+                disabled={systems.length === 0}
+                onClick={() => {
+                  setSystems([])
+                  markDirty()
+                }}
+              >
+                清空
+              </Button>
+              <Tooltip title="重新从 Prometheus 拉取项目清单（新建/改名项目后点这里）">
+                <Button
+                  size="small"
+                  icon={<ReloadOutlined />}
+                  loading={projLoading}
+                  onClick={() => loadProjects(ds)}
+                />
+              </Tooltip>
+            </Space>
+          </Col>
+        </Row>
+
+        <div style={{ marginTop: 8, fontSize: 12, color: '#64748b' }}>
+          {systems.length === 0 ? (
+            <span>
+              <Tag color="default">全部项目</Tag>
+              不限项目：本次报告将统计数据源下全部主机
+              {projMeta ? `（共 ${projMeta.targets} 台采集目标）` : ''}
+            </span>
+          ) : (
+            <span>
+              <Tag color="blue">已选 {systems.length} 个项目</Tag>
+              覆盖 {selectedHosts} 台主机
+              {projMeta ? ` / 数据源共 ${projMeta.targets} 台采集目标` : ''}
+              {tplDirty && (
+                <Tag color="orange" style={{ marginLeft: 8 }}>
+                  已基于模板修改，生成时不再关联「{curTemplate?.name}」
+                </Tag>
+              )}
+            </span>
+          )}
+        </div>
+
+        {missingSystems.length > 0 && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginTop: 8 }}
+            message={`有 ${missingSystems.length} 个已选项目在当前数据源里找不到：${missingSystems.join('、')}`}
+            description="这些项目将被统计为 0 台主机。可能是项目已改名、target 已下线，或模板来自另一个数据源 —— 请重新选择。"
+          />
+        )}
+
+        {projMeta && projMeta.unlabeled > 0 && (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginTop: 8 }}
+            message={`数据源里有 ${projMeta.unlabeled} 台主机的采集目标没有 system 标签`}
+            description="这类主机不属于任何项目，按项目出报告时不会被包含在内；如需纳入，请在 Prometheus 的 target 上补 system 标签。"
+          />
+        )}
       </Card>
 
       {loading ? (
@@ -368,12 +806,33 @@ export default function PromReportPage() {
       ) : !report ? (
         <Card size="small">
           <Empty
-            description="选择数据源与周期后点击「生成报告」"
+            description={
+              systems.length > 0
+                ? `已选 ${systems.length} 个项目，选好周期后点击「生成报告」`
+                : '选择数据源与周期后点击「生成报告」（要只看自己的项目，先在上方选项目或套用模板）'
+            }
             style={{ padding: 60 }}
           />
         </Card>
       ) : (
         <>
+          {/* 报告范围 */}
+          <Alert
+            type={isScoped(report) ? 'info' : 'warning'}
+            showIcon
+            style={{ marginBottom: 12 }}
+            message={`报告范围：${scopeTextOf(report)}`}
+            description={
+              isScoped(report)
+                ? `本报告只统计上述项目的主机（${report.hostCount} 台），不含数据源内其他项目。${
+                    report.scopeTargets > report.hostCount
+                      ? `其中 ${report.scopeTargets - report.hostCount} 个采集目标在窗口内没有 node_exporter 数据，未计入。`
+                      : ''
+                  }`
+                : '未限定项目：统计了数据源下的全部主机。若要按自己负责的项目出报告，请在上方选择项目或套用模板。'
+            }
+          />
+
           {/* KPI */}
           <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
             <Col xs={12} md={6} lg={4}>
@@ -454,7 +913,7 @@ export default function PromReportPage() {
           {/* 趋势 + 对比 */}
           <Row gutter={12} style={{ marginBottom: 12 }}>
             <Col xs={24} lg={12}>
-              <Card size="small" title="全集群资源趋势">
+              <Card size="small" title={isScoped(report) ? '所选项目资源趋势' : '全集群资源趋势'}>
                 {trendOption ? (
                   <ReactECharts option={trendOption} notMerge style={{ height: 320 }} lazyUpdate />
                 ) : (
@@ -493,6 +952,65 @@ export default function PromReportPage() {
           </Card>
         </>
       )}
+
+      {/* ---------- 保存模板 ---------- */}
+      <Modal
+        open={tplModal.open}
+        title={tplModal.mode === 'overwrite' ? `更新模板「${tplForm.name}」` : '另存为报表模板'}
+        okText="保存"
+        cancelText="取消"
+        confirmLoading={tplSaving}
+        onCancel={() => setTplModal({ open: false, mode: 'create' })}
+        onOk={submitTemplate}
+        maskClosable={false}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div>
+            <div style={{ marginBottom: 4, fontSize: 12, color: '#64748b' }}>模板名称</div>
+            <Input
+              value={tplForm.name}
+              onChange={(e) => setTplForm({ ...tplForm, name: e.target.value })}
+              maxLength={64}
+              showCount
+              placeholder="例如：某项目季度报告"
+              onPressEnter={submitTemplate}
+            />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4, fontSize: 12, color: '#64748b' }}>备注（可选）</div>
+            <Input.TextArea
+              value={tplForm.remark}
+              onChange={(e) => setTplForm({ ...tplForm, remark: e.target.value })}
+              maxLength={255}
+              rows={2}
+              placeholder="例如：每季度末出给部门汇报用"
+            />
+          </div>
+          <div style={{ fontSize: 12, color: '#334155', background: '#f8fafc', padding: 10, borderRadius: 6 }}>
+            <div>
+              数据源：<b>{dss.find((x) => x.id === ds)?.name || '—'}</b>
+            </div>
+            <div>
+              周期：<b>{PERIOD_LABEL[period]}</b>
+            </div>
+            <div>
+              项目范围：<b>{systems.length} 个</b> —— {systems.join('、') || '（未选择）'}
+            </div>
+            <div style={{ marginTop: 4, color: '#94a3b8' }}>
+              共覆盖 {selectedHosts} 台主机（按当前采集目标数）
+            </div>
+          </div>
+          <Checkbox
+            checked={tplForm.shared}
+            onChange={(e) => setTplForm({ ...tplForm, shared: e.target.checked })}
+          >
+            共享给其他人使用（别人只能用它生成报告，不能修改或删除）
+          </Checkbox>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            不勾选时模板仅自己可见。模板只保存「口径」，不保存报告数据；改模板不影响已归档的历史报告。
+          </Text>
+        </div>
+      </Modal>
     </div>
   )
 }
