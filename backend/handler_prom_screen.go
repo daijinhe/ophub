@@ -33,11 +33,16 @@ import (
 // 配置模型
 // ---------------------------------------------------------------------------
 
-// promMaskRule 屏蔽规则（v1.7.35）：命中规则的主机+指标不再进入大屏「超阈值主机」面板。
-// 用于屏蔽「已知但暂不处理」的超阈值项（如磁盘长期偏高的备份机），让面板只留真正要关注的主机。
+// promMaskRule 屏蔽规则（v1.7.35；v1.7.42 起扩到负载榜）
+//
+// 作用面（Metric 精确匹配；all = 该主机的一切维度）：
+//   - 风险项清单「实时告警列表」（promBuildIssues）
+//   - 对应指标的负载榜（promTopN → promRankVisible）
+//
+// 典型用途：备份机磁盘长期偏高不想上屏；压测机 / 跳板机不参与 CPU·网络 排行榜。
 type promMaskRule struct {
 	Target string `json:"target"` // 匹配串：对 instance（IP:端口）与展示名做「包含」匹配，不区分大小写
-	Metric string `json:"metric"` // all | cpu | mem | disk | offline
+	Metric string `json:"metric"` // all | cpu | mem | disk | net | offline
 	Note   string `json:"note,omitempty"`
 }
 
@@ -63,29 +68,42 @@ func promMasksToJSON(rules []promMaskRule) datatypes.JSON {
 	return datatypes.JSON(b)
 }
 
-// promPanelKeys 大屏面板白名单（v1.7.41「内容控制」）—— 与前端 utils/promPanels.ts 一一对应，
-// 新增面板必须两边同时加，否则配置存不下来（会被清洗掉）。
+// promPanelKeys 大屏面板白名单（v1.7.41「内容控制」；v1.7.42 把「负载 TOP」拆成 4 个分指标开关）
+// —— 与前端 utils/promPanels.ts 一一对应，新增面板必须两边同时加，否则配置存不下来（会被清洗掉）。
 //
 // 左栏：capacity 容量卡 / kpiTarget 监控目标·主机 / kpiOnline 目标在线·离线 /
 // kpiIssue 告警项·主机 / kpiDisk 磁盘告警 / kpiProject 项目·部门 / osDist 操作系统分布。
-// 中栏：gauges 平均使用率仪表 / topN 负载 TOP / hostBars 各主机实时使用率 /
-// healthDist 资源健康分布 / trend 资源使用率趋势。
+// 中栏：gauges 平均使用率仪表 / topCpu·topMem·topDisk·topNet 四个负载榜 /
+// hostBars 各主机实时使用率 / healthDist 资源健康分布 / trend 资源使用率趋势。
 // 右栏：alerts 实时告警列表 / alertLevel 告警等级 / alertTrend 告警趋势 / hostScroll 主机实时资源。
 // 底部：footer 页脚采集信息。
 var promPanelKeys = []string{
 	"capacity", "kpiTarget", "kpiOnline", "kpiIssue", "kpiDisk", "kpiProject", "osDist",
-	"gauges", "topN", "hostBars", "healthDist", "trend",
+	"gauges", "topCpu", "topMem", "topDisk", "topNet", "hostBars", "healthDist", "trend",
 	"alerts", "alertLevel", "alertTrend", "hostScroll",
 	"footer",
 }
 
+// promLegacyPanelKeys 已废弃的历史面板键：**只读、不再写**。
+//
+// v1.7.41 的四个负载榜共用一个组开关 topN，v1.7.42 拆成 4 个分指标开关后，
+// 加载时把 topN=false 展开成 4 个键再删掉它（见 promNormalizeConfig）——
+// 否则老配置里那句「TOP 榜关掉」会静默失效，四个榜又自己冒出来。
+var promLegacyPanelKeys = []string{"topN"}
+
 var promPanelKeySet = func() map[string]bool {
-	m := make(map[string]bool, len(promPanelKeys))
+	m := make(map[string]bool, len(promPanelKeys)+len(promLegacyPanelKeys))
 	for _, k := range promPanelKeys {
+		m[k] = true
+	}
+	for _, k := range promLegacyPanelKeys {
 		m[k] = true
 	}
 	return m
 }()
+
+// promTopPanelKeys 四个负载榜的键（迁移与「全部关掉」判断共用，顺序 = 大屏上从左到右）
+var promTopPanelKeys = []string{"topCpu", "topMem", "topDisk", "topNet"}
 
 // promCleanPanels 只保留白名单内的面板键（未知键丢弃，避免前端改名后残留垃圾配置）
 func promCleanPanels(in map[string]bool) map[string]bool {
@@ -389,7 +407,17 @@ func promNormalizeConfig(c *PromScreenConfig) {
 	}
 	// 面板开关：只留白名单键，并去掉「值为 true」的冗余项 —— 语义是「表里没有的键 = 展示」，
 	// 显式写 true 没有意义（还让配置 JSON 越存越长），所以落库前紧凑化一次。
-	c.Panels = promPanelsToJSON(promCompactPanels(promParsePanels(c.Panels)))
+	pnl := promParsePanels(c.Panels)
+	// v1.7.42 迁移：把 v1.7.41 的组开关 topN 展开成 4 个分指标开关（只在它是「关」时才展开）。
+	if v, ok := pnl["topN"]; ok {
+		delete(pnl, "topN")
+		if !v {
+			for _, k := range promTopPanelKeys {
+				pnl[k] = false
+			}
+		}
+	}
+	c.Panels = promPanelsToJSON(promCompactPanels(pnl))
 	// 屏蔽规则清洗：去空 target、metric 归一到白名单、条数上限 200
 	if rules := promParseMasks(c.Masks); len(rules) > 0 {
 		clean := make([]promMaskRule, 0, len(rules))
@@ -397,7 +425,7 @@ func promNormalizeConfig(c *PromScreenConfig) {
 			r.Target = strings.TrimSpace(r.Target)
 			r.Note = strings.TrimSpace(r.Note)
 			switch r.Metric {
-			case "cpu", "mem", "disk", "offline":
+			case "cpu", "mem", "disk", "net", "offline":
 			default:
 				r.Metric = "all"
 			}
@@ -418,6 +446,9 @@ func promNormalizeConfig(c *PromScreenConfig) {
 // promMasked 判断 (主机, 指标) 是否被屏蔽规则命中：
 // target 对 instance（IP:端口）与展示名做「包含」匹配，不区分大小写。
 // metric = all 表示该主机的所有指标（含离线连通性）都屏蔽。
+//
+// ⚠️ 本函数只回答「命中没命中」，**不决定去留** —— 去留由规则模式决定：
+// 风险项走 promBuildIssues 里的 keep()，负载榜走 promRankVisible()。
 func promMasked(cfg *PromScreenConfig, metric, instance, name string) bool {
 	rules := promParseMasks(cfg.Masks)
 	if len(rules) == 0 {
@@ -438,6 +469,24 @@ func promMasked(cfg *PromScreenConfig, metric, instance, name string) bool {
 		}
 	}
 	return false
+}
+
+// promRankVisible 判断某主机能不能出现在「指标 metric 的负载榜」上（v1.7.42）。
+//
+// 与风险项的区别：排行榜展示的是**用量最高的主机**，不是风险项，所以只过规则这一道闸门，
+// 等级口径（riskLevel）不参与 —— 排行榜按阈值等级筛没有意义（会把「高水位但还没到阈值」
+// 的主机一起筛掉，榜单就变成了「风险项换成条形图」）。
+//
+// 规则模式与风险项一致，metric 用 "cpu"/"mem"/"disk"/"net"：
+//   - blacklist：命中的主机不进该指标的榜；
+//   - whitelist：该指标的榜上**只留**命中的主机 —— 想「大屏只盯这几台机器」，
+//     写一条 metric=all 的规则即可，四个榜连带风险项一起收窄。
+func promRankVisible(cfg *PromScreenConfig, metric, instance, name string) bool {
+	hit := promMasked(cfg, metric, instance, name)
+	if cfg.MaskMode == "whitelist" {
+		return hit
+	}
+	return !hit
 }
 
 var (
@@ -1154,16 +1203,21 @@ func PromSaveScreenConfig(c *gin.Context) {
 		return
 	}
 	// 屏蔽规则 / 风险口径 / 面板开关都不必等下一轮采集：立即对内存快照重算。
-	// （阈值类字段仍照旧等下一轮采集 —— 重算只影响 issues，不重算主机水位曲线。）
+	// （阈值类字段仍照旧等下一轮采集 —— 重算只影响 issues / top，不重算主机水位曲线。）
 	promReapplyMasks(old)
-	OK(c, gin.H{"msg": "已保存：内容与屏蔽规则立即生效；阈值/间隔下一轮采集生效", "config": old.view()})
+	OK(c, gin.H{"msg": "已保存：面板显隐 / 风险项 / 负载榜立即生效；阈值与间隔下一轮采集生效", "config": old.view()})
 }
 
-// promReapplyMasks 按最新配置重算所有内存快照的超阈值清单。
+// promReapplyMasks 按最新配置重算所有内存快照的「可见性派生数据」。
 //
 // v1.7.35：保存屏蔽规则后立刻可见（不等下一轮采集）。
-// v1.7.41：风险口径（RiskLevel）与规则模式（MaskMode）也走这里 —— 它们同样只影响
-// 「哪些超阈值项进清单」，全部由 promBuildIssues 一处收口，所以一次重算即可三档生效。
+// v1.7.41：风险口径（RiskLevel）与规则模式（MaskMode）也走这里 —— 全部由 promBuildIssues 一处收口。
+// v1.7.42：四个负载榜同样受屏蔽规则影响，一并重算。否则「屏蔽了 CPU 榜上那台机器、屏幕上
+// 还挂着它、要等下一轮采集才消失」会被当成屏蔽没生效（间隔最长 30 分钟）。
+//
+// ⚠️ 重算用的是快照里**已按 hostLimit 裁剪过**的 s.Hosts（快照只存这一份，重启恢复后也是它）。
+// 只有 hostLimit < 实际主机数时才会与采集期结果有出入，而裁剪规则是「离线优先、其余按综合
+// 水位降序」，最吃资源的那批主机必然在列表里，影响可忽略。
 //
 // ⚠️ 别把这里扩成「重算一切」：主机水位/网络/分组统计是采集期产物，重算它们等于就地伪造数据。
 func promReapplyMasks(cfg *PromScreenConfig) {
@@ -1174,6 +1228,7 @@ func promReapplyMasks(cfg *PromScreenConfig) {
 			continue
 		}
 		s.Issues, s.IssueStat = promBuildIssues(s.Hosts, cfg, 100)
+		s.Top = promTopSetsOf(s.Hosts, cfg)
 		s.Config = cfg.view()
 	}
 }

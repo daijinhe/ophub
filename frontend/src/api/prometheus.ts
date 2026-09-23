@@ -148,8 +148,9 @@ export interface PromCfgView {
    */
   riskLevel: PromRiskLevel
   /**
-   * 面板显示开关（v1.7.41）：`{ 面板key: false }`。
+   * 面板显示开关（v1.7.41；v1.7.42 把「负载 TOP」从一个组键拆成 topCpu/topMem/topDisk/topNet）。
    * ⚠️ 语义是「**表里没有的键 = 展示**」（缺省全开）—— 历史配置没有这个字段，升级后行为不变。
+   * 键清单见 `utils/promPanels.ts` 的 `PROM_PANELS`（后端有同名白名单，两边必须一一对应）。
    */
   panels?: Record<string, boolean>
   masks?: PromMaskRule[]
@@ -162,10 +163,16 @@ export interface PromTrendPoint {
   disk?: number | null
 }
 
-/** 屏蔽规则：命中 target 的主机指标不再进入大屏「超阈值主机」面板（v1.7.35） */
+/**
+ * 屏蔽规则（v1.7.35；v1.7.42 起扩到负载榜）。
+ *
+ * 作用面：**风险项清单（实时告警列表）+ 对应指标的负载榜**。
+ * metric 决定管哪个维度 —— 选 `cpu` 就同时管 CPU 告警项与「CPU 负载 TOP N」，
+ * 选 `all` 则该主机的一切维度都按规则处理。
+ */
 export interface PromMaskRule {
   target: string
-  metric: 'all' | 'cpu' | 'mem' | 'disk' | 'offline'
+  metric: 'all' | 'cpu' | 'mem' | 'disk' | 'net' | 'offline'
   note?: string
 }
 

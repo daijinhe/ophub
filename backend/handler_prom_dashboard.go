@@ -328,13 +328,8 @@ func buildPromSnapshot(ctx context.Context, cli *promClient, dsName string, cfg 
 		DiskGb: promScalar(ctx, cli, promQLDiskTotalGb),
 	}
 
-	// ---- 4. TOP N（CPU / 内存 / 磁盘 / 网络） ----
-	out.Top = promTopSets{
-		CPU:  promTopN(hosts, instLabels, cfg.TopN, func(h promHostStat) float64 { return h.CPU }),
-		Mem:  promTopN(hosts, instLabels, cfg.TopN, func(h promHostStat) float64 { return h.Mem }),
-		Disk: promTopN(hosts, instLabels, cfg.TopN, func(h promHostStat) float64 { return h.Disk }),
-		Net:  promTopN(hosts, instLabels, cfg.TopN, func(h promHostStat) float64 { return h.Net }),
-	}
+	// ---- 4. TOP N（CPU / 内存 / 磁盘 / 网络；内部先过屏蔽规则再排序截断） ----
+	out.Top = promTopSetsOf(hosts, cfg)
 
 	// ---- 5. 超阈值清单 + 分组水位（阈值来自「大屏管理」配置） ----
 	out.Issues, out.IssueStat = promBuildIssues(hosts, cfg, 100)
@@ -535,16 +530,49 @@ func promUsageDistOf(hosts []promHostStat) promUsageDist {
 	return d
 }
 
-// promTopN 按指定字段取前 n（过滤 0 值与离线）
-func promTopN(hosts []promHostStat, labels map[string]*promInstLabels, n int, pick func(promHostStat) float64) []promTopEntry {
+// promTopSetsOf 四个负载榜（CPU / 内存 / 磁盘 / 网络）。
+//
+// 采集期与「保存屏蔽规则后就地重算」（promReapplyMasks）共用这一份，口径不会两处漂移。
+func promTopSetsOf(hosts []promHostStat, cfg *PromScreenConfig) promTopSets {
+	return promTopSets{
+		CPU:  promTopN(hosts, cfg, "cpu", cfg.TopN, func(h promHostStat) float64 { return h.CPU }),
+		Mem:  promTopN(hosts, cfg, "mem", cfg.TopN, func(h promHostStat) float64 { return h.Mem }),
+		Disk: promTopN(hosts, cfg, "disk", cfg.TopN, func(h promHostStat) float64 { return h.Disk }),
+		Net:  promTopN(hosts, cfg, "net", cfg.TopN, func(h promHostStat) float64 { return h.Net }),
+	}
+}
+
+// promTopN 按指定字段取前 n（过滤 0 值与离线）。
+//
+// v1.7.42：先过屏蔽规则 —— 被屏蔽的主机不出现在**对应指标**的负载榜上（metric 与
+// promMaskRule.Metric 同口径：cpu / mem / disk / net）。
+//
+// ⚠️ 顺序是「先过滤、再排序、最后截断」，三步不能换：
+// 反过来的话，被屏蔽的主机原本占着第 1 名，截断后再过滤会让榜单**少一条**（TOP5 只剩 4 条），
+// 看着像采集丢了数据。同理也不能用「取前 n+屏蔽数」来补。
+//
+// 标签直接读 promHostStat 自带字段（采集期已从 instLabels 填好），
+// 所以这个函数只需要 hosts —— 快照里没有 labels，重算时才拿得到数据。
+func promTopN(
+	hosts []promHostStat,
+	cfg *PromScreenConfig,
+	metric string,
+	n int,
+	pick func(promHostStat) float64,
+) []promTopEntry {
 	if n <= 0 {
 		n = 5
 	}
 	ups := make([]promHostStat, 0, len(hosts))
 	for _, h := range hosts {
-		if h.Up && pick(h) > 0 {
-			ups = append(ups, h)
+		if !h.Up || pick(h) <= 0 {
+			continue
 		}
+		name := promHostName(h.System, h.Env, h.DeploySvr, h.Instance, h.Hostname)
+		if !promRankVisible(cfg, metric, h.Instance, name) {
+			continue
+		}
+		ups = append(ups, h)
 	}
 	sort.Slice(ups, func(i, j int) bool { return pick(ups[i]) > pick(ups[j]) })
 	if len(ups) > n {
@@ -552,18 +580,15 @@ func promTopN(hosts []promHostStat, labels map[string]*promInstLabels, n int, pi
 	}
 	out := make([]promTopEntry, 0, len(ups))
 	for _, h := range ups {
-		e := promTopEntry{
-			Instance: h.Instance,
-			Hostname: h.Hostname,
-			Value:    round1(pick(h)),
-		}
-		if lb := labels[h.Instance]; lb != nil {
-			e.Department = lb.Department
-			e.System = lb.System
-			e.Env = lb.Env
-			e.DeploySvr = lb.DeploySvr
-		}
-		out = append(out, e)
+		out = append(out, promTopEntry{
+			Instance:   h.Instance,
+			Hostname:   h.Hostname,
+			Value:      round1(pick(h)),
+			Department: h.Department,
+			System:     h.System,
+			Env:        h.Env,
+			DeploySvr:  h.DeploySvr,
+		})
 	}
 	return out
 }

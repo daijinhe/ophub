@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Alert,
   Button,
@@ -58,9 +58,12 @@ import {
 import {
   PROM_PANELS,
   PROM_PANEL_COL_CN,
+  PROM_PANEL_GROUP_CN,
   promPanelsFill,
   promPanelsOfCol,
+  promPanelsOfGroup,
   type PromPanelCol,
+  type PromPanelGroup,
   type PromPanelKey,
 } from '../utils/promPanels'
 
@@ -88,11 +91,17 @@ const GROUP_BY_OPTIONS = [
   { value: 'deployserver', label: '业务环境（deployserver）' },
 ]
 
+/**
+ * 屏蔽规则的指标口径（v1.7.42 起同口径作用于「风险项清单 + 对应指标负载榜」）。
+ * 顺序 = 常见程度，`net` 是 v1.7.42 补的 —— 在此之前想屏蔽主机在「网络负载 TOP」上的出现，
+ * 只能选「全部指标」，会连带把 CPU / 内存 / 磁盘 三个榜和告警项一起屏蔽掉。
+ */
 const METRIC_OPTIONS = [
   { value: 'all', label: '全部指标' },
   { value: 'cpu', label: 'CPU' },
   { value: 'mem', label: '内存' },
   { value: 'disk', label: '磁盘' },
+  { value: 'net', label: '网络' },
   { value: 'offline', label: '连通性（离线）' },
 ]
 
@@ -113,7 +122,10 @@ const PANEL_ICON: Record<PromPanelKey, React.ReactNode> = {
   kpiProject: <FundOutlined />,
   osDist: <AppstoreOutlined />,
   gauges: <DashboardOutlined />,
-  topN: <FireOutlined />,
+  topCpu: <FireOutlined />,
+  topMem: <FireOutlined />,
+  topDisk: <FireOutlined />,
+  topNet: <FireOutlined />,
   hostBars: <BarChartOutlined />,
   healthDist: <PieChartOutlined />,
   trend: <RiseOutlined />,
@@ -132,7 +144,7 @@ let maskSeq = 0
 const nextMaskKey = () => `m${Date.now().toString(36)}${(maskSeq++).toString(36)}`
 
 /**
- * Prometheus 监控大屏 · 管理（v1.7.33 → v1.7.41）
+ * Prometheus 监控大屏 · 管理（v1.7.33 → v1.7.42）
  *
  * 一个页面管完大屏的「展示什么、放过谁、怎么判、多久采一次」：
  *   ① 展示内容：大屏标题、面板开关（左/中/右/底 逐格可控）、TOP N、主机列表上限、趋势窗口、离线主机；
@@ -339,6 +351,14 @@ export default function PromScreenAdmin() {
     })
     setDirty(true)
   }
+  const setGroup = (group: PromPanelGroup, v: boolean) => {
+    setPanels((cur) => {
+      const next = { ...cur } as Record<PromPanelKey, boolean>
+      for (const p of promPanelsOfGroup(group)) next[p.key] = v
+      return next
+    })
+    setDirty(true)
+  }
   const setAll = (v: boolean) => {
     setPanels((cur) => {
       const next = { ...cur } as Record<PromPanelKey, boolean>
@@ -427,7 +447,7 @@ export default function PromScreenAdmin() {
           <SettingOutlined style={{ marginRight: 8 }} />
           监控大屏管理
         </Title>
-        <Tag color="purple">v1.7.41</Tag>
+        <Tag color="purple">v1.7.42</Tag>
         {dirty && <Tag color="warning">有未保存的修改</Tag>}
         {offCount > 0 && !dirty && <Tag color="default">{offCount} 个面板已关闭</Tag>}
         <Space style={{ marginLeft: 'auto' }}>
@@ -501,7 +521,7 @@ export default function PromScreenAdmin() {
                     </Row>
                     <Row gutter={12}>
                       <Col xs={12} md={6}>
-                        <Form.Item label="TOP N" name="topN" tooltip="负载排行榜展示多少条">
+                        <Form.Item label="TOP N" name="topN" tooltip="四个负载榜（CPU / 内存 / 磁盘 / 网络）各展示多少条">
                           <InputNumber min={3} max={20} precision={0} style={{ width: '100%' }} />
                         </Form.Item>
                       </Col>
@@ -553,6 +573,8 @@ export default function PromScreenAdmin() {
                     <Paragraph type="secondary" style={{ fontSize: 12, marginTop: 0 }}>
                       关掉的面板<b>不会再出现在大屏上</b>，同一栏里剩下的面板会自动接管它的高度（不会留空白）。
                       大屏版面为固定 1080 高，关掉越多、剩余面板越高。
+                      <br />
+                      这里管的是<b>整块榜要不要上屏</b>；榜里显示<b>哪些主机</b>由「风险与屏蔽」的规则按指标决定。
                     </Paragraph>
                     {TAB_KEYS.map((col) => {
                       const list = promPanelsOfCol(col)
@@ -574,29 +596,65 @@ export default function PromScreenAdmin() {
                             </Space>
                           </Divider>
                           <Row gutter={[12, 8]}>
-                            {list.map((p) => (
-                              <Col xs={24} md={12} xxl={8} key={p.key}>
-                                <div
-                                  data-panel={p.key}
-                                  data-panel-on={panels[p.key] ? '1' : '0'}
-                                  style={{
-                                    display: 'flex', alignItems: 'center', gap: 8,
-                                    padding: '6px 10px', borderRadius: 6,
-                                    border: `1px solid ${panels[p.key] ? 'rgba(22,119,255,0.25)' : 'rgba(0,0,0,0.08)'}`,
-                                    background: panels[p.key] ? 'rgba(22,119,255,0.04)' : 'rgba(0,0,0,0.02)',
-                                  }}
-                                >
-                                  <span style={{ fontSize: 14, color: panels[p.key] ? '#1677ff' : '#bfbfbf' }}>
-                                    {PANEL_ICON[p.key]}
-                                  </span>
-                                  <div style={{ flex: 1, minWidth: 0 }}>
-                                    <div style={{ fontSize: 13 }}>{p.label}</div>
-                                    <div style={{ fontSize: 11, color: '#8c8c8c', lineHeight: 1.4 }}>{p.desc}</div>
-                                  </div>
-                                  <Switch size="small" checked={panels[p.key]} onChange={(v) => setPanel(p.key, v)} />
-                                </div>
-                              </Col>
-                            ))}
+                            {list.map((p, i) => {
+                              // 组的第一项前面插一条组头（带组级全开/全关），让「四个负载榜是一组」看得见
+                              const groupStart = !!p.group && p.group !== list[i - 1]?.group
+                              const gList = p.group ? promPanelsOfGroup(p.group) : []
+                              const gOn = gList.filter((x) => panels[x.key]).length
+                              return (
+                                <Fragment key={p.key}>
+                                  {groupStart && (
+                                    <Col span={24}>
+                                      <div
+                                        data-panel-group={p.group}
+                                        style={{
+                                          display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+                                          margin: '2px 0 0', padding: '5px 10px', borderRadius: 6,
+                                          background: 'rgba(250,140,22,0.06)',
+                                          borderLeft: '3px solid #fa8c16',
+                                        }}
+                                      >
+                                        <FireOutlined style={{ color: '#fa8c16' }} />
+                                        <span style={{ fontSize: 12, fontWeight: 600 }}>{PROM_PANEL_GROUP_CN[p.group!]}</span>
+                                        <Text type="secondary" style={{ fontSize: 11 }}>
+                                          整块开关看这里；榜里显示哪些主机由「风险与屏蔽」的规则按指标决定
+                                        </Text>
+                                        <Text type="secondary" style={{ fontSize: 11, marginLeft: 'auto' }}>
+                                          {gOn}/{gList.length} 已展示
+                                        </Text>
+                                        <Button size="small" type="link" onClick={() => setGroup(p.group!, true)}>
+                                          全开
+                                        </Button>
+                                        <Button size="small" type="link" onClick={() => setGroup(p.group!, false)}>
+                                          全关
+                                        </Button>
+                                      </div>
+                                    </Col>
+                                  )}
+                                  <Col xs={24} md={12} xxl={8}>
+                                    <div
+                                      data-panel={p.key}
+                                      data-panel-on={panels[p.key] ? '1' : '0'}
+                                      style={{
+                                        display: 'flex', alignItems: 'center', gap: 8,
+                                        padding: '6px 10px', borderRadius: 6,
+                                        border: `1px solid ${panels[p.key] ? 'rgba(22,119,255,0.25)' : 'rgba(0,0,0,0.08)'}`,
+                                        background: panels[p.key] ? 'rgba(22,119,255,0.04)' : 'rgba(0,0,0,0.02)',
+                                      }}
+                                    >
+                                      <span style={{ fontSize: 14, color: panels[p.key] ? '#1677ff' : '#bfbfbf' }}>
+                                        {PANEL_ICON[p.key]}
+                                      </span>
+                                      <div style={{ flex: 1, minWidth: 0 }}>
+                                        <div style={{ fontSize: 13 }}>{p.label}</div>
+                                        <div style={{ fontSize: 11, color: '#8c8c8c', lineHeight: 1.4 }}>{p.desc}</div>
+                                      </div>
+                                      <Switch size="small" checked={panels[p.key]} onChange={(v) => setPanel(p.key, v)} />
+                                    </div>
+                                  </Col>
+                                </Fragment>
+                              )
+                            })}
                           </Row>
                         </div>
                       )
@@ -676,10 +734,15 @@ export default function PromScreenAdmin() {
                     </Form.Item>
                     <div style={{ marginBottom: 12, fontSize: 12, color: '#8c8c8c' }}>
                       {watchedMode === 'blacklist'
-                        ? '默认：匹配到规则的主机（或指定指标）不出现在大屏风险项里。适合「个别测试机 / 噪音指标不上屏」。'
-                        : '白名单：大屏上只保留匹配到的主机与指标，其余全部不展示。适合「大屏只盯指定几台机器」。'}
+                        ? '默认：命中规则的主机（按规则选的指标）不出现在大屏上。适合「个别测试机 / 噪音指标不上屏」。'
+                        : '白名单：大屏上只保留命中规则的主机与指标，其余一律不展示。适合「大屏只盯指定几台机器」—— 写一条「全部指标」的规则即可把四个负载榜与告警项一起收窄。'}
                       <br />
-                      等级口径与规则模式是<b>同时生效</b>的：先按等级筛，再按规则命中与否决定去留。
+                      规则按<b>指标</b>精确生效：选 <Text code>CPU</Text> 就同时管「CPU 告警项」与「CPU 负载 TOP N」；
+                      选 <Text code>网络</Text> 只影响网络维度（<Text code>网络</Text> 这档是 v1.7.42 新增的）。
+                      选<b>全部指标</b>则该主机在四个负载榜与告警项里都按规则处理。
+                      <br />
+                      等级口径与规则模式<b>同时生效</b>：先按等级筛，再按规则命中与否决定去留。
+                      等级口径只作用于风险项，<b>不筛负载榜</b> —— 榜单是按用量排的，按告警等级筛会把它变成「风险项换个形状」。
                     </div>
 
                     {whitelistEmpty && (
@@ -711,6 +774,9 @@ export default function PromScreenAdmin() {
                     <Paragraph type="secondary" style={{ fontSize: 12, marginTop: 12, marginBottom: 0 }}>
                       匹配方式是<b>包含匹配</b>（不区分大小写）：target 填 <Text code>192.168.10.</Text> 会命中该网段所有主机；
                       填项目名片段（如 <Text code>订单系统</Text>）会命中该项目下所有主机。指标选「全部指标」时包括离线连通性。
+                      <br />
+                      例：想让某台机器不出现在 CPU 榜上但保留它的磁盘告警 —— 加一条
+                      target = 该机器、指标 = <Text code>CPU</Text> 的规则即可，不必用「全部指标」。
                     </Paragraph>
                   </Card>
 
@@ -720,7 +786,7 @@ export default function PromScreenAdmin() {
                     showIcon
                     icon={<CheckCircleOutlined />}
                     message="保存后立即生效，不必等下一轮采集"
-                    description="风险口径、规则模式与规则明细都用服务端当前快照现场重算，保存即刷新大屏。"
+                    description="风险口径、规则模式、规则明细、四个负载榜都用服务端当前快照现场重算，保存即刷新大屏。"
                   />
                 </>
               ),
@@ -866,7 +932,8 @@ export default function PromScreenAdmin() {
                           <Text type="secondary">加载中…</Text>
                         )}
                         <Paragraph type="secondary" style={{ fontSize: 12, marginTop: 12, marginBottom: 0 }}>
-                          阈值决定大屏「超阈值主机」清单与监控报表的风险判定；保存后下一轮采集生效。
+                          阈值决定大屏风险项清单与监控报表的风险判定，保存后<b>下一轮采集</b>生效；
+                          屏蔽规则与面板开关作用于风险项 + 四个负载榜，保存<b>立即</b>生效。
                         </Paragraph>
                       </Card>
                     </Col>

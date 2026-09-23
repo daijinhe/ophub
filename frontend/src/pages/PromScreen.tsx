@@ -507,8 +507,6 @@ export default function PromScreen() {
   const FOOT_H = 36
   const BODY_H = DESIGN_H - TOP_H - FOOT_H
   const BODY_PAD = 16
-  // 真正超宽屏（21:9 / 32:9）才展开为 4 列含网络；常规 16:9 用 3 列更宽松
-  const TOP_COLS = canvas.w >= 2000 ? 4 : 3
   const TOP_N = cfg?.topN ?? 5
 
   /* ---------- 内容控制（v1.7.41）：面板开关 → 行模板 / 整栏显隐 ---------- */
@@ -518,6 +516,19 @@ export default function PromScreen() {
   // 风险项是否被「等级口径」收窄（≠ 全部）。KPI / 空清单文案要据此解释「为什么数字变小了」——
   // 否则运维会以为漏统计了，反过来把阈值调错。
   const riskControlled = cfg?.riskLevel === 'crit' || cfg?.riskLevel === 'warn'
+
+  // 有屏蔽规则时，空榜要能解释「是没数据，还是被规则挡了」—— 否则用户会当成采集故障。
+  const topFiltered = (cfg?.masks?.length || 0) > 0
+
+  // 四个负载榜各自独立开关（v1.7.42）：只渲染开着的，剩下的按等分自动占满整行宽度
+  // （不再有「常规屏只显示前 3 个」的隐藏规则 —— 那种「第 4 个去哪了」的疑问正是这次要消掉的）。
+  const TOP_ITEMS = [
+    { key: 'topCpu' as const, metric: 'cpu' as const, title: `CPU 负载 TOP${TOP_N}`, rows: data?.top?.cpu || [] },
+    { key: 'topMem' as const, metric: 'mem' as const, title: `内存负载 TOP${TOP_N}`, rows: data?.top?.mem || [] },
+    { key: 'topDisk' as const, metric: 'disk' as const, title: `磁盘负载 TOP${TOP_N}`, rows: data?.top?.disk || [] },
+    { key: 'topNet' as const, metric: 'net' as const, title: `网络负载 TOP${TOP_N}`, rows: data?.top?.net || [] },
+  ].filter((it) => on(it.key))
+  const TOP_ANY = TOP_ITEMS.length > 0
 
   // 左栏 7 格：整体占满的是「操作系统分布」，其余按设计稿固定高。
   const LEFT_ROWS = promRowsCss([
@@ -534,7 +545,7 @@ export default function PromScreen() {
   const MID_SPLIT = on('hostBars') || on('healthDist')
   const MID_ROWS = promRowsCss([
     { on: on('gauges'), h: '86px' },
-    { on: on('topN'), h: '196px' },
+    { on: TOP_ANY, h: '196px' }, // 四个负载榜占同一行（行高固定，榜数不影响行高）
     { on: MID_SPLIT, h: 'FR' },
     { on: on('trend'), h: '230px' },
   ])
@@ -1011,30 +1022,28 @@ export default function PromScreen() {
               </div>
               )}
 
-              {/* 负载 TOP N：宽屏自动展开为 4 列（含网络），窄屏 3 列 */}
-              {on('topN') && (
+              {/* 负载 TOP N：四个榜各自可关（v1.7.42），关掉后同行剩下的自动分宽 */}
+              {TOP_ANY && (
               <div
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: `repeat(${TOP_COLS}, 1fr)`,
+                  gridTemplateColumns: `repeat(${TOP_ITEMS.length}, 1fr)`,
                   gap: 10, height: 196,
                 }}
               >
-                {[
-                  { title: `CPU 负载 TOP${TOP_N}`, rows: data.top?.cpu || [], metric: 'cpu' as const },
-                  { title: `内存负载 TOP${TOP_N}`, rows: data.top?.mem || [], metric: 'mem' as const },
-                  { title: `磁盘负载 TOP${TOP_N}`, rows: data.top?.disk || [], metric: 'disk' as const },
-                  { title: `网络负载 TOP${TOP_N}`, rows: data.top?.net || [], metric: 'net' as const },
-                ]
-                  .slice(0, TOP_COLS)
-                  .map((it) => (
-                    <div className="dash-panel" key={it.title} style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-                      <div className="dash-title"><FireOutlined /> {it.title}</div>
-                      <AutoScroll speed={SCROLL_SPEED.top} fade={10}>
-                        <TopList rows={it.rows} metric={it.metric} />
-                      </AutoScroll>
-                    </div>
-                  ))}
+                {TOP_ITEMS.map((it) => (
+                  <div
+                    className="dash-panel"
+                    key={it.key}
+                    data-panel={it.key}
+                    style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}
+                  >
+                    <div className="dash-title"><FireOutlined /> {it.title}</div>
+                    <AutoScroll speed={SCROLL_SPEED.top} fade={10}>
+                      <TopList rows={it.rows} metric={it.metric} filtered={topFiltered} />
+                    </AutoScroll>
+                  </div>
+                ))}
               </div>
               )}
 
@@ -1321,12 +1330,22 @@ function HostCard({ h, crit, warn }: { h: PromHostStat; crit: number; warn: numb
   )
 }
 
-function TopList({ rows, metric }: { rows: PromTopEntry[]; metric: 'cpu' | 'mem' | 'disk' | 'net' }) {
+function TopList({
+  rows,
+  metric,
+  filtered,
+}: {
+  rows: PromTopEntry[]
+  metric: 'cpu' | 'mem' | 'disk' | 'net'
+  /** 是否配了屏蔽规则 —— 配了的话空榜要说明「可能是被规则挡掉了」，别让运维当成采集故障 */
+  filtered?: boolean
+}) {
   if (!rows || rows.length === 0) {
     return (
       <div className="dash-empty" style={{ height: '100%', minHeight: 80, flexDirection: 'column' }}>
         <InboxOutlined style={{ fontSize: 22 }} />
         <span>暂无 {metric.toUpperCase()} 负载数据</span>
+        {filtered && <span style={{ fontSize: 10, color: '#f59e0b' }}>已按「屏蔽规则」过滤</span>}
       </div>
     )
   }
