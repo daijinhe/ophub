@@ -11,7 +11,7 @@
         datasource_ids  → 数据源（逗号分隔多选）
         severity        → 告警级别
         query           → 模糊搜索规则和标签
-        {bgid}          → 业务组（⚠️ 单值，逗号分隔会 400）
+        {bgid}          → 业务组（⚠️ 夜莺 API 单值：逗号分隔会 400、重复参数取最后一个）
         rule_prods      → 监控类型（逗号分隔多选，metric/host/logging）
         is_recovered    → 事件类别（0=Triggered 1=Recovered）
     ) + p + limit + stime + etime
@@ -120,8 +120,9 @@ def main():
         else:
             flag = str(n9)
         print("  %-28s %-8s %-10s %-10s" % ("%s %s" % (gid, g.get("name")), n9, lv, flag))
-    print("\n  ⚠️ 多值测试：bgid=1,3（夜莺前端只传单值）")
-    print("     ->", n9e_total(stime, etime, "&bgid=1,3"))
+    print("\n  ⚠️ 多值测试：bgid=1,3（夜莺 API 单值；页面查的是本地库，多选走 group_id IN）")
+    print("     bgid=1,3     ->", n9e_total(stime, etime, "&bgid=1,3"))
+    print("     bgid=1&bgid=3 ->", n9e_total(stime, etime, "&bgid=1&bgid=3"))
 
     # ---------- 2. 监控类型 rule_prods ----------
     hr("2. 监控类型 —— 夜莺参数 rule_prods（逗号分隔多选）")
@@ -171,7 +172,7 @@ def main():
         print("  query=%-12s -> %s" % (kw, n9e_total(stime, etime, "&query=" + q)))
 
     hr("结论速查")
-    print("  · 业务组 = bgid（单值，多值会报错）；下拉应列出**全部**业务组，不只是有数据的")
+    print("  · 业务组 = bgid（**夜莺 API 单值**，多值会报错或被静默忽略）；平台查本地库所以支持多选")
     print("  · 监控类型 = rule_prods（复数、逗号分隔）；单数 rule_prod 会被静默忽略")
     print("  · 告警级别 = severity（1 最严重）；事件类别 = is_recovered")
     print("  · 数据源 = datasource_ids；模糊搜索 = query")

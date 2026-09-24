@@ -209,12 +209,13 @@ func PromN9eSyncStatus(c *gin.Context) {
 // 字段与夜莺历史告警页的筛选控件**一一对应**（v1.7.52 对齐）：
 //
 //	夜莺控件          参数名            本结构体字段
-//	监控类型          rule_prods        RuleProds   （多选）
-//	数据源            datasource_ids    DatasourceIDs（多选）
-//	业务组            bgid              GroupIDs    （⚠️ 夜莺只支持单值）
-//	告警级别          severity          Severity    （1=S1 最严重）
-//	事件类别          is_recovered      Recovered   （0=触发 1=已恢复）
-//	模糊搜索规则和标签  query            Keyword     （空格分词 AND）
+//	监控类型          rule_prods        RuleProds       （多选）
+//	数据源            datasource_ids    DatasourceIDs   （多选）
+//	业务组            bgid              GroupIDs        （多选：夜莺 API 只接单值，但本页查的是本地库，
+//	                                                后端 apply 用 group_id IN (...)）
+//	告警级别          severity          Severity        （1=S1 最严重）
+//	事件类别          is_recovered      Recovered       （0=触发 1=已恢复）
+//	模糊搜索规则和标签  query            Keyword         （空格分词 AND）
 //
 // Department 不是夜莺的筛选维度，保留仅为兼容 v1.7.51 及更早存下的导出模板。
 type n9eQuery struct {
@@ -590,9 +591,12 @@ func PromN9eStats(c *gin.Context) {
 		Select("system_name as key, count(*) as value").
 		Where("system_name <> ''").
 		Group("system_name").Order("value DESC").Limit(10).Scan(&bySystem)
-	// 逐日趋势：trigger_time 是 unix 秒，按天分组（用本地时区）
+	// 逐日趋势：trigger_time 是 unix 秒，按天分组。
+	// ⚠️ 必须显式转东八区：容器与 PG 都是 UTC，直接 `to_timestamp(trigger_time)::date`
+	// 会把北京时间 00:00~08:00 的告警算进「前一天」（v1.7.54 修正，
+	// 与导出的「按天趋势」保持同一口径）。
 	q.apply(DB.Model(&N9eAlertEvent{})).
-		Select("to_char(to_timestamp(trigger_time)::date, 'YYYY-MM-DD') as key, count(*) as value").
+		Select("to_char(to_timestamp(trigger_time) AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD') as key, count(*) as value").
 		Group("key").Order("key ASC").Scan(&byDay)
 
 	OK(c, gin.H{
@@ -738,12 +742,22 @@ func PromN9eExport(c *gin.Context) {
 
 	f := excelize.NewFile()
 	defer func() { _ = f.Close() }()
+	// 「概览」先建：Sheet 顺序 = 打开文件时默认展示的那一页，
+	// 报表的使用方式就是「先看总结、有问题再翻明细」，所以概览必须在第一个。
+	if err := n9eBuildOverviewSheet(f, q, cols, tplName); err != nil {
+		Fail(c, http.StatusInternalServerError, 500, "生成概览页失败："+err.Error())
+		return
+	}
 	sheet := "告警明细"
 	if _, err := f.NewSheet(sheet); err != nil {
 		Fail(c, http.StatusInternalServerError, 500, "创建工作表失败："+err.Error())
 		return
 	}
 	_ = f.DeleteSheet("Sheet1")
+	// 删掉默认空表后把「概览」设为激活页，否则 Excel 打开时可能停在空白页
+	if idx, err := f.GetSheetIndex("概览"); err == nil {
+		f.SetActiveSheet(idx)
+	}
 	sw, err := f.NewStreamWriter(sheet)
 	if err != nil {
 		Fail(c, http.StatusInternalServerError, 500, "初始化写入器失败："+err.Error())
@@ -803,9 +817,9 @@ func PromN9eExport(c *gin.Context) {
 		base += "_" + n9eSafeFileName(tplName)
 	}
 	name := fmt.Sprintf("%s_%s_%s_%s.xlsx", base,
-		time.Unix(q.Stime, 0).Format("20060102"),
-		time.Unix(q.Etime, 0).Format("20060102"),
-		time.Now().Format("20060102"))
+		strings.ReplaceAll(n9eDateStr(q.Stime), "-", ""),
+		strings.ReplaceAll(n9eDateStr(q.Etime), "-", ""),
+		strings.ReplaceAll(n9eNowStr()[:10], "-", ""))
 	// 中文文件名走 RFC 5987，否则各浏览器表现不一致
 	c.Header("Content-Disposition",
 		`attachment; filename="n9e-alert-events.xlsx"; filename*=UTF-8''`+url.PathEscape(name))
@@ -834,12 +848,13 @@ func n9eResolveExport(c *gin.Context) (n9eQuery, []n9eExportCol, string, bool) {
 	return n9eParseQuery(c), n9eColsByKeys(strings.Split(c.Query("cols"), ",")), "", true
 }
 
-// n9eFormatTime unix 秒 → 本地时间字符串；0 返回空
+// n9eFormatTime unix 秒 → 本地（东八区）时间字符串；0 返回空。
+//
+// ⚠️ 必须带时区转换（见 handler_prom_n9e_overview.go 的 n9eTZ）：
+// 容器跑在 UTC，直接 time.Unix(ts,0).Format(...) 导出的时间会比页面早 8 小时，
+// v1.7.54 实测「页面 13:35:59 / 导出的 xlsx 05:35:59」—— 报表拿去开会就会对不上。
 func n9eFormatTime(ts int64) string {
-	if ts <= 0 {
-		return ""
-	}
-	return time.Unix(ts, 0).Format("2006-01-02 15:04:05")
+	return n9eTimeStr(ts)
 }
 
 // n9eFormatDuration 秒 → 「1天2小时3分」这种可读形式

@@ -272,7 +272,10 @@ type n9eBusiGroupResp struct {
 // 本环境 24 个组。夜莺的「历史告警 → 业务组」下拉就是这份清单（不是从事件里推的），
 // 所以平台要「和夜莺一样」也必须用它，否则会漏掉没有告警的业务组。
 //
-// ⚠️ 筛选参数是 `bgid`（单值，多个用逗号会 400）—— 见 n9eQuery.Apply。
+// ⚠️ 筛选参数是 `bgid`（**夜莺 API 单值**：逗号 / 重复参数都会被忽略或 400）。
+// 实测 `bgid=1,3` 报 400，`bgid=1&bgid=3` 只取其中一个值。
+// 但本页不走夜莺 API（直接查本地库 n9e_alert_events），所以业务组筛选**可以多选** ——
+// 后端 `n9eQuery.apply` 收到 `len(GroupIDs) > 1` 时走 `group_id IN (...)`。
 func (n *n9eClient) listBusiGroups(ctx context.Context) ([]n9eBusiGroupItem, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, n.base+"/api/n9e/busi-groups?limit=500", nil)
 	if err != nil {

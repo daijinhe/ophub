@@ -8,11 +8,14 @@ verify_n9e_alert_report.py —— 「监控告警报表」（夜莺历史告警�
   B. 同步：触发 → 轮询进度 → 完成校验
   C. 查询：列表分页、筛选（业务组/等级/恢复状态/关键字）
   D. 统计：总量 / 等级分布 / TOP 榜 / 逐日趋势
-  E. 导出：下载 xlsx，校验是合法 xlsx、行数与接口 total 一致
+  E. 导出：下载 xlsx，校验是合法 xlsx、明细行数与接口 total 一致；
+     **E1/E2 概览页（v1.7.54）**：第一个页签必须是「概览」且含各汇总段、
+     概览的「告警总数」== 接口 total；
+     **E4 时区**：明细「触发时间」按东八区输出（修复前是 UTC，比页面早 8 小时）
   G. 数据源筛选（v1.7.50）：下拉取值、单选/多选 OR 语义、与统计联动、导出含「数据源」列
   H. 导出模板（v1.7.51）：列清单、模板 CRUD、按模板导出（列与条件**以模板为准**）、
      自选列导出、非法列 Key 回退全列、模板名进文件名
-  K. 与夜莺筛选口径对齐（v1.7.52）：业务组下拉覆盖夜莺**全部**业务组、业务组单选、
+  K. 与夜莺筛选口径对齐（v1.7.52）：业务组下拉覆盖夜莺**全部**业务组、业务组单选/多选、
      监控类型 Metric/Host/Log（条数完备、单选/多选、非法值退化）、
      告警级别 1=S1 最严重、关键字空格分词 AND、关键字能搜到事件标签
   F. 权限：无 prom:alert:* 权限的账号必须 403
@@ -108,31 +111,135 @@ def unwrap(js):
     return js.get("data") if isinstance(js, dict) else None
 
 
-def xlsx_sheet_rows(data):
-    """返回 (总行数含表头, 第一行各单元格文本)。
+def _sheet_cells(z, path):
+    """返回 (行数含表头, 第一行单元格文本)；顺带把 sharedStrings 索引回查上去"""
+    xml = z.read(path).decode("utf-8", "replace")
+    rows = len(re.findall(r"<row ", xml))
+    header = []
+    m = re.search(r'<row r="1".*?</row>', xml, re.S)
+    if m:
+        row = m.group(0)
+        vals = re.findall(r"<t[^>]*>([^<]*)</t>", row)
+        if vals:
+            header = vals
+        else:
+            idxs = re.findall(r"<v>(\d+)</v>", row)
+            ss = [n for n in z.namelist() if n.endswith("sharedStrings.xml")]
+            if ss and idxs:
+                sxml = z.read(ss[0]).decode("utf-8", "replace")
+                strs = re.findall(r"<t[^>]*>([^<]*)</t>", sxml)
+                header = [strs[int(i)] for i in idxs if int(i) < len(strs)]
+    return rows, header
 
-    excelize 把字符串写进 sharedStrings、单元格里只放索引，所以要顺着索引回查；
-    万一某天改成内联字符串（inlineStr），这里也能读出来。
+
+def xlsx_sheets(data):
+    """返回 [(sheet名, 行数含表头, 第一行单元格文本, 全表 xml), ...]，顺序 = 显示的页签顺序。
+
+    ⚠️ 不能取「namelist 里第一个 worksheet」：页签顺序由 xl/workbook.xml 的 <sheet> 列表决定，
+    而 zip 里的文件名（sheet1.xml / sheet2.xml）只是创建顺序 —— 两者不一定一致
+    （「概览」是后建的，文件名反而排在「告警明细」后面）。
     """
     with zipfile.ZipFile(io.BytesIO(data)) as z:
-        sheet = [n for n in z.namelist() if n.startswith("xl/worksheets/")][0]
-        xml = z.read(sheet).decode("utf-8", "replace")
-        rows = len(re.findall(r"<row ", xml))
-        header = []
-        m = re.search(r'<row r="1".*?</row>', xml, re.S)
-        if m:
-            row = m.group(0)
-            vals = re.findall(r"<t[^>]*>([^<]*)</t>", row)
-            if vals:
-                header = vals
-            else:
-                idxs = re.findall(r"<v>(\d+)</v>", row)
-                ss = [n for n in z.namelist() if n.endswith("sharedStrings.xml")]
-                if ss and idxs:
-                    sxml = z.read(ss[0]).decode("utf-8", "replace")
-                    strs = re.findall(r"<t[^>]*>([^<]*)</t>", sxml)
-                    header = [strs[int(i)] for i in idxs if int(i) < len(strs)]
-        return rows, header
+        wb = z.read("xl/workbook.xml").decode("utf-8", "replace")
+        rels = z.read("xl/_rels/workbook.xml.rels").decode("utf-8", "replace")
+        relmap = dict(re.findall(r'Id="([^"]+)"[^>]*Target="([^"]+)"', rels))
+        out = []
+        for tag in re.findall(r"<sheet\b[^>]*>", wb):
+            nm = re.search(r'name="([^"]*)"', tag)
+            rid = re.search(r'r:id="([^"]*)"', tag)
+            if not nm or not rid:
+                continue
+            target = relmap.get(rid.group(1), "")
+            if not target:
+                continue
+            # ⚠️ excelize 写的 Target 是**包内绝对路径**（/xl/worksheets/sheet2.xml），
+            # 直接拼 "xl/" 会得到 xl/xl/...（首个版本就是这么踩的，结果所有页签都读不到）
+            t = target.lstrip("/")
+            path = t if t.startswith("xl/") else "xl/" + t
+            try:
+                rows, header = _sheet_cells(z, path)
+            except KeyError:
+                continue
+            out.append((nm.group(1), rows, header, z.read(path).decode("utf-8", "replace")))
+        return out
+
+
+def xlsx_rows(data, name):
+    """返回某个页签的 [[{列字母: 单元格文本}, ...], ...]（按行）。
+
+    ⚠️ 必须同时解析**两种**存法：
+      - 概览页是 `SetCellValue` 写的 → 文本进 sharedStrings，单元格里只放索引；
+      - 明细页是 `StreamWriter` 写的 → 内联字符串（`<is><t>`）。
+    只扫 sheet xml 会把概览整页读成「0/1/2/3…」这种索引数字，看起来像「概览页是空的」。
+    """
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        shared = []
+        ss = [n for n in z.namelist() if n.endswith("sharedStrings.xml")]
+        if ss:
+            shared = re.findall(r"<t[^>]*>([^<]*)</t>", z.read(ss[0]).decode("utf-8", "replace"))
+        target = None
+        for s in xlsx_sheets(data):
+            if s[0] == name:
+                target = s[3]
+                break
+        if target is None:
+            return []
+        out = []
+        for rowxml in re.findall(r"<row\b[^>]*>(.*?)</row>", target, re.S):
+            cells = {}
+            for cell in re.findall(r"<c\b[^>]*>.*?</c>", rowxml, re.S):
+                ref = re.search(r'r="([A-Z]+)\d+"', cell)
+                if not ref:
+                    continue
+                m = re.search(r"<is><t[^>]*>([^<]*)</t></is>", cell)
+                if m:
+                    cells[ref.group(1)] = m.group(1)
+                    continue
+                if 't="s"' in cell:
+                    m = re.search(r"<v>(\d+)</v>", cell)
+                    idx = int(m.group(1)) if m else -1
+                    cells[ref.group(1)] = shared[idx] if 0 <= idx < len(shared) else ""
+                    continue
+                m = re.search(r"<v>([^<]*)</v>", cell)
+                cells[ref.group(1)] = m.group(1) if m else ""
+            out.append(cells)
+        return out
+
+
+def xlsx_find_value(data, sheet, label, col="B"):
+    """在某个页签里按「A 列标签」找出该行的值列文本（找不到返回 None）。"""
+    for row in xlsx_rows(data, sheet):
+        if row.get("A") == label:
+            return row.get(col)
+    return None
+
+
+def xlsx_row_text(sheet_xml, rownum):
+    """取某一行的单元格文本。
+
+    ⚠️ 只解析内联字符串（`<is><t>`）—— excelize 的 StreamWriter 写出来的就是这种；
+    若哪天换成 sharedStrings，这里会返回空列表，断言会以「找不到该值」的形式失败，
+    而不是静默通过（宁可判错，也不要假绿）。
+    """
+    m = re.search(r'<row r="%d"[^>]*>(.*?)</row>' % rownum, sheet_xml, re.S)
+    if not m:
+        return []
+    return re.findall(r"<t[^>]*>([^<]*)</t>", m.group(1))
+
+
+def xlsx_sheet_rows(data, name="告警明细"):
+    """返回某个页签的 (行数含表头, 第一行各单元格文本)；找不到指定页签时退回第一个页签。
+
+    默认取「告警明细」—— v1.7.54 起导出文件的第一页变成了「概览」，
+    老调用点默认想比对的都是明细表。
+    """
+    sheets = xlsx_sheets(data)
+    if not sheets:
+        return 0, []
+    for s in sheets:
+        if s[0] == name:
+            return s[1], s[2]
+    return sheets[0][1], sheets[0][2]
 
 
 def login():
@@ -276,16 +383,66 @@ def main():
         with io.open(tmp, "wb") as f:
             f.write(data)
         try:
-            with zipfile.ZipFile(io.BytesIO(data)) as z:
-                names = z.namelist()
-                check(any("worksheets" in n for n in names), "xlsx 内含工作表（%d 个条目）" % len(names))
-                sheet = [n for n in names if n.startswith("xl/worksheets/")][0]
-                xml = z.read(sheet).decode("utf-8", "replace")
-                rows = len(re.findall(r"<row ", xml))
-                # 首行是表头
-                check(rows - 1 == total,
-                      "xlsx 数据行数(%d) 与接口 total(%d) 一致" % (rows - 1, total))
-                check("夜莺告警记录" in xml or rows > 1, "工作表有数据")
+            sheets = xlsx_sheets(data)
+            names = [s[0] for s in sheets]
+            ok("xlsx 页签：%s" % " / ".join(names))
+            # ---- E1 概览页（v1.7.54 新增）----
+            check(names[:1] == ["概览"],
+                  "第一个页签是「概览」（实际 %s）" % (names[:1] or "无"))
+            check("告警明细" in names, "页签含「告警明细」（实际 %s）" % names)
+            ov = None
+            for s in sheets:
+                if s[0] == "概览":
+                    ov = s
+                    break
+            if ov:
+                # 概览必须**自证口径**：写清时间范围与筛选条件，否则拿到文件的人
+                # 没法判断「这是筛了什么的数」（空报表尤其如此）
+                labels_in_ov = set()
+                for r in xlsx_rows(data, "概览"):
+                    if r.get("A"):
+                        labels_in_ov.add(r["A"])
+                # 段落标题带中文序号（「二、告警级别分布」），所以用子串匹配而不是相等
+                for label in ["报告时间范围", "生成时间", "筛选条件", "告警总数",
+                              "告警级别分布", "监控类型分布", "业务组 TOP10",
+                              "数据源 TOP10", "告警规则 TOP10", "归属部门 TOP10",
+                              "按天趋势", "本报告 Sheet 说明"]:
+                    check(any(label in a for a in labels_in_ov),
+                          "概览页含「%s」（实际缺此段）" % label)
+                # 概览里的「告警总数」必须等于接口 total —— 与页面统计卡同口径
+                ov_total = xlsx_find_value(data, "概览", "告警总数")
+                check(ov_total is not None and ov_total.isdigit() and int(ov_total) == total,
+                      "概览「告警总数」(%s) == 接口 total(%s)" % (ov_total, total))
+                # 概览的「筛选条件」不能是空白 —— 空白等于没写
+                ov_filter = xlsx_find_value(data, "概览", "筛选条件")
+                check(bool(ov_filter) and len(ov_filter) > 1,
+                      "概览「筛选条件」有内容（%s）" % (ov_filter or "空"))
+            # ---- E3 明细页 ----
+            d_rows, d_head = xlsx_sheet_rows(data, "告警明细")
+            # 首行是表头
+            check(d_rows - 1 == total,
+                  "xlsx 明细数据行数(%d) 与接口 total(%d) 一致" % (d_rows - 1, total))
+            check(any(h == "触发时间" for h in d_head),
+                  "明细表头首段含「触发时间」（实际 %s）" % (d_head[:4] or "空"))
+            # ---- E4 导出时间必须是东八区（v1.7.54 修正整 8 小时的 UTC 偏移）----
+            # 页面用 dayjs 按浏览器本地时区渲染「触发时间」，导出的必须与页面一致；
+            # 修复前实测「页面 13:35:59 / xlsx 05:35:59」，报表拿去开会就对不上。
+            st, js = api("GET", "/api/prom/n9e/events?days=1&page=1&pageSize=1", token=token)
+            one = (unwrap(js) or {}).get("list") or []
+            detail_xml = ""
+            for s in sheets:
+                if s[0] == "告警明细":
+                    detail_xml = s[3]
+                    break
+            if one and detail_xml:
+                ts = one[0].get("triggerTime") or 0
+                want_utc8 = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(ts + 8 * 3600))
+                got_utc = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(ts))
+                cells = xlsx_row_text(detail_xml, 2)
+                check(want_utc8 in cells,
+                      "明细「触发时间」按东八区输出（期望 %s，实际行 %s）" % (want_utc8, cells[:3]))
+                check(got_utc not in cells or want_utc8 == got_utc,
+                      "明细时间不是 UTC 裸串（UTC 值 %s 不应出现）" % got_utc)
         except zipfile.BadZipFile:
             bad("xlsx 无法作为 zip 打开")
     else:
@@ -439,6 +596,10 @@ def main():
                 check(d_ <= 3,
                       "按模板导出行数(%d) == 该数据源条数(%s)（差 %d）"
                       % (rows_n - 1, ds_first.get("n"), d_))
+                # 模板导出同样要带「概览」页（概览与列选择无关，永远在最前）
+                tpl_sheets = [s[0] for s in xlsx_sheets(data)]
+                check(tpl_sheets[:1] == ["概览"] and "告警明细" in tpl_sheets,
+                      "模板导出的页签同样是 概览 + 告警明细（实际 %s）" % tpl_sheets)
             except zipfile.BadZipFile:
                 bad("按模板导出的文件无法作为 zip 打开")
 
@@ -542,7 +703,8 @@ def main():
     else:
         bad("业务组下拉为空 —— 需先同步一次")
 
-    # K4/K5 业务组单选：夜莺的 bgid 只接受单值，平台也必须做到「选中即完全一致」
+    # K4 业务组单选：选中一个业务组时，所有明细行的 group_id 都等于它（仍要支持，
+    # 因为「选一个」是「选多个」的退化场景）
     if g_list:
         g0 = g_list[0]
         gid = g0.get("groupId")
@@ -554,6 +716,34 @@ def main():
         d = abs((one.get("total") or 0) - (g0.get("n") or 0))
         check(d <= TOL,
               "业务组单选 total(%s) 与下拉条数(%s) 一致（差 %d）" % (one.get("total"), g0.get("n"), d))
+
+    # K4.1 业务组多选（v1.7.54 新增）：OR 语义，total = 各组条数之和；明细行的 group_id 必须在选中集合内。
+    # ⚠️ 夜莺 API 的 bgid 仍是单值（`bgid=1,3` 报 400、`bgid=1&bgid=3` 静默取最后一个），
+    #    但本页查的是本地库 n9e_alert_events，不走夜莺 API，所以多选是支持的。
+    have = [g for g in g_list if (g.get("n") or 0) > 0]
+    if len(have) >= 2:
+        a, b = have[0], have[1]
+        # 选 2 个 —— OR 语义 ⇒ total 应等于 a.n + b.n
+        st, js = api("GET", "/api/prom/n9e/events?%s&groupIds=%s,%s&page=1&pageSize=20"
+                     % (q, a.get("groupId"), b.get("groupId")), token=token)
+        mu = unwrap(js) or {}
+        rows_mu = mu.get("list") or []
+        picked = {a.get("groupId"), b.get("groupId")}
+        want_total = (a.get("n") or 0) + (b.get("n") or 0)
+        d = abs((mu.get("total") or 0) - want_total)
+        check(all((r.get("groupId") in picked) for r in rows_mu),
+              "业务组多选生效（%d 条样本全部命中 id ∈ %s）" % (len(rows_mu), sorted(picked)))
+        check(d <= TOL,
+              "业务组多选 total(%s) = 两者之和(%s+%s)（差 %d）"
+              % (mu.get("total"), a.get("n"), b.get("n"), d))
+        # 非法值（不存在的 groupId）必须被静默丢弃、退化成「不过滤」
+        st, js = api("GET", "/api/prom/n9e/events?%s&groupIds=%s,99999999&page=1&pageSize=5"
+                     % (q, a.get("groupId")), token=token)
+        bogus = unwrap(js) or {}
+        d = abs((bogus.get("total") or 0) - (a.get("n") or 0))
+        check(d <= TOL,
+              "非法业务组 id 被忽略而不是筛空（total=%s，与单选 %s 差 %d）"
+              % (bogus.get("total"), a.get("n"), d))
 
     # K6/K7 监控类型：固定三项 Metric / Host / Log，且三项条数之和 == 窗口总量
     # （和为总量 ⇒ 取值互斥且完备，不会出现「某个类型既没列出来也没被算进去」）

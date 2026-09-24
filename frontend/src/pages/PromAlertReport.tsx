@@ -84,7 +84,7 @@ const { Title, Text } = Typography
 //	夜莺控件            本页控件        查询参数          语义
 //	监控类型            监控类型        ruleProds        metric / host / logging，多选
 //	数据源              数据源          datasourceIds    多选
-//	业务组              业务组          groupIds         ⚠️ 夜莺只支持单值（bgid），故本页也改单选
+//	业务组              业务组          groupIds         多选（OR 语义：本地库 group_id IN (...)）
 //	告警级别            告警级别        severity         1=S1 最严重、2=S2、3=S3
 //	事件类别            事件类别        recovered        0=触发（未恢复） 1=已恢复
 //	模糊搜索规则和标签   规则/标签关键字  keyword          空格分词，**全部命中**（AND）
@@ -302,8 +302,10 @@ export default function PromAlertReport() {
   const [ruleProds, setRuleProds] = useState<string[]>([])
   const [datasourceIds, setDatasourceIds] = useState<number[]>([])
   /**
-   * 业务组。⚠️ 夜莺的 bgid 只接受**单值**（传多个逗号会 400），所以这里也是单选，
-   * 保证「平台筛出来的」与「夜莺筛出来的」完全可比。
+   * 业务组。⚠️ 夜莺 API 的 `bgid` 只接受单值（`bgid=1,2` 会 400、重复 `bgid=1&bgid=2`
+   * 会被静默忽略），但本页查的是**本地库** `n9e_alert_events`，不走夜莺 API，
+   * 所以页面可以多选：后端 `n9eQuery.apply` 收到 `len>1` 时走 `group_id IN (...)`。
+   * 数据来源是「同步时整库拉过来」，所有业务组的行本来就都在本地。
    */
   const [groupIds, setGroupIds] = useState<number[]>([])
   const [severity, setSeverity] = useState<number | undefined>(undefined)
@@ -620,10 +622,12 @@ export default function PromAlertReport() {
     try {
       const { blob, filename } = await exportN9eAlerts({ ...queryParams, ...opt })
       saveBlob(blob, filename)
+      // 文件里第一个 Sheet 是「概览」，明确写出来 —— 否则用户拿到文件先看到明细，
+      // 会以为「说好的总结呢」，还得自己往左翻页签。
       message.success(
         opt?.tplName
-          ? `已按模板「${opt.tplName}」导出`
-          : `已导出当前筛选条件下的 ${total.toLocaleString()} 条记录`,
+          ? `已按模板「${opt.tplName}」导出（含「概览」页）`
+          : `已导出当前筛选条件下的 ${total.toLocaleString()} 条记录（含「概览」页）`,
       )
     } catch (e) {
       message.error(e instanceof Error ? e.message : '导出失败')
@@ -1012,7 +1016,7 @@ export default function PromAlertReport() {
           <AlertOutlined style={{ marginRight: 8 }} />
           监控告警报表
         </Title>
-        <Tag color="purple">v1.7.53</Tag>
+        <Tag color="purple">v1.7.54</Tag>
         <Tooltip title="数据来源：夜莺（Nightingale）历史告警">
           <Tag color="geekblue">{config?.baseUrl || '未配置'}</Tag>
         </Tooltip>
@@ -1163,7 +1167,10 @@ export default function PromAlertReport() {
               value: d.datasourceId,
             }))}
           />
-          {/* 业务组 —— ⚠️ 夜莺的 bgid 只支持单值，这里也是单选，保证两边筛出来完全可比 */}
+          {/* 业务组 —— 多选（OR 语义）
+              ⚠️ 数据来自本地库，**不走夜莺 API**，所以不受夜莺 bgid 单值约束。
+              多个值传到后端后，`n9eQuery.apply` 用 `group_id IN (...)` 收口。
+          */}
           {/*
             ⚠️ zIndex 必须**低于 Modal 默认的 1000**。
             浮层（Tooltip/Popover 默认 1070）一旦高于 Modal，就会**拦掉弹窗里同坐标控件的点击** ——
@@ -1171,15 +1178,17 @@ export default function PromAlertReport() {
             弹窗里那一行的「导出」按钮就永远点不动（浏览器报 "…tooltip-inner intercepts pointer events"）。
             提示类浮层本就不该盖在弹窗上，压到 900（仍在普通内容之上、弹窗遮罩之下）最省事。
           */}
-          <Tooltip title="与夜莺一致：业务组只能选一个" zIndex={900}>
+          <Tooltip title="可选多个：选中即「这些业务组的告警求并集」" zIndex={900}>
             <Select
+              mode="multiple"
               allowClear
               showSearch
-              placeholder="业务组"
-              style={{ minWidth: 190 }}
+              placeholder="业务组（可选多个）"
+              style={{ minWidth: 220 }}
+              maxTagCount="responsive"
               optionFilterProp="label"
-              value={groupIds[0]}
-              onChange={(v) => setGroupIds(v === undefined ? [] : [v])}
+              value={groupIds}
+              onChange={setGroupIds}
               notFoundContent={
                 hasData
                   ? '暂无业务组（需重新同步一次以补全清单）'
@@ -1576,17 +1585,18 @@ export default function PromAlertReport() {
                   value: d.datasourceId,
                 }))}
               />
-              {/* 与夜莺一致：业务组单选 */}
+              {/* 业务组 —— 多选（与主筛选一致）：模板里存的是 groupIds 数组，
+                后端 `toQuery()` 直接搬过去，不用打包成单值 */}
               <Select
+                mode="multiple"
                 allowClear
                 showSearch
                 optionFilterProp="label"
-                placeholder="业务组"
-                style={{ minWidth: 180 }}
-                value={tplForm.groupIds[0]}
-                onChange={(v) =>
-                  setTplForm({ ...tplForm, groupIds: v === undefined ? [] : [v] })
-                }
+                placeholder="业务组（可选多个）"
+                style={{ minWidth: 220 }}
+                maxTagCount="responsive"
+                value={tplForm.groupIds}
+                onChange={(v) => setTplForm({ ...tplForm, groupIds: v })}
                 options={groups.map((g) => ({ label: g.groupName, value: g.groupId }))}
               />
               <Select
