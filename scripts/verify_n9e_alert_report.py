@@ -10,6 +10,8 @@ verify_n9e_alert_report.py —— 「监控告警报表」（夜莺历史告警�
   D. 统计：总量 / 等级分布 / TOP 榜 / 逐日趋势
   E. 导出：下载 xlsx，校验是合法 xlsx、行数与接口 total 一致
   G. 数据源筛选（v1.7.50）：下拉取值、单选/多选 OR 语义、与统计联动、导出含「数据源」列
+  H. 导出模板（v1.7.51）：列清单、模板 CRUD、按模板导出（列与条件**以模板为准**）、
+     自选列导出、非法列 Key 回退全列、模板名进文件名
   F. 权限：无 prom:alert:* 权限的账号必须 403
 
 用法：
@@ -25,6 +27,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 
@@ -85,6 +88,33 @@ def api(method, path, body=None, token=None, timeout=60, raw=False):
 def unwrap(js):
     """后端统一包装 {code,msg,data}"""
     return js.get("data") if isinstance(js, dict) else None
+
+
+def xlsx_sheet_rows(data):
+    """返回 (总行数含表头, 第一行各单元格文本)。
+
+    excelize 把字符串写进 sharedStrings、单元格里只放索引，所以要顺着索引回查；
+    万一某天改成内联字符串（inlineStr），这里也能读出来。
+    """
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        sheet = [n for n in z.namelist() if n.startswith("xl/worksheets/")][0]
+        xml = z.read(sheet).decode("utf-8", "replace")
+        rows = len(re.findall(r"<row ", xml))
+        header = []
+        m = re.search(r'<row r="1".*?</row>', xml, re.S)
+        if m:
+            row = m.group(0)
+            vals = re.findall(r"<t[^>]*>([^<]*)</t>", row)
+            if vals:
+                header = vals
+            else:
+                idxs = re.findall(r"<v>(\d+)</v>", row)
+                ss = [n for n in z.namelist() if n.endswith("sharedStrings.xml")]
+                if ss and idxs:
+                    sxml = z.read(ss[0]).decode("utf-8", "replace")
+                    strs = re.findall(r"<t[^>]*>([^<]*)</t>", sxml)
+                    header = [strs[int(i)] for i in idxs if int(i) < len(strs)]
+        return rows, header
 
 
 def login():
@@ -206,7 +236,7 @@ def main():
     check(st == 200, "关键字筛选可用（命中 %s 条）" % kw.get("total"))
 
     # 业务组下拉
-    st, js = api("GET", "/api/prom/n9e/groups", token=token)
+    st, js = api("GET", "/api/prom/n9e/groups?%s" % q, token=token)
     grp = unwrap(js) or {}
     check(st == 200 and len(grp.get("list") or []) > 0, "业务组下拉非空（%d 个）" % len(grp.get("list") or []))
 
@@ -249,7 +279,9 @@ def main():
 
     # ---------- G. 数据源筛选（v1.7.50 新增） ----------
     print("\nG. 数据源筛选")
-    st, js = api("GET", "/api/prom/n9e/datasources", token=token)
+    # ⚠️ 下拉接口必须带上与查询一致的时间窗：条数是按同一时间窗统计的
+    # （否则下拉写 95674、点进去 95669 —— 差值会随上次同步距今多久越来越大）
+    st, js = api("GET", "/api/prom/n9e/datasources?%s" % q, token=token)
     ds = unwrap(js) or {}
     ds_list = ds.get("list") or []
     check(st == 200, "GET /prom/n9e/datasources 返回 200（实际 %s）" % st)
@@ -268,8 +300,14 @@ def main():
         lst = only.get("list") or []
         check(all(r.get("datasourceId") == did for r in lst),
               "单选筛选生效（%d 条样本全部命中 id=%s）" % (len(lst), did))
-        check(only.get("total") == first.get("n"),
-              "单选 total(%s) 与下拉条数(%s) 一致" % (only.get("total"), first.get("n")))
+        # ⚠️ 允许极小容差：下拉与查询是两次请求，时间窗右端（now）在滑动，
+        #    边界上的记录可能刚好滑进/滑出，几十万条里差个 1~3 条是正常的。
+        #    若口径写错（例如下拉不带时间窗），差值会是几百上千 —— 那才叫失败。
+        TOL = 3
+        d1 = abs((only.get("total") or 0) - (first.get("n") or 0))
+        check(d1 <= TOL,
+              "单选 total(%s) 与下拉条数(%s) 一致（差 %d，容差 ±%d）"
+              % (only.get("total"), first.get("n"), d1, TOL))
 
         # 多选：互斥 OR 语义 ⇒ 两个数据源的结果等于各自之和
         if len(ds_list) >= 2:
@@ -277,18 +315,22 @@ def main():
             st, js = api("GET", "/api/prom/n9e/events?%s&datasourceIds=%s,%s&page=1&pageSize=5"
                          % (q, a.get("datasourceId"), b.get("datasourceId")), token=token)
             multi = unwrap(js) or {}
-            check((multi.get("total") or 0) == (a.get("n") or 0) + (b.get("n") or 0),
-                  "多选 total(%s) = 两数据源之和(%s+%s)"
-                  % (multi.get("total"), a.get("n"), b.get("n")))
+            want = (a.get("n") or 0) + (b.get("n") or 0)
+            d2 = abs((multi.get("total") or 0) - want)
+            check(d2 <= TOL,
+                  "多选 total(%s) = 两数据源之和(%s+%s)（差 %d）"
+                  % (multi.get("total"), a.get("n"), b.get("n"), d2))
 
         # 与统计联动：同一条件下的统计 total 必须等于列表 total
         st, js = api("GET", "/api/prom/n9e/stats?%s&datasourceIds=%s" % (q, did), token=token, timeout=180)
         dst = unwrap(js) or {}
-        check((dst.get("total") or 0) == first.get("n"),
-              "统计在同一数据源条件下 total(%s) = 下拉条数(%s)" % (dst.get("total"), first.get("n")))
+        d3 = abs((dst.get("total") or 0) - (first.get("n") or 0))
+        check(d3 <= TOL,
+              "统计在同一数据源条件下 total(%s) = 下拉条数(%s)（差 %d）"
+              % (dst.get("total"), first.get("n"), d3))
 
         s = sum(x.get("n") or 0 for x in ds_list)
-        check(s <= total, "各数据源条数之和(%s) <= 总量(%s)" % (s, total))
+        check(s <= total + TOL, "各数据源条数之和(%s) <= 总量(%s)+%d" % (s, total, TOL))
 
         # 导出：必须成功，且表头含「数据源」列
         st, data, headers = api("GET", "/api/prom/n9e/export?%s&datasourceIds=%s" % (q, did),
@@ -314,6 +356,142 @@ def main():
         check(st == 200 and (nz.get("total") or 0) == 0,
               "不存在的数据源 id 返回 200 且 0 条（实际 %s/%s）" % (st, nz.get("total")))
 
+    # ---------- H. 导出模板（v1.7.51 新增） ----------
+    print("\nH. 导出模板")
+    st, js = api("GET", "/api/prom/n9e/export-columns", token=token)
+    all_cols = (unwrap(js) or {}).get("list") or []
+    check(st == 200 and len(all_cols) >= 19, "列清单返回 %d 列（应 >= 19）" % len(all_cols))
+    col_keys = [c.get("key") for c in all_cols]
+    check(
+        "datasource" in col_keys and "ruleName" in col_keys and "triggerTime" in col_keys,
+        "列清单含关键列 key（datasource / ruleName / triggerTime）",
+    )
+
+    st, js = api("GET", "/api/prom/n9e/export-templates", token=token)
+    check(st == 200, "GET /prom/n9e/export-templates 返回 200（实际 %s）" % st)
+
+    tpl_name = "E2E模板_列筛选_%d" % int(time.time())
+    tpl_cols = ["triggerTime", "datasource", "ruleName", "targetHost"]
+    tpl_expect_head = ["触发时间", "数据源", "规则名称", "目标主机"]
+    ds_first = ds_list[0] if ds_list else {}
+    tpl_body = {
+        "name": tpl_name,
+        "remark": "自动化回归创建",
+        "columns": tpl_cols,
+        "filter": {
+            "timeMode": "days",
+            "days": args.days,
+            "datasourceIds": [ds_first.get("datasourceId")] if ds_first else [],
+            "groupIds": [],
+            "severity": 0,
+            "recovered": -1,
+            "department": "",
+            "keyword": "",
+        },
+    }
+    st, js = api("POST", "/api/prom/n9e/export-templates", tpl_body, token=token)
+    tpl_id = (unwrap(js) or {}).get("id")
+    check(st == 200 and bool(tpl_id), "创建导出模板成功（id=%s）" % tpl_id)
+
+    rows_n = 0
+    if tpl_id:
+        st, js = api("GET", "/api/prom/n9e/export-templates", token=token)
+        me = [x for x in ((unwrap(js) or {}).get("list") or []) if x.get("id") == tpl_id]
+        check(len(me) == 1, "新建的模板出现在列表中")
+        if me:
+            t = me[0]
+            check(t.get("colCount") == len(tpl_cols),
+                  "模板列数 = %d（实际 %s）" % (len(tpl_cols), t.get("colCount")))
+            check(t.get("columns") == tpl_cols, "模板列顺序原样保存：%s" % t.get("columns"))
+            # ⚠️ 关键：入参里没写的字段不能被 Go 零值污染成「仅未恢复」
+            check((t.get("filter") or {}).get("recovered") == -1,
+                  "filter.recovered 保持 -1（未传字段未退化成 0）")
+
+        # 按模板导出：列与条件都应以模板为准
+        st, data, headers = api("GET", "/api/prom/n9e/export?tplId=%s" % tpl_id,
+                                token=token, timeout=600, raw=True)
+        check(st == 200 and data[:2] == b"PK",
+              "按模板导出成功（%.2f MB）" % (len(data) / 1024.0 / 1024.0))
+        if st == 200 and data[:2] == b"PK":
+            try:
+                rows_n, head = xlsx_sheet_rows(data)
+                check(head == tpl_expect_head,
+                      "导出表头 == 模板的 4 列且顺序一致（实际 %s）" % head)
+                d_ = abs((rows_n - 1) - (ds_first.get("n") or 0))
+                check(d_ <= 3,
+                      "按模板导出行数(%d) == 该数据源条数(%s)（差 %d）"
+                      % (rows_n - 1, ds_first.get("n"), d_))
+            except zipfile.BadZipFile:
+                bad("按模板导出的文件无法作为 zip 打开")
+
+        # 文件名要带模板名（RFC 5987）
+        cd = headers.get("Content-Disposition") or headers.get("content-disposition") or ""
+        m = re.search(r"filename\*=UTF-8''([^;]+)", cd)
+        fname = urllib.parse.unquote(m.group(1)) if m else ""
+        check(tpl_name in fname, "导出文件名含模板名（%s）" % fname)
+
+        # ⚠️ 语义断言：带 tplId 时 URL 上的筛选参数必须被忽略，否则「按模板导出」不可复现
+        st, data2, _h = api("GET", "/api/prom/n9e/export?tplId=%s&datasourceIds=999999&severity=3" % tpl_id,
+                            token=token, timeout=600, raw=True)
+        if st == 200 and data2[:2] == b"PK":
+            rows_n2, _h2 = xlsx_sheet_rows(data2)
+            check(abs(rows_n2 - rows_n) <= 3,
+                  "模板导出忽略 URL 干扰参数（行数 %d vs %d）" % (rows_n2, rows_n))
+        else:
+            bad("模板导出 + 干扰参数时失败（HTTP %s）" % st)
+
+        # 更新：改列 + 改名
+        new_cols = ["id", "severity", "status"]
+        new_name = tpl_name + "_改"
+        tpl_body["columns"] = new_cols
+        tpl_body["name"] = new_name
+        st, js = api("PUT", "/api/prom/n9e/export-templates/%s" % tpl_id, tpl_body, token=token)
+        check(st == 200, "更新模板返回 200（实际 %s）" % st)
+        st, js = api("GET", "/api/prom/n9e/export-templates", token=token)
+        me = [x for x in ((unwrap(js) or {}).get("list") or []) if x.get("id") == tpl_id]
+        if me:
+            check(me[0].get("columns") == new_cols and me[0].get("name") == new_name,
+                  "模板更新生效（名称与列都已改）")
+
+        # 删除
+        st, js = api("DELETE", "/api/prom/n9e/export-templates/%s" % tpl_id, token=token)
+        check(st == 200, "删除模板返回 200（实际 %s）" % st)
+        st, js = api("GET", "/api/prom/n9e/export-templates", token=token)
+        left = [x for x in ((unwrap(js) or {}).get("list") or []) if x.get("id") == tpl_id]
+        check(len(left) == 0, "删除后模板从列表消失")
+
+    # 自选列导出
+    st, data, _h = api("GET", "/api/prom/n9e/export?%s&cols=triggerTime,ruleName" % q,
+                       token=token, timeout=600, raw=True)
+    if st == 200 and data[:2] == b"PK":
+        try:
+            _n, head = xlsx_sheet_rows(data)
+            check(head == ["触发时间", "规则名称"], "自选列导出表头 == 指定的 2 列（实际 %s）" % head)
+        except zipfile.BadZipFile:
+            bad("自选列导出的文件无法作为 zip 打开")
+    else:
+        bad("自选列导出失败（HTTP %s）" % st)
+
+    # 非法列 Key 不能产出空表头（必须回退全列）
+    st, data, _h = api("GET", "/api/prom/n9e/export?%s&cols=no_such_col,another_bad" % q,
+                       token=token, timeout=600, raw=True)
+    if st == 200 and data[:2] == b"PK":
+        try:
+            _n, head = xlsx_sheet_rows(data)
+            check(len(head) == len(all_cols),
+                  "非法列 Key 回退为全列（期望 %d 列，实际 %d）" % (len(all_cols), len(head)))
+        except zipfile.BadZipFile:
+            bad("非法列导出的文件无法作为 zip 打开")
+    else:
+        bad("非法列导出失败（HTTP %s）" % st)
+
+    # 边界：空模板名被拒；导出不存在的模板返回 404（而不是 500 或空文件）
+    st, js = api("POST", "/api/prom/n9e/export-templates",
+                 {"name": "   ", "columns": [], "filter": {}}, token=token)
+    check(st == 400, "空模板名被拒绝（HTTP %s）" % st)
+    st, _data, _h = api("GET", "/api/prom/n9e/export?tplId=999999", token=token, timeout=120, raw=True)
+    check(st == 404, "导出不存在的模板返回 404（实际 %s）" % st)
+
     # ---------- F. 权限 ----------
     print("\nF. 权限校验")
     st, js = api("GET", "/api/prom/n9e-config")
@@ -322,6 +500,12 @@ def main():
     check(st in (401, 403), "未登录访问列表接口被拒绝（HTTP %s）" % st)
     st, js = api("GET", "/api/prom/n9e/datasources")
     check(st in (401, 403), "未登录访问数据源接口被拒绝（HTTP %s）" % st)
+    st, js = api("GET", "/api/prom/n9e/export-columns")
+    check(st in (401, 403), "未登录访问列清单接口被拒绝（HTTP %s）" % st)
+    st, js = api("GET", "/api/prom/n9e/export-templates")
+    check(st in (401, 403), "未登录访问导出模板列表被拒绝（HTTP %s）" % st)
+    st, js = api("POST", "/api/prom/n9e/export-templates", {"name": "xignore"})
+    check(st in (401, 403), "未登录创建导出模板被拒绝（HTTP %s）" % st)
     st, js = api("POST", "/api/prom/n9e/sync", {"days": 7})
     check(st in (401, 403), "未登录触发同步被拒绝（HTTP %s）" % st)
 

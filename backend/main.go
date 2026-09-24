@@ -355,6 +355,13 @@ func main() {
 			auth.GET("/prom/n9e/departments", RequirePermission("prom:alert:view"), PromN9eDepartments)
 			auth.GET("/prom/n9e/stats", RequirePermission("prom:alert:view"), PromN9eStats)
 			auth.GET("/prom/n9e/export", RequirePermission("prom:alert:export"), PromN9eExport)
+			// 导出模板（v1.7.51）：读用 view、写用 export —— 故意不新增权限码，
+			// 导出模板是导出能力的附属物，单独开码只会让角色配置变复杂。
+			auth.GET("/prom/n9e/export-columns", RequirePermission("prom:alert:view"), PromN9eExportColumns)
+			auth.GET("/prom/n9e/export-templates", RequirePermission("prom:alert:view"), PromN9eTplList)
+			auth.POST("/prom/n9e/export-templates", RequirePermission("prom:alert:export"), PromN9eTplSave)
+			auth.PUT("/prom/n9e/export-templates/:id", RequirePermission("prom:alert:export"), PromN9eTplSave)
+			auth.DELETE("/prom/n9e/export-templates/:id", RequirePermission("prom:alert:export"), PromN9eTplDelete)
 		}
 	}
 

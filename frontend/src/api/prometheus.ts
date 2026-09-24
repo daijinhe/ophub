@@ -890,6 +890,82 @@ export interface N9eQueryParams {
   keyword?: string
 }
 
+// ---------------------------------------------------------------------------
+// 导出模板（v1.7.51）
+//
+// 模板 = 有序的列集合 + 筛选条件 + 时间范围。可见范围是**全局共享**：
+// 所有人都能用、能改，列表里显示创建人便于追溯。
+// ⚠️ 列的 key 定义在后端 n9eExportCols（单一事实源），前端只负责勾选与排序，
+// 不要在前端硬编码列清单 —— 否则后端加了列、前端下拉里没有。
+// ---------------------------------------------------------------------------
+
+/** 导出模板里保存的筛选条件 */
+export interface N9eExportFilter {
+  /** days = 相对天数（推荐，长期有效）；custom = 字面区间 */
+  timeMode: 'days' | 'custom'
+  days: number
+  stime: number
+  etime: number
+  datasourceIds: number[]
+  groupIds: number[]
+  severity: number
+  recovered: number
+  department: string
+  keyword: string
+}
+
+export interface N9eExportTemplate {
+  id: number
+  name: string
+  remark: string
+  /** 列 Key 列表，顺序即导出列顺序 */
+  columns: string[]
+  colCount: number
+  filter: N9eExportFilter
+  ownerId: number
+  ownerName: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** 保存模板的入参（新建走 create，改走 update） */
+export interface N9eExportTemplateInput {
+  name: string
+  remark: string
+  columns: string[]
+  filter: N9eExportFilter
+}
+
+export interface N9eExportCol {
+  key: string
+  label: string
+}
+
+export function listN9eExportColumns(): Promise<{ list: N9eExportCol[] }> {
+  return unwrap(api.get('/prom/n9e/export-columns'))
+}
+
+export function listN9eExportTemplates(): Promise<{ list: N9eExportTemplate[] }> {
+  return unwrap(api.get('/prom/n9e/export-templates'))
+}
+
+export function createN9eExportTemplate(
+  body: N9eExportTemplateInput,
+): Promise<{ id: number }> {
+  return unwrap(api.post('/prom/n9e/export-templates', body))
+}
+
+export function updateN9eExportTemplate(
+  id: number,
+  body: N9eExportTemplateInput,
+): Promise<{ id: number }> {
+  return unwrap(api.put(`/prom/n9e/export-templates/${id}`, body))
+}
+
+export function deleteN9eExportTemplate(id: number): Promise<{ id: number }> {
+  return unwrap(api.delete(`/prom/n9e/export-templates/${id}`))
+}
+
 export function getN9eConfig(): Promise<N9eConfig> {
   return unwrap(api.get('/prom/n9e-config'))
 }
@@ -920,8 +996,17 @@ export function listN9eEvents(
   return unwrap(api.get('/prom/n9e/events', { params }))
 }
 
-export function listN9eGroups(): Promise<{ list: { groupId: number; groupName: string; n: number }[] }> {
-  return unwrap(api.get('/prom/n9e/groups'))
+/**
+ * 三个「选项 + 条数」下拉接口只关心时间范围。
+ * ⚠️ 必须带上当前时间范围：下拉里的条数是按**同一时间窗**统计出来的，
+ * 不带的话下拉写「公共组件政务外 (95674)」、点进去总数 95669，用户只会认为报表算错了。
+ */
+export type N9eTimeParams = Pick<N9eQueryParams, 'days' | 'stime' | 'etime'>
+
+export function listN9eGroups(
+  params?: N9eTimeParams,
+): Promise<{ list: { groupId: number; groupName: string; n: number }[] }> {
+  return unwrap(api.get('/prom/n9e/groups', { params }))
 }
 
 /**
@@ -929,17 +1014,17 @@ export function listN9eGroups(): Promise<{ list: { groupId: number; groupName: s
  * ⚠️ 老环境升级到本版本后，历史数据的 datasource_id 为 0，需要**先重新同步一次**
  * 数据源选项才会出现（只读本地库是刻意的：避免列出没有数据的数据源让用户选到空结果）。
  */
-export function listN9eDatasources(): Promise<{
+export function listN9eDatasources(params?: N9eTimeParams): Promise<{
   list: { datasourceId: number; datasourceName: string; n: number }[]
 }> {
-  return unwrap(api.get('/prom/n9e/datasources'))
+  return unwrap(api.get('/prom/n9e/datasources', { params }))
 }
 
-export function listN9eDepartments(): Promise<{
+export function listN9eDepartments(params?: N9eTimeParams): Promise<{
   departments: { value: string; n: number }[]
   systems: { value: string; n: number }[]
 }> {
-  return unwrap(api.get('/prom/n9e/departments'))
+  return unwrap(api.get('/prom/n9e/departments', { params }))
 }
 
 export function getN9eStats(params: N9eQueryParams): Promise<N9eStats> {
@@ -953,8 +1038,16 @@ export function getN9eStats(params: N9eQueryParams): Promise<N9eStats> {
  * 直接开新窗口带不上；且后端在出错时返回的是 JSON，需要在这里识别后抛出可读提示。
  * timeout 单独放宽到 5 分钟 —— 25 万行生成 xlsx 会超过全局的 60 秒。
  */
+/**
+ * 导出告警记录为 xlsx。
+ *
+ * 两种用法：
+ * - 传 `tplId`：后端**以模板为准**（列 + 筛选 + 时间范围全取模板，忽略其余筛选参数），
+ *   文件名为「夜莺告警记录_<模板名>_...xlsx」。
+ * - 不传 tplId：用 `params` 里的筛选条件，`cols` 可指定导出列（逗号分隔的列 Key；不传 = 全列）。
+ */
 export async function exportN9eAlerts(
-  params: N9eQueryParams,
+  params: N9eQueryParams & { cols?: string; tplId?: number },
 ): Promise<{ blob: Blob; filename: string }> {
   const r = await api.get('/prom/n9e/export', {
     params,
