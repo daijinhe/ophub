@@ -60,7 +60,14 @@ func n9eMaskToken(t string) string {
 	return t[:6] + strings.Repeat("*", 8) + t[len(t)-4:]
 }
 
-// n9eLastSyncAt 本地库最后同步时间（用于页面提示数据新鲜度）
+// n9eLastSyncAt 本地库最后同步时间（用于页面提示数据新鲜度）。
+//
+// ⚠️ 必须输出**带时区偏移**的 RFC3339，不能输出裸的 "2006-01-02 15:04:05"：
+// backend 容器的 TZ 是 UTC，而 synced_at 是 timestamptz、驱动读回来是 UTC，
+// 裸时间串被前端 `dayjs(...)` 按**浏览器本地时区**解析 ⇒ 刚同步完的数据也会被算成
+// 「481 分钟前」（差 8 小时），于是「陈旧度」永远超标 →
+// **每次打开页面都自动触发一次 90 天全量同步（约 100 秒）**，白打夜莺和库。
+// 带上偏移后前端算差值就是对的，展示也会自动转成本地时间。
 func n9eLastSyncAt() string {
 	var last N9eAlertEvent
 	if DB == nil {
@@ -72,7 +79,7 @@ func n9eLastSyncAt() string {
 	if last.SyncedAt.IsZero() {
 		return ""
 	}
-	return last.SyncedAt.Format("2006-01-02 15:04:05")
+	return last.SyncedAt.UTC().Format(time.RFC3339)
 }
 
 // n9eLocalCount 本地库已有条数

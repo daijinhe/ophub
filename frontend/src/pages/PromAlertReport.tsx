@@ -483,6 +483,10 @@ export default function PromAlertReport() {
    * 本地数据的陈旧度（分钟）—— 页面上所有数字都来自本地快照，
    * 「最近 N 小时」这种窗口下必然少于夜莺实时数据（实测：3 天内差 26 条）。
    * 所以必须把「截止时间」摆在明面上，超过阈值就提示/自动补一次。
+   *
+   * ⚠️ `lastSyncAt` 是**带时区偏移的 RFC3339**（后端容器 UTC），dayjs 会按偏移解析成
+   * 正确的时间点，`diff` 出来的分钟数才是真的。若后端哪天退回输出裸时间串（无偏移），
+   * 这里会被当成本地时间、凭空多出 8 小时 ⇒ 陈旧度永远超标、每次打开都自动同步一遍。
    */
   const staleMinutes = useMemo(() => {
     if (!config?.lastSyncAt) return null
@@ -1008,7 +1012,7 @@ export default function PromAlertReport() {
           <AlertOutlined style={{ marginRight: 8 }} />
           监控告警报表
         </Title>
-        <Tag color="purple">v1.7.52</Tag>
+        <Tag color="purple">v1.7.53</Tag>
         <Tooltip title="数据来源：夜莺（Nightingale）历史告警">
           <Tag color="geekblue">{config?.baseUrl || '未配置'}</Tag>
         </Tooltip>
@@ -1049,7 +1053,16 @@ export default function PromAlertReport() {
           hasData ? (
             <span>
               本地已缓存 <b>{config?.syncedRows?.toLocaleString()}</b> 条告警，数据截止于{' '}
-              <b>{config?.lastSyncAt || '未知'}</b>
+              {/*
+                ⚠️ 后端返回的是**带时区偏移的 RFC3339**（后端容器是 UTC），
+                必须交给 dayjs 解析后再格式化成本地时间 —— 直接原样渲染会显示 UTC，
+                用户看到的「截止时间」就比实际早 8 小时。
+              */}
+              <b>
+                {config?.lastSyncAt
+                  ? dayjs(config.lastSyncAt).format('YYYY-MM-DD HH:mm:ss')
+                  : '未知'}
+              </b>
               {staleMinutes !== null && `（${staleMinutes} 分钟前）`}；查询、统计与导出都基于这份本地快照。
               {(staleMinutes === null || staleMinutes > STALE_MINUTES) &&
                 '⚠️ 本地是快照、不是实时流：刚才新产生的告警还没同步进来，所以「最近几小时」的条数会比夜莺少。'}
