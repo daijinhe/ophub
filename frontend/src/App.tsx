@@ -25,6 +25,7 @@ import InspectionAlertRules from './pages/InspectionAlertRules'
 import DeployRecords from './pages/DeployRecords'
 import InspectionScreen from './pages/InspectionScreen'
 import InspectionReport from './pages/InspectionReport'
+import PromAlertReport from './pages/PromAlertReport'
 import PromDataSources from './pages/PromDataSources'
 import PromHidden from './pages/PromHidden'
 import PromReport from './pages/PromReport'
@@ -122,6 +123,8 @@ export default function App() {
         <Route path="prom/datasources" element={<RequireRoute path="/prom/datasources"><PromDataSources /></RequireRoute>} />
         {/* 监控报表（v1.7.41 起内含「生成报告 / 报表模板 / 报告记录」三页签） */}
         <Route path="prom/report" element={<RequireRoute path="/prom/report"><PromReport /></RequireRoute>} />
+        {/* 监控告警报表（v1.7.49）：夜莺历史告警的采集、统计与导出 */}
+        <Route path="prom/alert-report" element={<RequireRoute path="/prom/alert-report"><PromAlertReport /></RequireRoute>} />
         {/* 老链接兼容：两个独立菜单已合并，旧路径重定向到对应页签（非菜单路由 → 显式权限码） */}
         <Route path="prom/report-templates" element={<RequirePerm perm="prom:report:view"><PromTabRedirect tab="templates" /></RequirePerm>} />
         <Route path="prom/report-records" element={<RequirePerm perm="prom:report:view"><PromTabRedirect tab="records" /></RequirePerm>} />

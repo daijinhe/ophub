@@ -73,7 +73,7 @@ import urllib.request
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-BASE = os.environ.get("OPHUB_BASE", "http://localhost:10001")
+BASE = os.environ.get("OPHUB_BASE", "http://127.0.0.1:10001")
 PG_CONTAINER = os.environ.get("PG_CONTAINER", "ophub-postgres")
 PG_USER = os.environ.get("PG_USER", "ophub")
 PG_DB = os.environ.get("PG_DB", "ophub")

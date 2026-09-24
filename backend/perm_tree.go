@@ -274,6 +274,16 @@ var MenuPermTree = []MenuNode{
 				Resource: "prom:report", Actions: []string{ActView, ActCreate, ActUpdate, ActDelete, ActManage},
 			},
 			{
+				Key: "prom:alert-report", Label: "监控告警报表", Icon: "alert",
+				Route: "/prom/alert-report",
+				// 夜莺（Nightingale）历史告警采集与导出：
+				//   view   = 看报表、统计、同步进度
+				//   update = 改夜莺连接配置（地址 / Token）
+				//   sync   = 触发一次数据同步（会真去连夜莺拉数据，耗时分钟级）
+				//   export = 导出 Excel（数据量大时是重操作，单独成码便于只给需要的人）
+				Resource: "prom:alert", Actions: []string{ActView, ActUpdate, ActSync, ActExport},
+			},
+			{
 				Key: "prom:screen", Label: "监控大屏", Icon: "dot-chart",
 				Route: "/prom/screen", NewTab: true,
 				Resource: "prom", Actions: []string{ActScreen},

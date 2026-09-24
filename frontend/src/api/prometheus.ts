@@ -793,3 +793,182 @@ export const PROM_PRESETS: { label: string; query: string; range: boolean }[] = 
     range: false,
   },
 ]
+
+// ============================================================================
+// 监控告警报表 —— 夜莺（Nightingale）历史告警
+//
+// 与后端 handler_prom_n9e.go 的路由一一对应。数据流：
+//   夜莺 API --(同步)--> 本地库 n9e_alert_events --(查询/统计/导出)--> 页面
+// 之所以不是每次现拉：实测 90 天全量要 94 秒，页面等不起（见后端 service_n9e.go 注释）。
+// ============================================================================
+
+export interface N9eConfig {
+  baseUrl: string
+  hasToken: boolean
+  tokenMask: string
+  maxDays: number
+  chunkDays: number
+  pageSize: number
+  lastSyncAt: string
+  syncedRows: number
+}
+
+export interface N9eSyncState {
+  running: boolean
+  phase: string
+  days: number
+  fetched: number
+  total: number
+  chunkIndex: number
+  chunkTotal: number
+  startedAt: string
+  finishedAt: string
+  elapsedMs: number
+  error: string
+}
+
+/** 夜莺告警记录（本地库副本；与后端 N9eAlertEvent 字段一一对应） */
+export interface N9eAlertEvent {
+  id: number
+  cate: string
+  cluster: string
+  groupId: number
+  groupName: string
+  ruleId: number
+  ruleName: string
+  ruleNote: string
+  severity: number
+  targetIdent: string
+  targetHost: string
+  department: string
+  systemName: string
+  triggerTime: number
+  triggerValue: string
+  recoverTime: number
+  isRecovered: number
+  firstTriggerTime: number
+  notifyCurNumber: number
+  notifyChannels: string
+  syncedAt: string
+}
+
+export interface N9eKv {
+  key: string
+  value: number
+}
+
+export interface N9eStats {
+  total: number
+  recovered: number
+  unresolved: number
+  hostCount: number
+  ruleCount: number
+  bySeverity: N9eKv[]
+  byGroup: N9eKv[]
+  byRule: N9eKv[]
+  byDept: N9eKv[]
+  bySystem: N9eKv[]
+  byDay: N9eKv[]
+  stime: number
+  etime: number
+  localRows: number
+  lastSyncAt: string
+}
+
+/** 列表 / 统计 / 导出共用的查询条件（三处必须同参，否则会出现「页面数与导出数不一致」） */
+export interface N9eQueryParams {
+  days?: number
+  stime?: number
+  etime?: number
+  groupIds?: string
+  severity?: number
+  recovered?: number
+  department?: string
+  keyword?: string
+}
+
+export function getN9eConfig(): Promise<N9eConfig> {
+  return unwrap(api.get('/prom/n9e-config'))
+}
+
+export function saveN9eConfig(body: { baseUrl: string; token?: string }): Promise<{ msg: string }> {
+  return unwrap(api.put('/prom/n9e-config', body))
+}
+
+/** 连通性测试；extra 用于「未保存先测试」 */
+export function testN9eConfig(body: {
+  baseUrl?: string
+  token?: string
+}): Promise<{ ok: boolean; msg: string; elapsed: number }> {
+  return unwrap(api.post('/prom/n9e-config/test', body))
+}
+
+export function startN9eSync(days: number): Promise<{ started: boolean; msg: string }> {
+  return unwrap(api.post('/prom/n9e/sync', { days }))
+}
+
+export function getN9eSyncStatus(): Promise<{ state: N9eSyncState; localRows: number }> {
+  return unwrap(api.get('/prom/n9e/sync-status'))
+}
+
+export function listN9eEvents(
+  params: N9eQueryParams & { page?: number; pageSize?: number },
+): Promise<{ list: N9eAlertEvent[]; total: number; page: number; pageSize: number }> {
+  return unwrap(api.get('/prom/n9e/events', { params }))
+}
+
+export function listN9eGroups(): Promise<{ list: { groupId: number; groupName: string; n: number }[] }> {
+  return unwrap(api.get('/prom/n9e/groups'))
+}
+
+export function listN9eDepartments(): Promise<{
+  departments: { value: string; n: number }[]
+  systems: { value: string; n: number }[]
+}> {
+  return unwrap(api.get('/prom/n9e/departments'))
+}
+
+export function getN9eStats(params: N9eQueryParams): Promise<N9eStats> {
+  return unwrap(api.get('/prom/n9e/stats', { params }))
+}
+
+/**
+ * 导出夜莺告警记录为 xlsx。
+ *
+ * 用 axios 取 blob 而不是 window.open：导出接口要带 Authorization 头，
+ * 直接开新窗口带不上；且后端在出错时返回的是 JSON，需要在这里识别后抛出可读提示。
+ * timeout 单独放宽到 5 分钟 —— 25 万行生成 xlsx 会超过全局的 60 秒。
+ */
+export async function exportN9eAlerts(
+  params: N9eQueryParams,
+): Promise<{ blob: Blob; filename: string }> {
+  const r = await api.get('/prom/n9e/export', {
+    params,
+    responseType: 'blob',
+    timeout: 300000,
+  })
+  const blob = r.data as Blob
+  const ctype = String(r.headers?.['content-type'] || blob.type || '')
+  if (ctype.includes('application/json')) {
+    const text = await blob.text()
+    let msg = '导出失败'
+    try {
+      const j = JSON.parse(text)
+      if (j && j.msg) msg = j.msg
+    } catch {
+      // 解析不出 JSON 就用默认提示
+    }
+    throw new Error(msg)
+  }
+  let filename = '夜莺告警记录.xlsx'
+  const cd = String(r.headers?.['content-disposition'] || '')
+  const m = /filename\*=UTF-8''([^;]+)/i.exec(cd)
+  if (m) {
+    try {
+      filename = decodeURIComponent(m[1])
+    } catch {
+      // 解码失败就用默认文件名
+    }
+  }
+  return { blob, filename }
+}

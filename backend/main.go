@@ -338,11 +338,30 @@ func main() {
 			// 并附带它们当前的实时指标。只读，独立成 prom:hidden:view
 			// （不给 prom:screen：大屏专属账号不需要审计视图）。
 			auth.GET("/prom/hidden", RequirePermission("prom:hidden:view"), PromGetHidden)
+
+			// 监控告警报表（v1.8.2）：把夜莺的历史告警拉到本地再查询/统计/导出。
+			//   读（配置回显 / 列表 / 统计 / 同步进度 / 下拉取值）→ prom:alert:view
+			//   保存连接配置 → prom:alert:update；触发同步 → prom:alert:sync；导出 Excel → prom:alert:export
+			// 拆开的原因：「只想看报表」的角色不该拿到「改连接配置」和「触发同步」的能力，
+			// 而导出是重操作（几十 MB），单独成码便于只给需要的人。
+			auth.GET("/prom/n9e-config", RequirePermission("prom:alert:view"), PromN9eGetConfig)
+			auth.PUT("/prom/n9e-config", RequirePermission("prom:alert:update"), PromN9eSaveConfig)
+			auth.POST("/prom/n9e-config/test", RequirePermission("prom:alert:view"), PromN9eTestConfig)
+			auth.POST("/prom/n9e/sync", RequirePermission("prom:alert:sync"), PromN9eSync)
+			auth.GET("/prom/n9e/sync-status", RequirePermission("prom:alert:view"), PromN9eSyncStatus)
+			auth.GET("/prom/n9e/events", RequirePermission("prom:alert:view"), PromN9eEvents)
+			auth.GET("/prom/n9e/groups", RequirePermission("prom:alert:view"), PromN9eGroups)
+			auth.GET("/prom/n9e/departments", RequirePermission("prom:alert:view"), PromN9eDepartments)
+			auth.GET("/prom/n9e/stats", RequirePermission("prom:alert:view"), PromN9eStats)
+			auth.GET("/prom/n9e/export", RequirePermission("prom:alert:export"), PromN9eExport)
 		}
 	}
 
 	// Prometheus 大屏定期采集（后台 goroutine：快照缓存 + 落库，大屏只读快照）
 	promStartCollector()
+
+	// 夜莺连接初始配置（仅首次写入，之后以页面配置为准）
+	ensureN9eDefaults()
 
 	log.Printf("云枢 OpsHub 服务已启动，监听端口 :%s", Cfg.ServerPort)
 	if err := r.Run(":" + Cfg.ServerPort); err != nil {
