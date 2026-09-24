@@ -831,6 +831,8 @@ export interface N9eSyncState {
 export interface N9eAlertEvent {
   id: number
   cate: string
+  /** 监控类型（夜莺 rule_prod）：metric / host / logging / … */
+  ruleProd: string
   datasourceId: number
   datasourceName: string
   cluster: string
@@ -884,6 +886,8 @@ export interface N9eQueryParams {
   etime?: number
   groupIds?: string
   datasourceIds?: string
+  /** 监控类型多选（逗号分隔：metric,host,logging） */
+  ruleProds?: string
   severity?: number
   recovered?: number
   department?: string
@@ -908,6 +912,8 @@ export interface N9eExportFilter {
   etime: number
   datasourceIds: number[]
   groupIds: number[]
+  /** 监控类型（v1.7.52，对齐夜莺 rule_prods） */
+  ruleProds: string[]
   severity: number
   recovered: number
   department: string
@@ -1003,10 +1009,27 @@ export function listN9eEvents(
  */
 export type N9eTimeParams = Pick<N9eQueryParams, 'days' | 'stime' | 'etime'>
 
+/**
+ * 业务组选项（带条数）。
+ *
+ * ⚠️ 后端返回的是**全部**业务组（对齐夜莺的 busi-groups 清单，本环境 24 个），
+ * 而不是「历史告警里出现过的那些」（只有 11 个）。同步时会把清单整份落到
+ * n9e_busi_groups 表，因此升级后需**重新同步一次**（未同步过时会退化成按事件去重）。
+ */
 export function listN9eGroups(
   params?: N9eTimeParams,
 ): Promise<{ list: { groupId: number; groupName: string; n: number }[] }> {
   return unwrap(api.get('/prom/n9e/groups', { params }))
+}
+
+/**
+ * 监控类型选项（对齐夜莺的固定清单 Metric / Host / Log，带条数）。
+ * 与夜莺一致：允许 0 条也会列出来，用户要能看见「Host 这个类型没有告警」。
+ */
+export function listN9eRuleProds(params?: N9eTimeParams): Promise<{
+  list: { value: string; label: string; n: number }[]
+}> {
+  return unwrap(api.get('/prom/n9e/rule-prods', { params }))
 }
 
 /**

@@ -12,17 +12,24 @@ verify_n9e_alert_report.py —— 「监控告警报表」（夜莺历史告警�
   G. 数据源筛选（v1.7.50）：下拉取值、单选/多选 OR 语义、与统计联动、导出含「数据源」列
   H. 导出模板（v1.7.51）：列清单、模板 CRUD、按模板导出（列与条件**以模板为准**）、
      自选列导出、非法列 Key 回退全列、模板名进文件名
+  K. 与夜莺筛选口径对齐（v1.7.52）：业务组下拉覆盖夜莺**全部**业务组、业务组单选、
+     监控类型 Metric/Host/Log（条数完备、单选/多选、非法值退化）、
+     告警级别 1=S1 最严重、关键字空格分词 AND、关键字能搜到事件标签
   F. 权限：无 prom:alert:* 权限的账号必须 403
 
 用法：
   python scripts/verify_n9e_alert_report.py                 # 全量（90 天，耗时约 3 分钟）
   python scripts/verify_n9e_alert_report.py --days 7        # 快速回归
   python scripts/verify_n9e_alert_report.py --skip-sync     # 只验查询/统计/导出（复用已有数据）
+
+环境变量：
+  N9E_BASE / N9E_TOKEN  夜莺地址与 Token（K 段需要，默认取现场那套）
 """
 
 import argparse
 import io
 import json
+import os
 import re
 import sys
 import time
@@ -36,6 +43,17 @@ import zipfile
 BASE = "http://127.0.0.1:10001"
 USERNAME = "admin"
 PASSWORD = "admin123"
+
+# K 段用来跟夜莺对清单（业务组）；只打「轻接口」，不拉 90 天数据（那要 23 秒/次）
+N9E_BASE = os.environ.get("N9E_BASE", "http://n9e.internal.example:9999")
+N9E_TOKEN = os.environ.get("N9E_TOKEN", "e2ac78ce-9838-49ab-bb91-bbe2d6963fba")
+
+
+def n9e_get(path, timeout=30):
+    """直接打夜莺轻接口（业务组 / 数据源清单），返回 dat 字段"""
+    req = urllib.request.Request(N9E_BASE + path, headers={"X-User-Token": N9E_TOKEN})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8")).get("dat")
 
 PASS = 0
 FAIL = 0
@@ -491,6 +509,135 @@ def main():
     check(st == 400, "空模板名被拒绝（HTTP %s）" % st)
     st, _data, _h = api("GET", "/api/prom/n9e/export?tplId=999999", token=token, timeout=120, raw=True)
     check(st == 404, "导出不存在的模板返回 404（实际 %s）" % st)
+
+    # ---------- K. 与夜莺筛选口径对齐（v1.7.52） ----------
+    print("\nK. 与夜莺筛选口径对齐")
+    TOL = 3  # 两次请求之间时间窗右端（now）在滑动，边界上差 1~3 条属正常
+
+    # K1/K2 业务组下拉必须覆盖夜莺的**全部**业务组，而不是只列「有告警的」
+    # ⚠️ 这正是用户报的「业务组和夜莺筛出来的不一样」：本环境夜莺 24 个组、
+    #    历史告警里只出现 11 个，按事件 distinct 生成的旧实现少了 13 个。
+    try:
+        bg = n9e_get("/api/n9e/busi-groups?limit=500") or []
+        ok("夜莺业务组清单拉取成功（%d 个）" % len(bg))
+    except Exception as e:
+        bg = []
+        bad("拉取夜莺业务组清单失败：%s" % e)
+
+    st, js = api("GET", "/api/prom/n9e/groups?" + q, token=token)
+    gs = unwrap(js) or {}
+    g_list = gs.get("list") or []
+    check(st == 200, "GET /prom/n9e/groups 返回 200（实际 %s）" % st)
+    if bg and g_list:
+        have = set(g.get("groupId") for g in g_list)
+        want = set(int(g.get("id")) for g in bg)
+        missing = sorted(want - have)
+        check(not missing,
+              "业务组下拉覆盖夜莺全部业务组（夜莺 %d 个 / 平台 %d 个）" % (len(want), len(have)))
+        if missing:
+            bad("缺少业务组 id=%s —— 老环境需重新同步一次以落业务组清单表" % missing[:8])
+        zero = [g for g in g_list if (g.get("n") or 0) == 0]
+        check(len(zero) > 0,
+              "下拉里包含「当前窗口 0 条」的业务组 %d 个（证明不是按事件 distinct 生成）" % len(zero))
+    else:
+        bad("业务组下拉为空 —— 需先同步一次")
+
+    # K4/K5 业务组单选：夜莺的 bgid 只接受单值，平台也必须做到「选中即完全一致」
+    if g_list:
+        g0 = g_list[0]
+        gid = g0.get("groupId")
+        st, js = api("GET", "/api/prom/n9e/events?%s&groupIds=%s&page=1&pageSize=20" % (q, gid), token=token)
+        one = unwrap(js) or {}
+        rows_one = one.get("list") or []
+        check(all(r.get("groupId") == gid for r in rows_one),
+              "业务组单选生效（%d 条样本全部命中 id=%s）" % (len(rows_one), gid))
+        d = abs((one.get("total") or 0) - (g0.get("n") or 0))
+        check(d <= TOL,
+              "业务组单选 total(%s) 与下拉条数(%s) 一致（差 %d）" % (one.get("total"), g0.get("n"), d))
+
+    # K6/K7 监控类型：固定三项 Metric / Host / Log，且三项条数之和 == 窗口总量
+    # （和为总量 ⇒ 取值互斥且完备，不会出现「某个类型既没列出来也没被算进去」）
+    st, js = api("GET", "/api/prom/n9e/rule-prods?" + q, token=token)
+    pd = unwrap(js) or {}
+    p_list = pd.get("list") or []
+    check(st == 200 and len(p_list) >= 3, "GET /prom/n9e/rule-prods 返回 200（%d 项）" % len(p_list))
+    vals = [p.get("value") for p in p_list[:3]]
+    check(vals == ["metric", "host", "logging"],
+          "监控类型前 3 项与夜莺一致 = %s" % vals)
+    if p_list:
+        s = sum(p.get("n") or 0 for p in p_list)
+        d = abs(s - total)
+        check(d <= TOL * len(p_list),
+              "各监控类型条数之和(%s) = 该窗口总量(%s)（差 %d）" % (s, total, d))
+
+    # K8/K9 监控类型单选 / 多选
+    pos = [p for p in p_list if (p.get("n") or 0) > 0]
+    if pos:
+        p0 = pos[0]
+        pv = p0.get("value")
+        st, js = api("GET", "/api/prom/n9e/events?%s&ruleProds=%s&page=1&pageSize=20" % (q, pv), token=token)
+        pr = unwrap(js) or {}
+        check(all(r.get("ruleProd") == pv for r in (pr.get("list") or [])),
+              "监控类型单选生效（rule_prod=%s，返回 %s 条）" % (pv, pr.get("total")))
+        d = abs((pr.get("total") or 0) - (p0.get("n") or 0))
+        check(d <= TOL,
+              "监控类型单选 total(%s) 与下拉条数(%s) 一致（差 %d）" % (pr.get("total"), p0.get("n"), d))
+        if len(pos) >= 2:
+            a, b = pos[0], pos[1]
+            st, js = api("GET", "/api/prom/n9e/events?%s&ruleProds=%s,%s&page=1&pageSize=5"
+                         % (q, a.get("value"), b.get("value")), token=token)
+            mu = unwrap(js) or {}
+            want = (a.get("n") or 0) + (b.get("n") or 0)
+            d = abs((mu.get("total") or 0) - want)
+            check(d <= TOL,
+                  "监控类型多选 total(%s) = 两者之和(%s+%s)（差 %d）"
+                  % (mu.get("total"), a.get("n"), b.get("n"), d))
+    # 非法监控类型必须**退化为不过滤**：静默匹配不到任何行会表现为「筛完一条都没有」，更难查
+    # ⚠️ 用容差而不是严格相等：基线 total 是本段开头取的，到这里时间窗右端已经滑了几秒
+    st, js = api("GET", "/api/prom/n9e/events?%s&ruleProds=zzz-not-a-prod&page=1&pageSize=5" % q, token=token)
+    bogus = unwrap(js) or {}
+    d = abs((bogus.get("total") or 0) - total)
+    check(d <= TOL,
+          "非法监控类型被忽略而不是筛空（total=%s，与全量 %s 差 %d）" % (bogus.get("total"), total, d))
+
+    # K10 告警级别 1 = S1 最严重（v1.7.49~51 曾整体写反：1=提醒、3=严重）
+    by_sev = dict((str(x.get("key")), x.get("value")) for x in (stats.get("bySeverity") or []))
+    if "1" in by_sev:
+        st, js = api("GET", "/api/prom/n9e/events?%s&severity=1&page=1&pageSize=10" % q, token=token)
+        s1 = unwrap(js) or {}
+        check(all(r.get("severity") == 1 for r in (s1.get("list") or [])),
+              "severity=1 筛选生效（返回 %s 条）" % s1.get("total"))
+        d = abs((s1.get("total") or 0) - (by_sev.get("1") or 0))
+        check(d <= TOL,
+              "severity=1 total(%s) = 等级分布 S1(%s)（差 %d）" % (s1.get("total"), by_sev.get("1"), d))
+
+    # K11/K12 模糊搜索：搜「规则标题 + 事件标签」，空格分词且**全部命中**
+    st, js = api("GET", "/api/prom/n9e/events?%s&keyword=instance&page=1&pageSize=5" % q, token=token)
+    tag_hit = unwrap(js) or {}
+    check((tag_hit.get("total") or 0) > 0,
+          "关键字能搜到事件标签（keyword=instance → %s 条）" % tag_hit.get("total"))
+
+    kw_a, kw_b = "政务", "apig"
+    st, js = api("GET", "/api/prom/n9e/events?%s&keyword=%s&page=1&pageSize=5"
+                 % (q, urllib.parse.quote(kw_a)), token=token)
+    ta = (unwrap(js) or {}).get("total") or 0
+    st, js = api("GET", "/api/prom/n9e/events?%s&keyword=%s&page=1&pageSize=5"
+                 % (q, urllib.parse.quote(kw_b)), token=token)
+    tb = (unwrap(js) or {}).get("total") or 0
+    st, js = api("GET", "/api/prom/n9e/events?%s&keyword=%s&page=1&pageSize=5"
+                 % (q, urllib.parse.quote(kw_a + " " + kw_b)), token=token)
+    tab = (unwrap(js) or {}).get("total") or 0
+    st, js = api("GET", "/api/prom/n9e/events?%s&keyword=%s&page=1&pageSize=5"
+                 % (q, urllib.parse.quote(kw_b + " " + kw_a)), token=token)
+    tba = (unwrap(js) or {}).get("total") or 0
+    check(ta > 0 and tb > 0, "单词搜索有结果（%s=%s、%s=%s）" % (kw_a, ta, kw_b, tb))
+    check(tab <= min(ta, tb),
+          "多关键字是 AND（%s → %s ≤ min(%s, %s)）" % ("%s %s" % (kw_a, kw_b), tab, ta, tb))
+    check(abs(tab - tba) <= TOL, "多关键字与顺序无关（%s vs %s）" % (tab, tba))
+
+    # K13 新接口的权限收口（未登录必须拒绝）
+    st, js = api("GET", "/api/prom/n9e/rule-prods?days=7")
+    check(st in (401, 403), "未登录访问监控类型接口被拒绝（HTTP %s）" % st)
 
     # ---------- F. 权限 ----------
     print("\nF. 权限校验")

@@ -50,11 +50,11 @@ import {
   getN9eStats,
   getN9eSyncStatus,
   listN9eDatasources,
-  listN9eDepartments,
   listN9eEvents,
   listN9eExportColumns,
   listN9eExportTemplates,
   listN9eGroups,
+  listN9eRuleProds,
   saveN9eConfig,
   startN9eSync,
   testN9eConfig,
@@ -79,15 +79,30 @@ const { Title, Text } = Typography
 //
 // 数据流：夜莺 API --同步--> 本地库 --查询/统计/导出--> 本页
 //
+// ⚠️ 筛选控件与夜莺「历史告警」页**逐个对齐**（v1.7.52，顺序也一致）：
+//
+//	夜莺控件            本页控件        查询参数          语义
+//	监控类型            监控类型        ruleProds        metric / host / logging，多选
+//	数据源              数据源          datasourceIds    多选
+//	业务组              业务组          groupIds         ⚠️ 夜莺只支持单值（bgid），故本页也改单选
+//	告警级别            告警级别        severity         1=S1 最严重、2=S2、3=S3
+//	事件类别            事件类别        recovered        0=触发（未恢复） 1=已恢复
+//	模糊搜索规则和标签   规则/标签关键字  keyword          空格分词，**全部命中**（AND）
+//
+// ⚠️ 关键字搜的是「规则标题 + 事件标签」：主机 IP、部门、系统只存在于标签里，
+//    夜莺搜得到（query=203.0.113.207 → 92 条），所以本地也必须搜 tags_json。
+//
 // ⚠️ 为什么页面上的「时间范围」改了不会自动重拉夜莺：
 //    页面上的查询/统计/导出全部走**本地已同步的数据**（毫秒级）；
 //    只有点「同步数据」才会去连夜莺。实测 90 天全量要 94 秒，
 //    如果每次改筛选条件都现拉，页面会不可用。
-//    所以页面头部会显著提示「本地数据截止时间」，避免把陈旧数据当实时数据看。
+//    ⚠️ 由此带来一个必知口径：本地是**快照**，最新告警要等下次同步才进来，
+//    所以「最近几分钟刚发生的告警」条数必然少于夜莺 —— 不是算错，是数据时点不同。
+//    页面头部会显著提示数据截止时间；超过 30 分钟会主动提示同步。
 //
-// ⚠️ 「数据源」下拉的选项来自**本地库 distinct**（不是实时拉夜莺清单）：只列出本地确实
-//    有数据的数据源，避免用户选到一个空结果还以为功能坏了。该字段 v1.7.50 才落库，
-//    老数据 datasource_id 为 0、不会出现在选项里，需要重新同步一次才会补齐。
+// ⚠️ 下拉选项来源：业务组来自 n9e_busi_groups（**全部**业务组，对齐夜莺的下拉），
+//    数据源来自本地库 distinct。业务组清单表是 v1.7.52 才落的，
+//    老环境升级后需**重新同步一次**；未同步过时会退化成「只列事件里出现过的业务组」。
 // ============================================================================
 
 const RANGE_OPTIONS = [
@@ -97,17 +112,39 @@ const RANGE_OPTIONS = [
   { label: '自定义', value: -1 },
 ]
 
+/**
+ * 告警级别选项 —— 与夜莺完全一致：**1 = S1 最严重**。
+ *
+ * ⚠️ v1.7.49~v1.7.51 这里写反了（严重=3、提醒=1），导致最严重的一级被标成
+ * 「提醒」还配了蓝色。依据：夜莺历史告警页硬编码 `<Option value={1}>S1（Critical）</Option>`。
+ */
 const SEVERITY_OPTIONS = [
-  { label: '严重', value: 3 },
-  { label: '警告', value: 2 },
-  { label: '提醒', value: 1 },
+  { label: 'S1（严重）', value: 1 },
+  { label: 'S2（警告）', value: 2 },
+  { label: 'S3（提醒）', value: 3 },
 ]
 
+/** 事件类别（夜莺 eventType）：0 = Triggered（触发/未恢复）、1 = Recovered（已恢复） */
 const RECOVER_OPTIONS = [
   { label: '全部', value: -1 },
-  { label: '未恢复', value: 0 },
+  { label: '触发（未恢复）', value: 0 },
   { label: '已恢复', value: 1 },
 ]
+
+/**
+ * 监控类型 value → 夜莺同款显示名（Metric / Host / Log）。
+ *
+ * ⚠️ 刻意用**模块级常量**而不是页面里的 `prodLabel`：后者闭包了异步加载的 `prodOptions`，
+ * 而明细表 `columns` 的 useMemo 依赖是 `[]`，会永久拿到首帧的空清单 ⇒ 列里显示原始
+ * `metric` 而筛选框显示 `Metric`，同一页两种写法。
+ * 清单外的取值（夜莺还可能出 anomaly/loki/firemap/northstar）原样显示，不丢弃。
+ */
+const RULE_PROD_LABELS: Record<string, string> = {
+  metric: 'Metric',
+  host: 'Host',
+  logging: 'Log',
+}
+const ruleProdText = (v: string) => RULE_PROD_LABELS[v] || v || '-'
 
 // ---------------------------------------------------------------------------
 // 导出模板（v1.7.51）
@@ -126,9 +163,9 @@ type TplFormState = {
   customRange: [Dayjs, Dayjs] | null
   datasourceIds: number[]
   groupIds: number[]
+  ruleProds: string[]
   severity?: number
   recovered: number
-  department?: string
   keyword: string
   columns: string[]
 }
@@ -143,9 +180,9 @@ function newTplForm(): TplFormState {
     customRange: null,
     datasourceIds: [],
     groupIds: [],
+    ruleProds: [],
     severity: undefined,
     recovered: -1,
-    department: undefined,
     keyword: '',
     columns: [],
   }
@@ -165,9 +202,9 @@ function tplToForm(t: N9eExportTemplate): TplFormState {
         : null,
     datasourceIds: f.datasourceIds || [],
     groupIds: f.groupIds || [],
+    ruleProds: f.ruleProds || [],
     severity: f.severity > 0 ? f.severity : undefined,
     recovered: f.recovered ?? -1,
-    department: f.department || undefined,
     keyword: f.keyword || '',
     columns: t.columns || [],
   }
@@ -187,16 +224,23 @@ function formToTplInput(f: TplFormState): N9eExportTemplateInput {
       etime: custom ? f.customRange![1].endOf('day').unix() : 0,
       datasourceIds: f.datasourceIds,
       groupIds: f.groupIds,
+      ruleProds: f.ruleProds,
       severity: f.severity || 0,
       recovered: f.recovered,
-      department: f.department || '',
+      // 部门已不是筛选维度（v1.7.52 对齐夜莺），保留空串以兼容老模板的字段
+      department: '',
       keyword: f.keyword.trim(),
     },
   }
 }
 
 /** 模板条件的一行摘要（模板列表里显示，几个模板的差别一眼能看出来） */
-function tplFilterSummary(f: N9eExportFilter, dsName: (id: number) => string): string {
+function tplFilterSummary(
+  f: N9eExportFilter,
+  dsName: (id: number) => string,
+  grpName: (id: number) => string,
+  prodLabel: (v: string) => string,
+): string {
   const parts: string[] = []
   if (f.timeMode === 'custom' && f.stime > 0 && f.etime > 0) {
     parts.push(
@@ -205,27 +249,30 @@ function tplFilterSummary(f: N9eExportFilter, dsName: (id: number) => string): s
   } else {
     parts.push(`近 ${f.days || 90} 天`)
   }
+  if (f.ruleProds?.length) parts.push(`监控类型：${f.ruleProds.map(prodLabel).join('、')}`)
   if (f.datasourceIds?.length) parts.push(`数据源：${f.datasourceIds.map(dsName).join('、')}`)
-  if (f.groupIds?.length) parts.push(`业务组 ${f.groupIds.length} 个`)
+  if (f.groupIds?.length) parts.push(`业务组：${f.groupIds.map(grpName).join('、')}`)
   if (f.severity) parts.push(severityText(f.severity))
   if (f.recovered === 0) parts.push('仅未恢复')
   if (f.recovered === 1) parts.push('仅已恢复')
-  if (f.department) parts.push(`部门：${f.department}`)
   if (f.keyword) parts.push(`关键字：${f.keyword}`)
   return parts.join(' · ')
 }
 
-/** 等级配色：与项目内其他告警视图保持一致（红/橙/蓝） */
+/**
+ * 等级配色 —— ⚠️ 与夜莺一致：1 = S1 最严重 = 红。
+ * v1.7.51 之前判的是 `v >= 3` 才是红，等于把最严重的一级画成蓝色。
+ */
 function severityColor(v: number): string {
-  if (v >= 3) return 'red'
+  if (v === 1) return 'red'
   if (v === 2) return 'orange'
   return 'blue'
 }
 
 function severityText(v: number): string {
-  if (v >= 3) return '严重'
+  if (v === 1) return '严重'
   if (v === 2) return '警告'
-  if (v === 1) return '提醒'
+  if (v === 3) return '提醒'
   return `未知(${v})`
 }
 
@@ -248,15 +295,30 @@ function fmtDuration(sec: number): string {
 export default function PromAlertReport() {
   const { hasPerm } = useAuth()
 
-  // ---- 筛选条件 ----
+  // ---- 筛选条件（顺序与夜莺历史告警页一致）----
   const [days, setDays] = useState<number>(90)
   const [customRange, setCustomRange] = useState<[Dayjs, Dayjs] | null>(null)
-  const [groupIds, setGroupIds] = useState<number[]>([])
+  /** 监控类型（夜莺 rule_prods）：metric / host / logging */
+  const [ruleProds, setRuleProds] = useState<string[]>([])
   const [datasourceIds, setDatasourceIds] = useState<number[]>([])
+  /**
+   * 业务组。⚠️ 夜莺的 bgid 只接受**单值**（传多个逗号会 400），所以这里也是单选，
+   * 保证「平台筛出来的」与「夜莺筛出来的」完全可比。
+   */
+  const [groupIds, setGroupIds] = useState<number[]>([])
   const [severity, setSeverity] = useState<number | undefined>(undefined)
   const [recovered, setRecovered] = useState<number>(-1)
-  const [department, setDepartment] = useState<string | undefined>(undefined)
   const [keyword, setKeyword] = useState('')
+  /**
+   * 真正参与查询的关键字（防抖 300ms 后同步）。
+   *
+   * ⚠️ 直接用输入框的值会让**每敲一个字符**都发起一次统计 + 一次列表查询，
+   * 而带关键字的统计要在 90 天 25 万行上做 ILIKE 扫描（实测一次约 300ms）——
+   * 输入「政务一体化重点系统」就是 20 次全表扫描。
+   * 且并发响应乱序时，先到的「筛后结果」会被后到的「全量结果」覆盖，
+   * 界面数字与筛选条件不一致（配合下面的序号守卫一起解决）。
+   */
+  const [kwApplied, setKwApplied] = useState('')
 
   // ---- 数据 ----
   const [stats, setStats] = useState<N9eStats | null>(null)
@@ -271,7 +333,7 @@ export default function PromAlertReport() {
   const [syncState, setSyncState] = useState<N9eSyncState | null>(null)
   const [config, setConfig] = useState<N9eConfig | null>(null)
   const [groups, setGroups] = useState<{ groupId: number; groupName: string; n: number }[]>([])
-  const [depts, setDepts] = useState<{ value: string; n: number }[]>([])
+  const [prodOptions, setProdOptions] = useState<{ value: string; label: string; n: number }[]>([])
   const [datasources, setDatasources] = useState<
     { datasourceId: number; datasourceName: string; n: number }[]
   >([])
@@ -299,6 +361,20 @@ export default function PromAlertReport() {
   const [saving, setSaving] = useState(false)
 
   const timerRef = useRef<number | null>(null)
+  /** 查询序号（防竞态：只接受最新一次请求的响应，见 loadStats / loadRows 注释） */
+  const statsSeqRef = useRef(0)
+  const rowsSeqRef = useRef(0)
+  const optsSeqRef = useRef(0)
+
+  /** 关键字防抖：清空立即生效，否则 300ms 后再查 */
+  useEffect(() => {
+    if (keyword === '') {
+      setKwApplied('')
+      return
+    }
+    const t = window.setTimeout(() => setKwApplied(keyword), 300)
+    return () => window.clearTimeout(t)
+  }, [keyword])
 
   /** 查询/统计/导出共用同一份条件，避免三处口径漂移 */
   const queryParams = useMemo<N9eQueryParams>(() => {
@@ -309,36 +385,44 @@ export default function PromAlertReport() {
     } else {
       p.days = days > 0 ? days : 90
     }
-    if (groupIds.length > 0) p.groupIds = groupIds.join(',')
+    if (ruleProds.length > 0) p.ruleProds = ruleProds.join(',')
     if (datasourceIds.length > 0) p.datasourceIds = datasourceIds.join(',')
+    if (groupIds.length > 0) p.groupIds = groupIds.join(',')
     if (severity !== undefined) p.severity = severity
     if (recovered >= 0) p.recovered = recovered
-    if (department) p.department = department
-    if (keyword.trim()) p.keyword = keyword.trim()
+    if (kwApplied.trim()) p.keyword = kwApplied.trim()
     return p
-  }, [days, customRange, groupIds, datasourceIds, severity, recovered, department, keyword])
+  }, [days, customRange, ruleProds, datasourceIds, groupIds, severity, recovered, kwApplied])
 
   // ---------- 加载 ----------
   const loadStats = useCallback(async () => {
+    const seq = ++statsSeqRef.current
     try {
       const s = await getN9eStats(queryParams)
+      // ⚠️ 竞态防护：旧请求可能比新请求**后**返回（全量统计比带关键字的统计慢得多），
+      //    不加序号就会出现「先显示筛后的 24 条、又被 2 秒后到的 25 万覆盖回去」。
+      if (seq !== statsSeqRef.current) return
       setStats(s)
     } catch (e) {
+      if (seq !== statsSeqRef.current) return
       message.error(e instanceof Error ? e.message : '统计加载失败')
     }
   }, [queryParams])
 
   const loadRows = useCallback(
     async (p = page, ps = pageSize) => {
+      const seq = ++rowsSeqRef.current
       setLoading(true)
       try {
         const r = await listN9eEvents({ ...queryParams, page: p, pageSize: ps })
+        if (seq !== rowsSeqRef.current) return
         setRows(r.list || [])
         setTotal(r.total || 0)
       } catch (e) {
+        if (seq !== rowsSeqRef.current) return
         message.error(e instanceof Error ? e.message : '查询失败')
       } finally {
-        setLoading(false)
+        if (seq === rowsSeqRef.current) setLoading(false)
       }
     },
     [queryParams, page, pageSize],
@@ -362,20 +446,22 @@ export default function PromAlertReport() {
   }, [])
 
   /**
-   * 三个下拉的选项与条数。
+   * 三个下拉的选项与条数（监控类型 / 数据源 / 业务组）。
    * ⚠️ 依赖时间范围：条数是按同一时间窗统计的，否则下拉里写「(95674)」、
    * 点进去总数却是 95669，用户只会认为报表算错了。
    */
   const loadOptions = useCallback(async () => {
+    const seq = ++optsSeqRef.current
     try {
-      const [gs, dp, ds] = await Promise.all([
-        listN9eGroups(timeParams),
-        listN9eDepartments(timeParams),
+      const [ps, ds, gs] = await Promise.all([
+        listN9eRuleProds(timeParams),
         listN9eDatasources(timeParams),
+        listN9eGroups(timeParams),
       ])
-      setGroups(gs.list || [])
-      setDepts(dp.departments || [])
+      if (seq !== optsSeqRef.current) return
+      setProdOptions(ps.list || [])
       setDatasources(ds.list || [])
+      setGroups(gs.list || [])
     } catch {
       // 下拉加载失败不阻塞主流程
     }
@@ -392,6 +478,20 @@ export default function PromAlertReport() {
       setTplLoading(false)
     }
   }, [])
+
+  /**
+   * 本地数据的陈旧度（分钟）—— 页面上所有数字都来自本地快照，
+   * 「最近 N 小时」这种窗口下必然少于夜莺实时数据（实测：3 天内差 26 条）。
+   * 所以必须把「截止时间」摆在明面上，超过阈值就提示/自动补一次。
+   */
+  const staleMinutes = useMemo(() => {
+    if (!config?.lastSyncAt) return null
+    const t = dayjs(config.lastSyncAt)
+    return t.isValid() ? dayjs().diff(t, 'minute') : null
+  }, [config?.lastSyncAt])
+
+  /** 超过这个分钟数就认为数据「不新鲜」，提示并自动同步 */
+  const STALE_MINUTES = 30
 
   /** 条件变化 → 统计 + 列表都重算，并回到第 1 页 */
   useEffect(() => {
@@ -528,6 +628,27 @@ export default function PromAlertReport() {
     }
   }
 
+  /**
+   * 数据过期就自动补一次（只触发一次，避免轮询回来反复触发）。
+   *
+   * 为什么需要它：本页是夜莺的**本地快照**，不同步就永远比夜莺少最近这段时间的告警 ——
+   * 用户拿「近 1 小时 / 近 3 天」跟夜莺对比时必然对不上。
+   * 只对有同步权限的人触发，且正在同步时不重复启动；同步进度条会照常显示。
+   */
+  const autoSyncFired = useRef(false)
+  useEffect(() => {
+    if (autoSyncFired.current) return
+    if (!config) return
+    if ((config.syncedRows || 0) <= 0) return
+    if (!hasPerm('prom:alert:sync')) return
+    if (syncState?.running) return
+    if (staleMinutes === null || staleMinutes <= STALE_MINUTES) return
+    autoSyncFired.current = true
+    message.info(`本地数据已 ${staleMinutes} 分钟未更新，正在自动同步最新告警…`)
+    void doSync()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config, staleMinutes, syncState?.running])
+
   // ---------- 导出模板 ----------
   /** 把模板的条件应用到页面，让用户看到模板到底筛了什么（所见即所得） */
   const applyTemplate = (t: N9eExportTemplate) => {
@@ -539,11 +660,11 @@ export default function PromAlertReport() {
       setDays(f.days > 0 ? f.days : 90)
       setCustomRange(null)
     }
+    setRuleProds(f.ruleProds || [])
     setDatasourceIds(f.datasourceIds || [])
     setGroupIds(f.groupIds || [])
     setSeverity(f.severity > 0 ? f.severity : undefined)
     setRecovered(f.recovered ?? -1)
-    setDepartment(f.department || undefined)
     setKeyword(f.keyword || '')
     setActiveTplName(t.name)
   }
@@ -567,11 +688,11 @@ export default function PromAlertReport() {
       f.timeMode = days === -1 && customRange ? 'custom' : 'days'
       f.days = days > 0 ? days : 90
       f.customRange = days === -1 ? customRange : null
+      f.ruleProds = ruleProds
       f.datasourceIds = datasourceIds
       f.groupIds = groupIds
       f.severity = severity
       f.recovered = recovered
-      f.department = department
       f.keyword = keyword
     }
     setTplEditing(null)
@@ -686,6 +807,12 @@ export default function PromAlertReport() {
     return d?.datasourceName || `#${id}`
   }
 
+  /** 业务组 id → 名称（模板摘要用） */
+  const grpName = (id: number) => groups.find((g) => g.groupId === id)?.groupName || `#${id}`
+
+  /** 监控类型 value → 显示名（模板摘要用） */
+  const prodLabel = (v: string) => prodOptions.find((p) => p.value === v)?.label || v
+
   const onExportMenuClick: MenuProps['onClick'] = ({ key }) => {
     if (key === 'current') void doExport()
     else if (key === 'pick') openColPick()
@@ -769,6 +896,7 @@ export default function PromAlertReport() {
           data: list.map((s) => ({
             ...s,
             itemStyle: {
+              // 1 = S1 最严重（红），与夜莺一致
               color: s.name === '严重' ? '#cf1322' : s.name === '警告' ? '#fa8c16' : '#1677ff',
             },
           })),
@@ -820,6 +948,12 @@ export default function PromAlertReport() {
         dataIndex: 'targetHost',
         width: 150,
         render: (v: string, r: N9eAlertEvent) => v || r.targetIdent || '-',
+      },
+      {
+        title: '监控类型',
+        dataIndex: 'ruleProd',
+        width: 100,
+        render: (v: string) => ruleProdText(v),
       },
       {
         title: '数据源',
@@ -874,7 +1008,7 @@ export default function PromAlertReport() {
           <AlertOutlined style={{ marginRight: 8 }} />
           监控告警报表
         </Title>
-        <Tag color="purple">v1.7.51</Tag>
+        <Tag color="purple">v1.7.52</Tag>
         <Tooltip title="数据来源：夜莺（Nightingale）历史告警">
           <Tag color="geekblue">{config?.baseUrl || '未配置'}</Tag>
         </Tooltip>
@@ -908,15 +1042,17 @@ export default function PromAlertReport() {
 
       {/* 数据新鲜度提示 —— 页面上所有查询都基于本地已同步数据，必须说清楚 */}
       <Alert
-        type={hasData ? 'info' : 'warning'}
+        type={!hasData ? 'warning' : staleMinutes !== null && staleMinutes > STALE_MINUTES ? 'warning' : 'info'}
         showIcon
         style={{ marginBottom: 12 }}
         message={
           hasData ? (
             <span>
-              本地已缓存 <b>{config?.syncedRows?.toLocaleString()}</b> 条告警，最后同步时间{' '}
-              <b>{config?.lastSyncAt || '未知'}</b>；查询与统计基于本地缓存。
-              {hasPerm('prom:alert:sync') && '看不到最新告警时请点「同步数据」。'}
+              本地已缓存 <b>{config?.syncedRows?.toLocaleString()}</b> 条告警，数据截止于{' '}
+              <b>{config?.lastSyncAt || '未知'}</b>
+              {staleMinutes !== null && `（${staleMinutes} 分钟前）`}；查询、统计与导出都基于这份本地快照。
+              {(staleMinutes === null || staleMinutes > STALE_MINUTES) &&
+                '⚠️ 本地是快照、不是实时流：刚才新产生的告警还没同步进来，所以「最近几小时」的条数会比夜莺少。'}
             </span>
           ) : (
             <span>
@@ -924,6 +1060,13 @@ export default function PromAlertReport() {
               —— 90 天全量同步约需 1~2 分钟。
             </span>
           )
+        }
+        action={
+          hasData && hasPerm('prom:alert:sync') && !syncing ? (
+            <Button size="small" icon={<SyncOutlined />} onClick={doSync}>
+              立即同步
+            </Button>
+          ) : null
         }
       />
 
@@ -977,6 +1120,20 @@ export default function PromAlertReport() {
               disabledDate={(d) => d && d.isAfter(dayjs(), 'day')}
             />
           )}
+          {/* 监控类型（夜莺 rule_prods）：固定 Metric / Host / Log，允许 0 条也列出来 */}
+          <Select
+            mode="multiple"
+            allowClear
+            placeholder="监控类型"
+            style={{ minWidth: 170 }}
+            maxTagCount="responsive"
+            value={ruleProds}
+            onChange={setRuleProds}
+            options={prodOptions.map((p) => ({
+              label: p.n > 0 ? `${p.label} (${p.n})` : p.label,
+              value: p.value,
+            }))}
+          />
           <Select
             mode="multiple"
             allowClear
@@ -993,46 +1150,55 @@ export default function PromAlertReport() {
               value: d.datasourceId,
             }))}
           />
+          {/* 业务组 —— ⚠️ 夜莺的 bgid 只支持单值，这里也是单选，保证两边筛出来完全可比 */}
+          {/*
+            ⚠️ zIndex 必须**低于 Modal 默认的 1000**。
+            浮层（Tooltip/Popover 默认 1070）一旦高于 Modal，就会**拦掉弹窗里同坐标控件的点击** ——
+            实测：悬停过「业务组」后打开「导出模板」弹窗，这个 tooltip 停在那儿不消失，
+            弹窗里那一行的「导出」按钮就永远点不动（浏览器报 "…tooltip-inner intercepts pointer events"）。
+            提示类浮层本就不该盖在弹窗上，压到 900（仍在普通内容之上、弹窗遮罩之下）最省事。
+          */}
+          <Tooltip title="与夜莺一致：业务组只能选一个" zIndex={900}>
+            <Select
+              allowClear
+              showSearch
+              placeholder="业务组"
+              style={{ minWidth: 190 }}
+              optionFilterProp="label"
+              value={groupIds[0]}
+              onChange={(v) => setGroupIds(v === undefined ? [] : [v])}
+              notFoundContent={
+                hasData
+                  ? '暂无业务组（需重新同步一次以补全清单）'
+                  : '本地无数据，请先同步'
+              }
+              options={groups.map((g) => ({
+                label: g.n > 0 ? `${g.groupName} (${g.n})` : g.groupName,
+                value: g.groupId,
+              }))}
+            />
+          </Tooltip>
           <Select
-            mode="multiple"
             allowClear
-            placeholder="业务组"
-            style={{ minWidth: 200 }}
-            maxTagCount="responsive"
-            value={groupIds}
-            onChange={setGroupIds}
-            options={groups.map((g) => ({ label: `${g.groupName} (${g.n})`, value: g.groupId }))}
-          />
-          <Select
-            allowClear
-            placeholder="告警等级"
-            style={{ width: 120 }}
+            placeholder="告警级别"
+            style={{ width: 130 }}
             value={severity}
             onChange={setSeverity}
             options={SEVERITY_OPTIONS}
           />
           <Select
-            style={{ width: 110 }}
+            style={{ width: 140 }}
             value={recovered}
             onChange={setRecovered}
             options={RECOVER_OPTIONS}
           />
-          <Select
-            allowClear
-            showSearch
-            placeholder="部门"
-            style={{ width: 160 }}
-            value={department}
-            onChange={setDepartment}
-            options={depts.map((d) => ({ label: `${d.value} (${d.n})`, value: d.value }))}
-          />
           <Input.Search
             allowClear
-            placeholder="规则 / 主机 / 业务组关键字"
-            style={{ width: 240 }}
+            placeholder="模糊搜索规则和标签（多个关键字用空格分隔）"
+            style={{ width: 300 }}
             value={keyword}
             onChange={(e) => setKeyword(e.target.value)}
-            onSearch={() => setKeyword(keyword)}
+            onSearch={() => setKwApplied(keyword)}
           />
           <Button
             icon={<ReloadOutlined />}
@@ -1254,7 +1420,9 @@ export default function PromAlertReport() {
               title: '数据范围',
               key: 'range',
               render: (_: unknown, r: N9eExportTemplate) => (
-                <Text style={{ fontSize: 12 }}>{tplFilterSummary(r.filter, dsName)}</Text>
+                <Text style={{ fontSize: 12 }}>
+                  {tplFilterSummary(r.filter, dsName, grpName, prodLabel)}
+                </Text>
               ),
             },
             {
@@ -1375,6 +1543,16 @@ export default function PromAlertReport() {
               <Select
                 mode="multiple"
                 allowClear
+                placeholder="监控类型"
+                style={{ minWidth: 170 }}
+                maxTagCount="responsive"
+                value={tplForm.ruleProds}
+                onChange={(v) => setTplForm({ ...tplForm, ruleProds: v })}
+                options={prodOptions.map((p) => ({ label: p.label, value: p.value }))}
+              />
+              <Select
+                mode="multiple"
+                allowClear
                 placeholder="数据源"
                 style={{ minWidth: 200 }}
                 maxTagCount="responsive"
@@ -1385,43 +1563,37 @@ export default function PromAlertReport() {
                   value: d.datasourceId,
                 }))}
               />
+              {/* 与夜莺一致：业务组单选 */}
               <Select
-                mode="multiple"
                 allowClear
+                showSearch
+                optionFilterProp="label"
                 placeholder="业务组"
                 style={{ minWidth: 180 }}
-                maxTagCount="responsive"
-                value={tplForm.groupIds}
-                onChange={(v) => setTplForm({ ...tplForm, groupIds: v })}
+                value={tplForm.groupIds[0]}
+                onChange={(v) =>
+                  setTplForm({ ...tplForm, groupIds: v === undefined ? [] : [v] })
+                }
                 options={groups.map((g) => ({ label: g.groupName, value: g.groupId }))}
               />
               <Select
                 allowClear
-                placeholder="告警等级"
-                style={{ width: 120 }}
+                placeholder="告警级别"
+                style={{ width: 130 }}
                 value={tplForm.severity}
                 onChange={(v) => setTplForm({ ...tplForm, severity: v })}
                 options={SEVERITY_OPTIONS}
               />
               <Select
-                style={{ width: 110 }}
+                style={{ width: 140 }}
                 value={tplForm.recovered}
                 onChange={(v) => setTplForm({ ...tplForm, recovered: v })}
                 options={RECOVER_OPTIONS}
               />
-              <Select
-                allowClear
-                showSearch
-                placeholder="部门"
-                style={{ width: 150 }}
-                value={tplForm.department}
-                onChange={(v) => setTplForm({ ...tplForm, department: v })}
-                options={depts.map((d) => ({ label: d.value, value: d.value }))}
-              />
               <Input
                 allowClear
-                placeholder="规则 / 主机 / 业务组关键字"
-                style={{ width: 240 }}
+                placeholder="模糊搜索规则和标签（空格分隔多个关键字）"
+                style={{ width: 300 }}
                 value={tplForm.keyword}
                 onChange={(e) => setTplForm({ ...tplForm, keyword: e.target.value })}
               />

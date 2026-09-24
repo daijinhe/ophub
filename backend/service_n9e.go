@@ -44,6 +44,7 @@ import (
 	"sync"
 	"time"
 
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
@@ -102,6 +103,7 @@ func ensureN9eDefaults() {
 type N9eAlertEvent struct {
 	ID               int64     `gorm:"primaryKey;autoIncrement:false" json:"id"`
 	Cate             string    `gorm:"size:32" json:"cate"`
+	RuleProd         string    `gorm:"size:32;index" json:"ruleProd"`
 	DatasourceID     int       `gorm:"index" json:"datasourceId"`
 	DatasourceName   string    `gorm:"size:128;index" json:"datasourceName"`
 	Cluster          string    `gorm:"size:128" json:"cluster"`
@@ -128,6 +130,22 @@ type N9eAlertEvent struct {
 
 // TableName 固定表名（避免 GORM 复数化规则带来的意外）
 func (N9eAlertEvent) TableName() string { return "n9e_alert_events" }
+
+// N9eBusiGroup 夜莺业务组清单（全量，本地副本）
+//
+// ⚠️ 为什么不能只用「本地事件里出现过的业务组」来填下拉：
+// 夜莺的「业务组」下拉列出的是**全部**业务组（本环境 24 个），而历史告警里
+// 只出现 11 个 —— 只按事件 distinct 出来的话，用户在自己页面上根本看不到
+// 另外 13 个组，就会认为「业务组和夜莺筛出来的不一样」。
+// 所以同步时顺带把业务组清单整份拉下来存这儿（表很小，几十行）。
+type N9eBusiGroup struct {
+	ID       int       `gorm:"primaryKey;autoIncrement:false" json:"id"`
+	Name     string    `gorm:"size:128" json:"name"`
+	SyncedAt time.Time `json:"syncedAt"`
+}
+
+// TableName 表名
+func (N9eBusiGroup) TableName() string { return "n9e_busi_groups" }
 
 // ---------------------------------------------------------------------------
 // 夜莺 HTTP 客户端
@@ -160,6 +178,7 @@ func newN9eClient() (*n9eClient, error) {
 type n9eHisEvent struct {
 	ID               int64    `json:"id"`
 	Cate             string   `json:"cate"`
+	RuleProd         string   `json:"rule_prod"`
 	DatasourceID     int      `json:"datasource_id"`
 	Cluster          string   `json:"cluster"`
 	GroupID          int      `json:"group_id"`
@@ -234,6 +253,74 @@ func (n *n9eClient) listDatasources(ctx context.Context) (map[int]string, error)
 		m[d.ID] = d.Name
 	}
 	return m, nil
+}
+
+// n9eBusiGroupItem 业务组条目（GET /api/n9e/busi-groups 的元素）
+type n9eBusiGroupItem struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+type n9eBusiGroupResp struct {
+	Dat []n9eBusiGroupItem `json:"dat"`
+	Err string             `json:"err"`
+}
+
+// listBusiGroups 拉取**全量**业务组清单（id + 名称）。
+//
+// 实测：GET /api/n9e/busi-groups?limit=500 → {"dat":[{"id":1,"name":"Default Busi Group"},...]}
+// 本环境 24 个组。夜莺的「历史告警 → 业务组」下拉就是这份清单（不是从事件里推的），
+// 所以平台要「和夜莺一样」也必须用它，否则会漏掉没有告警的业务组。
+//
+// ⚠️ 筛选参数是 `bgid`（单值，多个用逗号会 400）—— 见 n9eQuery.Apply。
+func (n *n9eClient) listBusiGroups(ctx context.Context) ([]n9eBusiGroupItem, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, n.base+"/api/n9e/busi-groups?limit=500", nil)
+	if err != nil {
+		return nil, fmt.Errorf("构造业务组请求失败：%v", err)
+	}
+	req.Header.Set("X-User-Token", n.token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := n.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("获取业务组清单失败：%v", err)
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("读取业务组响应失败：%v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("获取业务组清单返回 HTTP %d：%s", resp.StatusCode, truncateStr(string(b), 200))
+	}
+	var out n9eBusiGroupResp
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, fmt.Errorf("解析业务组清单失败：%v（片段：%s）", err, truncateStr(string(b), 200))
+	}
+	return out.Dat, nil
+}
+
+// n9eSyncBusiGroups 把业务组清单整份写入本地副本表（先清后写，保证删除的组不会残留）。
+// 失败只记日志不阻断同步：业务组清单只是下拉选项，不该让它拖垮整个告警同步。
+func n9eSyncBusiGroups(items []n9eBusiGroupItem) error {
+	if len(items) == 0 {
+		return fmt.Errorf("业务组清单为空")
+	}
+	rows := make([]N9eBusiGroup, 0, len(items))
+	for _, it := range items {
+		if it.ID <= 0 || strings.TrimSpace(it.Name) == "" {
+			continue
+		}
+		rows = append(rows, N9eBusiGroup{ID: it.ID, Name: strings.TrimSpace(it.Name), SyncedAt: time.Now()})
+	}
+	if len(rows) == 0 {
+		return fmt.Errorf("业务组清单没有有效条目")
+	}
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("1 = 1").Delete(&N9eBusiGroup{}).Error; err != nil {
+			return err
+		}
+		return tx.Create(&rows).Error
+	})
 }
 
 // listHisEvents 拉取一页历史告警。
@@ -391,6 +478,17 @@ func runN9eSync(days int) {
 		dsNames = map[int]string{}
 	}
 
+	// 业务组清单（全量）—— 夜莺的「业务组」下拉列的是**全部**业务组，而历史告警里
+	// 只出现其中一部分（本环境 24 个组里只有 11 个有告警）。只按事件 distinct 的话，
+	// 用户在自己页面上看不到另外 13 个组，就会认为「业务组和夜莺筛出来的不一样」。
+	// ⚠️ 同样失败不阻断同步：清单只影响下拉选项。
+	n9eSetSyncState(func(s *N9eSyncState) { s.Phase = "获取业务组清单" })
+	if groups, gErr := cli.listBusiGroups(ctx); gErr != nil {
+		log.Printf("夜莺同步：获取业务组清单失败（下拉将退化为只列有数据的组）：%v", gErr)
+	} else if uErr := n9eSyncBusiGroups(groups); uErr != nil {
+		log.Printf("夜莺同步：写入业务组清单失败（不影响同步）：%v", uErr)
+	}
+
 	chunkTotal := 0
 	for s := startAll; s < now; s += chunkSec {
 		chunkTotal++
@@ -478,7 +576,7 @@ func n9eUpsertEvents(rows []N9eAlertEvent) error {
 		err := DB.Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "id"}},
 			DoUpdates: clause.AssignmentColumns([]string{
-				"cate", "datasource_id", "datasource_name",
+				"cate", "rule_prod", "datasource_id", "datasource_name",
 				"cluster", "group_id", "group_name", "rule_id", "rule_name",
 				"rule_note", "severity", "target_ident", "target_host", "department",
 				"system_name", "trigger_time", "trigger_value", "recover_time",
@@ -502,6 +600,7 @@ func n9eConvertEvent(ev *n9eHisEvent, dsNames map[int]string) N9eAlertEvent {
 	row := N9eAlertEvent{
 		ID:               ev.ID,
 		Cate:             ev.Cate,
+		RuleProd:         n9eRuleProd(ev.RuleProd),
 		DatasourceID:     ev.DatasourceID,
 		DatasourceName:   n9eDsName(ev.DatasourceID, dsNames),
 		Cluster:          ev.Cluster,
@@ -565,15 +664,58 @@ func n9eDsName(id int, names map[int]string) string {
 	return fmt.Sprintf("#%d", id)
 }
 
-// n9eSeverityLabel 告警等级中文名（夜莺口径：1=提醒 2=警告 3=严重）
+// ---------------------------------------------------------------------------
+// 监控类型（rule_prod） 与 告警级别（severity）的口径
+// ---------------------------------------------------------------------------
+
+// n9eRuleProdKnown 夜莺「监控类型」下拉的固定取值（与夜莺前端硬编码的 XU() 一致）。
+//
+// 实测（本环境 v8.0.0，2026-09-24）：rule_prods=metric → 8923、logging → 382、
+// host → 0，三者相加恰好等于不筛选的总量（9305），说明取值互斥且完备。
+// 夜莺前端的中文包里 metric/host/logging 没翻译，仍显示 Metric / Host / Log。
+var n9eRuleProdKnown = []struct {
+	Value string
+	Label string
+}{
+	{"metric", "Metric"},
+	{"host", "Host"},
+	{"logging", "Log"},
+}
+
+// n9eRuleProd 归一化监控类型取值（空值落库为空串，便于按「无类型」也需要时区分）
+func n9eRuleProd(v string) string {
+	return strings.ToLower(strings.TrimSpace(v))
+}
+
+// n9eRuleProdLabel 监控类型显示名（未在固定清单里的取值原样显示 ——
+// 夜莺还有 anomaly / loki / firemap / northstar 等，不能把不认识的丢掉）
+func n9eRuleProdLabel(v string) string {
+	for _, k := range n9eRuleProdKnown {
+		if k.Value == v {
+			return k.Label
+		}
+	}
+	if v == "" {
+		return ""
+	}
+	return v
+}
+
+// n9eSeverityLabel 告警等级显示名。
+//
+// ⚠️ 口径修正（v1.7.52）：夜莺是 **1 = S1（Critical，最严重）**、2 = S2（Warning）、
+// 3 = S3（Info）；本文件 v1.7.49 首版把顺序写反了（1=提醒 3=严重），
+// 结果是「最严重的一级被标成提醒、还配了蓝色」。
+// 依据：夜莺历史告警页硬编码 <Option value={1}>S1（Critical）</Option>，
+// 且 severity=1 与 2 的条数分布（3643 / 5662）与「Critical 少于 Warning」相符。
 func n9eSeverityLabel(v int) string {
 	switch v {
 	case 1:
-		return "提醒"
+		return "严重"
 	case 2:
 		return "警告"
 	case 3:
-		return "严重"
+		return "提醒"
 	default:
 		return fmt.Sprintf("未知(%d)", v)
 	}

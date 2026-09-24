@@ -62,16 +62,17 @@ func (N9eExportTemplate) TableName() string { return "n9e_export_templates" }
 
 // n9eTplFilter 落库形态的筛选条件（字段齐全，读出来即可直接用）
 type n9eTplFilter struct {
-	TimeMode      string `json:"timeMode"` // days = 相对天数（推荐）；custom = 字面区间
-	Days          int    `json:"days"`
-	Stime         int64  `json:"stime"`
-	Etime         int64  `json:"etime"`
-	DatasourceIDs []int  `json:"datasourceIds"`
-	GroupIDs      []int  `json:"groupIds"`
-	Severity      int    `json:"severity"`  // 0 = 全部
-	Recovered     int    `json:"recovered"` // -1 = 全部；0 = 未恢复；1 = 已恢复
-	Department    string `json:"department"`
-	Keyword       string `json:"keyword"`
+	TimeMode      string   `json:"timeMode"` // days = 相对天数（推荐）；custom = 字面区间
+	Days          int      `json:"days"`
+	Stime         int64    `json:"stime"`
+	Etime         int64    `json:"etime"`
+	DatasourceIDs []int    `json:"datasourceIds"`
+	GroupIDs      []int    `json:"groupIds"`
+	RuleProds     []string `json:"ruleProds"` // 监控类型（v1.7.52，对齐夜莺 rule_prods）
+	Severity      int      `json:"severity"`  // 0 = 全部
+	Recovered     int      `json:"recovered"` // -1 = 全部；0 = 未恢复；1 = 已恢复
+	Department    string   `json:"department"`
+	Keyword       string   `json:"keyword"`
 }
 
 // n9eTplFilterIn 入参形态：⚠️ 用指针区分「没传」与「显式传了 0」。
@@ -80,16 +81,17 @@ type n9eTplFilter struct {
 // 「字段缺失」会静默变成「只看未恢复」，用户建出来的模板导出结果凭空少一大半，
 // 而且页面上完全看不出来哪里错了。
 type n9eTplFilterIn struct {
-	TimeMode      string `json:"timeMode"`
-	Days          *int   `json:"days"`
-	Stime         *int64 `json:"stime"`
-	Etime         *int64 `json:"etime"`
-	DatasourceIDs []int  `json:"datasourceIds"`
-	GroupIDs      []int  `json:"groupIds"`
-	Severity      *int   `json:"severity"`
-	Recovered     *int   `json:"recovered"`
-	Department    string `json:"department"`
-	Keyword       string `json:"keyword"`
+	TimeMode      string   `json:"timeMode"`
+	Days          *int     `json:"days"`
+	Stime         *int64   `json:"stime"`
+	Etime         *int64   `json:"etime"`
+	DatasourceIDs []int    `json:"datasourceIds"`
+	GroupIDs      []int    `json:"groupIds"`
+	RuleProds     []string `json:"ruleProds"`
+	Severity      *int     `json:"severity"`
+	Recovered     *int     `json:"recovered"`
+	Department    string   `json:"department"`
+	Keyword       string   `json:"keyword"`
 }
 
 // normalize 归一化入参 → 落库形态：补齐缺省值、夹紧越界值、截断超长数组。
@@ -98,6 +100,7 @@ func (in n9eTplFilterIn) normalize() n9eTplFilter {
 		TimeMode:      in.TimeMode,
 		DatasourceIDs: n9eCapInts(in.DatasourceIDs, n9eTplIDsMax),
 		GroupIDs:      n9eCapInts(in.GroupIDs, n9eTplIDsMax),
+		RuleProds:     n9eParseRuleProds(strings.Join(in.RuleProds, ",")),
 		Department:    strings.TrimSpace(in.Department),
 		Keyword:       strings.TrimSpace(in.Keyword),
 		Recovered:     -1,
@@ -143,6 +146,7 @@ func (f n9eTplFilter) toQuery() n9eQuery {
 	q := n9eQuery{
 		GroupIDs:      f.GroupIDs,
 		DatasourceIDs: f.DatasourceIDs,
+		RuleProds:     f.RuleProds,
 		Severity:      f.Severity,
 		Recovered:     f.Recovered,
 		Keyword:       strings.TrimSpace(f.Keyword),

@@ -351,6 +351,7 @@ func main() {
 			auth.GET("/prom/n9e/sync-status", RequirePermission("prom:alert:view"), PromN9eSyncStatus)
 			auth.GET("/prom/n9e/events", RequirePermission("prom:alert:view"), PromN9eEvents)
 			auth.GET("/prom/n9e/groups", RequirePermission("prom:alert:view"), PromN9eGroups)
+			auth.GET("/prom/n9e/rule-prods", RequirePermission("prom:alert:view"), PromN9eRuleProds)
 			auth.GET("/prom/n9e/datasources", RequirePermission("prom:alert:view"), PromN9eDatasources)
 			auth.GET("/prom/n9e/departments", RequirePermission("prom:alert:view"), PromN9eDepartments)
 			auth.GET("/prom/n9e/stats", RequirePermission("prom:alert:view"), PromN9eStats)

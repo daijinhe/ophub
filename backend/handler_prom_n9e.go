@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -196,11 +197,25 @@ func PromN9eSyncStatus(c *gin.Context) {
 // 查询条件解析（列表 / 统计 / 导出共用，保证三处口径一致）
 // ---------------------------------------------------------------------------
 
+// n9eQuery 查询条件。
+//
+// 字段与夜莺历史告警页的筛选控件**一一对应**（v1.7.52 对齐）：
+//
+//	夜莺控件          参数名            本结构体字段
+//	监控类型          rule_prods        RuleProds   （多选）
+//	数据源            datasource_ids    DatasourceIDs（多选）
+//	业务组            bgid              GroupIDs    （⚠️ 夜莺只支持单值）
+//	告警级别          severity          Severity    （1=S1 最严重）
+//	事件类别          is_recovered      Recovered   （0=触发 1=已恢复）
+//	模糊搜索规则和标签  query            Keyword     （空格分词 AND）
+//
+// Department 不是夜莺的筛选维度，保留仅为兼容 v1.7.51 及更早存下的导出模板。
 type n9eQuery struct {
 	Stime         int64
 	Etime         int64
 	GroupIDs      []int
 	DatasourceIDs []int
+	RuleProds     []string
 	Severity      int // 0 = 全部
 	Recovered     int // -1 = 全部；0 = 未恢复；1 = 已恢复
 	Keyword       string
@@ -249,7 +264,30 @@ func n9eParseQuery(c *gin.Context) n9eQuery {
 	q.Department = strings.TrimSpace(c.Query("department"))
 	q.GroupIDs = n9eParseIntList(c.Query("groupIds"))
 	q.DatasourceIDs = n9eParseIntList(c.Query("datasourceIds"))
+	q.RuleProds = n9eParseRuleProds(c.Query("ruleProds"))
 	return q
+}
+
+// n9eParseRuleProds 解析监控类型多选（逗号分隔）。
+// 只接受夜莺已知取值，其余丢弃 —— 传一个拼错的类型名进来会静默匹配不到任何行，
+// 表现出来就是「筛选后一条都没有」，比直接忽略更难查。
+func n9eParseRuleProds(raw string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, s := range strings.Split(raw, ",") {
+		s = n9eRuleProd(s)
+		if s == "" || seen[s] {
+			continue
+		}
+		for _, k := range n9eRuleProdKnown {
+			if k.Value == s {
+				seen[s] = true
+				out = append(out, s)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // n9eParseIntList 解析「逗号分隔的整数列表」查询参数（业务组 / 数据源共用）。
@@ -287,13 +325,23 @@ func (q n9eQuery) apply(tx *gorm.DB) *gorm.DB {
 	if q.Recovered >= 0 {
 		tx.Where("is_recovered = ?", q.Recovered)
 	}
+	if len(q.RuleProds) == 1 {
+		tx.Where("rule_prod = ?", q.RuleProds[0])
+	} else if len(q.RuleProds) > 1 {
+		tx.Where("rule_prod IN ?", q.RuleProds)
+	}
 	if q.Department != "" {
 		tx.Where("department = ?", q.Department)
 	}
-	if q.Keyword != "" {
-		like := "%" + q.Keyword + "%"
-		tx.Where("(rule_name ILIKE ? OR target_ident ILIKE ? OR target_host ILIKE ? OR group_name ILIKE ? OR cluster ILIKE ?)",
-			like, like, like, like, like)
+	// 模糊搜索：对齐夜莺的 `query` —— 搜「规则标题 + 事件标签」，空格分词且**全部命中**。
+	// 实测夜莺（近 3 天）：query=政务 apig → 24；换序 apig 政务 → 仍是 24；
+	// 再加一个无解词 → 0，即多词之间是 AND 而不是 OR。
+	// ⚠️ 必须搜 tags_json：主机 IP / 部门 / 系统这些只在标签里，而夜莺搜得到
+	// （query=203.0.113.207 → 92 条、query=department=政务一体化事业部 → 3534 条）。
+	// 少了 tags_json 就会出现「夜莺搜得到、我们搜不到」。
+	for _, term := range strings.Fields(q.Keyword) {
+		like := "%" + term + "%"
+		tx.Where("(rule_name ILIKE ? OR tags_json ILIKE ?)", like, like)
 	}
 	return tx
 }
@@ -330,7 +378,14 @@ func PromN9eEvents(c *gin.Context) {
 	PageOK(c, rows, total, page, pageSize)
 }
 
-// PromN9eGroups 业务组列表（从本地库取，供筛选下拉；库里没有时返回空数组）
+// PromN9eGroups 业务组选项（供筛选下拉）。
+//
+// ⚠️ 对齐夜莺（v1.7.52 修正）：夜莺的「业务组」下拉列的是**全部**业务组
+// （GET /api/n9e/busi-groups，本环境 24 个），而不是「历史告警里出现过的那些」（只有 11 个）。
+// v1.7.51 之前平台按事件 distinct 生成下拉，少了 13 个组 —— 这正是
+// 「业务组和夜莺筛出来的不一样」的直接原因。
+// 现在以同步时落下的 n9e_busi_groups 副本为准；老环境还没重新同步过时，
+// 退化成按事件 distinct（至少不会空手）。
 //
 // ⚠️ 条数必须按**同一时间窗口**统计（前端会把当前的时间范围带过来）：
 // 下拉里写「集团 (1024)」，点进去总数却是 980，用户只会认为报表算错了。
@@ -340,17 +395,101 @@ func PromN9eGroups(c *gin.Context) {
 		GroupName string `json:"groupName"`
 		N         int64  `json:"n"`
 	}
-	var rows []grp
+	stime, etime := n9eParseTimeWindow(c)
+
+	cnt := map[int]int64{}
+	nameByID := map[int]string{}
 	if DB != nil {
-		stime, etime := n9eParseTimeWindow(c)
+		type kv struct {
+			GroupID int   `json:"groupId"`
+			N       int64 `json:"n"`
+		}
+		var rows []kv
 		DB.Model(&N9eAlertEvent{}).
-			Select("group_id, group_name, count(*) as n").
+			Select("group_id, count(*) as n").
 			Where("trigger_time >= ? AND trigger_time <= ?", stime, etime).
-			Group("group_id, group_name").
-			Order("n DESC").
-			Limit(200).Scan(&rows)
+			Group("group_id").Scan(&rows)
+		for _, r := range rows {
+			cnt[r.GroupID] = r.N
+		}
+
+		var groups []N9eBusiGroup
+		DB.Order("id ASC").Find(&groups)
+		for _, g := range groups {
+			nameByID[g.ID] = g.Name
+		}
+		if len(nameByID) == 0 {
+			// 老环境（升级后还没重新同步过）：退化成「事件里出现过的组合」
+			var fallback []N9eBusiGroup
+			DB.Model(&N9eAlertEvent{}).
+				Select("group_id as id, group_name as name").
+				Where("group_id > 0 AND group_name <> ''").
+				Group("group_id, group_name").Scan(&fallback)
+			for _, g := range fallback {
+				nameByID[g.ID] = g.Name
+			}
+		}
 	}
-	OK(c, gin.H{"list": rows})
+
+	out := make([]grp, 0, len(nameByID))
+	for id, name := range nameByID {
+		out = append(out, grp{GroupID: id, GroupName: name, N: cnt[id]})
+	}
+	// 有数据的排前面（更可能是用户要选的），其次按 id —— 顺序稳定，避免每次刷新乱跳
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].N != out[j].N {
+			return out[i].N > out[j].N
+		}
+		return out[i].GroupID < out[j].GroupID
+	})
+	OK(c, gin.H{"list": out})
+}
+
+// PromN9eRuleProds 监控类型选项（对齐夜莺的固定清单：Metric / Host / Log）。
+//
+// 夜莺前端是**硬编码**这三个取值的（不随数据变化），这里也固定返回并附带
+// 本地当前窗口的条数 —— 允许 0 条：用户需要看见「Host 这个类型没有告警」，
+// 而不是以为下拉坏了。额外出现（历史遗留或夜莺新增类型）的取值一并列出，不隐藏。
+func PromN9eRuleProds(c *gin.Context) {
+	type prodRow struct {
+		Value string `json:"value"`
+		Label string `json:"label"`
+		N     int64  `json:"n"`
+	}
+	stime, etime := n9eParseTimeWindow(c)
+
+	cnt := map[string]int64{}
+	if DB != nil {
+		type kv struct {
+			RuleProd string `json:"ruleProd"`
+			N        int64  `json:"n"`
+		}
+		var rows []kv
+		DB.Model(&N9eAlertEvent{}).
+			Select("rule_prod, count(*) as n").
+			Where("trigger_time >= ? AND trigger_time <= ?", stime, etime).
+			Group("rule_prod").Scan(&rows)
+		for _, r := range rows {
+			cnt[r.RuleProd] = r.N
+		}
+	}
+
+	seen := map[string]bool{}
+	out := make([]prodRow, 0, len(n9eRuleProdKnown)+2)
+	for _, k := range n9eRuleProdKnown {
+		seen[k.Value] = true
+		out = append(out, prodRow{Value: k.Value, Label: k.Label, N: cnt[k.Value]})
+	}
+	extras := make([]prodRow, 0, 2)
+	for v, n := range cnt {
+		if v == "" || seen[v] {
+			continue
+		}
+		extras = append(extras, prodRow{Value: v, Label: n9eRuleProdLabel(v), N: n})
+	}
+	sort.Slice(extras, func(i, j int) bool { return extras[i].Value < extras[j].Value })
+	out = append(out, extras...)
+	OK(c, gin.H{"list": out})
 }
 
 // PromN9eDatasources 数据源选项（从本地库取，供筛选下拉）。
@@ -507,6 +646,7 @@ var n9eExportCols = []n9eExportCol{
 	}},
 	{"severity", "等级", 6, func(r *N9eAlertEvent, _ int, _ int64) interface{} { return n9eSeverityLabel(r.Severity) }},
 	{"datasource", "数据源", 22, func(r *N9eAlertEvent, _ int, _ int64) interface{} { return r.DatasourceName }},
+	{"ruleProd", "监控类型", 12, func(r *N9eAlertEvent, _ int, _ int64) interface{} { return n9eRuleProdLabel(r.RuleProd) }},
 	{"ruleName", "规则名称", 30, func(r *N9eAlertEvent, _ int, _ int64) interface{} { return r.RuleName }},
 	{"groupName", "业务组", 20, func(r *N9eAlertEvent, _ int, _ int64) interface{} { return r.GroupName }},
 	{"cluster", "集群", 18, func(r *N9eAlertEvent, _ int, _ int64) interface{} { return r.Cluster }},
