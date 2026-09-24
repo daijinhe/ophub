@@ -35,6 +35,7 @@ import {
   getN9eConfig,
   getN9eStats,
   getN9eSyncStatus,
+  listN9eDatasources,
   listN9eDepartments,
   listN9eEvents,
   listN9eGroups,
@@ -61,6 +62,10 @@ const { Title, Text } = Typography
 //    只有点「同步数据」才会去连夜莺。实测 90 天全量要 94 秒，
 //    如果每次改筛选条件都现拉，页面会不可用。
 //    所以页面头部会显著提示「本地数据截止时间」，避免把陈旧数据当实时数据看。
+//
+// ⚠️ 「数据源」下拉的选项来自**本地库 distinct**（不是实时拉夜莺清单）：只列出本地确实
+//    有数据的数据源，避免用户选到一个空结果还以为功能坏了。该字段 v1.7.50 才落库，
+//    老数据 datasource_id 为 0、不会出现在选项里，需要重新同步一次才会补齐。
 // ============================================================================
 
 const RANGE_OPTIONS = [
@@ -119,6 +124,7 @@ export default function PromAlertReport() {
   const [days, setDays] = useState<number>(90)
   const [customRange, setCustomRange] = useState<[Dayjs, Dayjs] | null>(null)
   const [groupIds, setGroupIds] = useState<number[]>([])
+  const [datasourceIds, setDatasourceIds] = useState<number[]>([])
   const [severity, setSeverity] = useState<number | undefined>(undefined)
   const [recovered, setRecovered] = useState<number>(-1)
   const [department, setDepartment] = useState<string | undefined>(undefined)
@@ -138,6 +144,9 @@ export default function PromAlertReport() {
   const [config, setConfig] = useState<N9eConfig | null>(null)
   const [groups, setGroups] = useState<{ groupId: number; groupName: string; n: number }[]>([])
   const [depts, setDepts] = useState<{ value: string; n: number }[]>([])
+  const [datasources, setDatasources] = useState<
+    { datasourceId: number; datasourceName: string; n: number }[]
+  >([])
 
   // ---- 连接设置弹窗 ----
   const [settingOpen, setSettingOpen] = useState(false)
@@ -158,12 +167,13 @@ export default function PromAlertReport() {
       p.days = days > 0 ? days : 90
     }
     if (groupIds.length > 0) p.groupIds = groupIds.join(',')
+    if (datasourceIds.length > 0) p.datasourceIds = datasourceIds.join(',')
     if (severity !== undefined) p.severity = severity
     if (recovered >= 0) p.recovered = recovered
     if (department) p.department = department
     if (keyword.trim()) p.keyword = keyword.trim()
     return p
-  }, [days, customRange, groupIds, severity, recovered, department, keyword])
+  }, [days, customRange, groupIds, datasourceIds, severity, recovered, department, keyword])
 
   // ---------- 加载 ----------
   const loadStats = useCallback(async () => {
@@ -193,10 +203,16 @@ export default function PromAlertReport() {
 
   const loadMeta = useCallback(async () => {
     try {
-      const [cfg, gs, dp] = await Promise.all([getN9eConfig(), listN9eGroups(), listN9eDepartments()])
+      const [cfg, gs, dp, ds] = await Promise.all([
+        getN9eConfig(),
+        listN9eGroups(),
+        listN9eDepartments(),
+        listN9eDatasources(),
+      ])
       setConfig(cfg)
       setGroups(gs.list || [])
       setDepts(dp.departments || [])
+      setDatasources(ds.list || [])
     } catch {
       // 元数据加载失败不阻塞主流程（例如首次进入还没有任何数据）
     }
@@ -434,6 +450,13 @@ export default function PromAlertReport() {
         width: 150,
         render: (v: string, r: N9eAlertEvent) => v || r.targetIdent || '-',
       },
+      {
+        title: '数据源',
+        dataIndex: 'datasourceName',
+        width: 170,
+        ellipsis: true,
+        render: (v: string, r: N9eAlertEvent) => v || (r.datasourceId ? `#${r.datasourceId}` : '-'),
+      },
       { title: '业务组', dataIndex: 'groupName', width: 160, ellipsis: true },
       { title: '部门', dataIndex: 'department', width: 150, ellipsis: true, render: (v: string) => v || '-' },
       { title: '系统', dataIndex: 'systemName', width: 140, ellipsis: true, render: (v: string) => v || '-' },
@@ -480,7 +503,7 @@ export default function PromAlertReport() {
           <AlertOutlined style={{ marginRight: 8 }} />
           监控告警报表
         </Title>
-        <Tag color="purple">v1.7.49</Tag>
+        <Tag color="purple">v1.7.50</Tag>
         <Tooltip title="数据来源：夜莺（Nightingale）历史告警">
           <Tag color="geekblue">{config?.baseUrl || '未配置'}</Tag>
         </Tooltip>
@@ -581,6 +604,22 @@ export default function PromAlertReport() {
               disabledDate={(d) => d && d.isAfter(dayjs(), 'day')}
             />
           )}
+          <Select
+            mode="multiple"
+            allowClear
+            placeholder="数据源"
+            style={{ minWidth: 220 }}
+            maxTagCount="responsive"
+            value={datasourceIds}
+            onChange={setDatasourceIds}
+            notFoundContent={
+              hasData ? '暂无可选数据源（需重新同步一次以补全该字段）' : '本地无数据，请先同步'
+            }
+            options={datasources.map((d) => ({
+              label: `${d.datasourceName || `#${d.datasourceId}`} (${d.n})`,
+              value: d.datasourceId,
+            }))}
+          />
           <Select
             mode="multiple"
             allowClear
@@ -715,7 +754,7 @@ export default function PromAlertReport() {
           loading={loading}
           columns={columns}
           dataSource={rows}
-          scroll={{ x: 1400 }}
+          scroll={{ x: 1620 }}
           pagination={{
             current: page,
             pageSize,

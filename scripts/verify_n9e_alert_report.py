@@ -9,6 +9,7 @@ verify_n9e_alert_report.py —— 「监控告警报表」（夜莺历史告警�
   C. 查询：列表分页、筛选（业务组/等级/恢复状态/关键字）
   D. 统计：总量 / 等级分布 / TOP 榜 / 逐日趋势
   E. 导出：下载 xlsx，校验是合法 xlsx、行数与接口 total 一致
+  G. 数据源筛选（v1.7.50）：下拉取值、单选/多选 OR 语义、与统计联动、导出含「数据源」列
   F. 权限：无 prom:alert:* 权限的账号必须 403
 
 用法：
@@ -246,12 +247,81 @@ def main():
     st, js = api("GET", "/api/prom/n9e/events?days=90&page=1&pageSize=1", token=token)
     check(st == 200, "列表接口在正常参数下可用")
 
+    # ---------- G. 数据源筛选（v1.7.50 新增） ----------
+    print("\nG. 数据源筛选")
+    st, js = api("GET", "/api/prom/n9e/datasources", token=token)
+    ds = unwrap(js) or {}
+    ds_list = ds.get("list") or []
+    check(st == 200, "GET /prom/n9e/datasources 返回 200（实际 %s）" % st)
+    check(len(ds_list) > 0, "数据源下拉非空（%d 个）" % len(ds_list))
+    if not ds_list:
+        bad("数据源下拉为空 —— 老数据需重新同步一次才会补齐 datasource 字段")
+    else:
+        first = ds_list[0]
+        did = first.get("datasourceId")
+        check(bool(first.get("datasourceName")),
+              "数据源有可读名称：%s（id=%s）" % (first.get("datasourceName"), did))
+
+        # 单选：样本必须全部命中该数据源，且 total 等于下拉里给出的条数
+        st, js = api("GET", "/api/prom/n9e/events?%s&datasourceIds=%s&page=1&pageSize=20" % (q, did), token=token)
+        only = unwrap(js) or {}
+        lst = only.get("list") or []
+        check(all(r.get("datasourceId") == did for r in lst),
+              "单选筛选生效（%d 条样本全部命中 id=%s）" % (len(lst), did))
+        check(only.get("total") == first.get("n"),
+              "单选 total(%s) 与下拉条数(%s) 一致" % (only.get("total"), first.get("n")))
+
+        # 多选：互斥 OR 语义 ⇒ 两个数据源的结果等于各自之和
+        if len(ds_list) >= 2:
+            a, b = ds_list[0], ds_list[1]
+            st, js = api("GET", "/api/prom/n9e/events?%s&datasourceIds=%s,%s&page=1&pageSize=5"
+                         % (q, a.get("datasourceId"), b.get("datasourceId")), token=token)
+            multi = unwrap(js) or {}
+            check((multi.get("total") or 0) == (a.get("n") or 0) + (b.get("n") or 0),
+                  "多选 total(%s) = 两数据源之和(%s+%s)"
+                  % (multi.get("total"), a.get("n"), b.get("n")))
+
+        # 与统计联动：同一条件下的统计 total 必须等于列表 total
+        st, js = api("GET", "/api/prom/n9e/stats?%s&datasourceIds=%s" % (q, did), token=token, timeout=180)
+        dst = unwrap(js) or {}
+        check((dst.get("total") or 0) == first.get("n"),
+              "统计在同一数据源条件下 total(%s) = 下拉条数(%s)" % (dst.get("total"), first.get("n")))
+
+        s = sum(x.get("n") or 0 for x in ds_list)
+        check(s <= total, "各数据源条数之和(%s) <= 总量(%s)" % (s, total))
+
+        # 导出：必须成功，且表头含「数据源」列
+        st, data, headers = api("GET", "/api/prom/n9e/export?%s&datasourceIds=%s" % (q, did),
+                                token=token, timeout=600, raw=True)
+        check(st == 200 and data[:2] == b"PK",
+              "按数据源导出成功（%.2f MB）" % (len(data) / 1024.0 / 1024.0))
+        if st == 200 and data[:2] == b"PK":
+            try:
+                with zipfile.ZipFile(io.BytesIO(data)) as z:
+                    sheet = [n for n in z.namelist() if n.startswith("xl/worksheets/")][0]
+                    xml = z.read(sheet).decode("utf-8", "replace")
+                    head_ok = "数据源" in xml  # 内联字符串
+                    ss = [n for n in z.namelist() if n.endswith("sharedStrings.xml")]
+                    if ss and not head_ok:
+                        head_ok = "数据源" in z.read(ss[0]).decode("utf-8", "replace")
+                    check(head_ok, "导出表头含「数据源」列")
+            except zipfile.BadZipFile:
+                bad("按数据源导出的文件无法作为 zip 打开")
+
+        # 非法数据源 id 不应报错，只是查不到数据（筛选条件写歪要退化成不上报错）
+        st, js = api("GET", "/api/prom/n9e/events?%s&datasourceIds=999999&page=1&pageSize=5" % q, token=token)
+        nz = unwrap(js) or {}
+        check(st == 200 and (nz.get("total") or 0) == 0,
+              "不存在的数据源 id 返回 200 且 0 条（实际 %s/%s）" % (st, nz.get("total")))
+
     # ---------- F. 权限 ----------
     print("\nF. 权限校验")
     st, js = api("GET", "/api/prom/n9e-config")
     check(st in (401, 403), "未登录访问配置接口被拒绝（HTTP %s）" % st)
     st, js = api("GET", "/api/prom/n9e/events?days=7")
     check(st in (401, 403), "未登录访问列表接口被拒绝（HTTP %s）" % st)
+    st, js = api("GET", "/api/prom/n9e/datasources")
+    check(st in (401, 403), "未登录访问数据源接口被拒绝（HTTP %s）" % st)
     st, js = api("POST", "/api/prom/n9e/sync", {"days": 7})
     check(st in (401, 403), "未登录触发同步被拒绝（HTTP %s）" % st)
 

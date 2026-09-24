@@ -197,13 +197,14 @@ func PromN9eSyncStatus(c *gin.Context) {
 // ---------------------------------------------------------------------------
 
 type n9eQuery struct {
-	Stime      int64
-	Etime      int64
-	GroupIDs   []int
-	Severity   int // 0 = 全部
-	Recovered  int // -1 = 全部；0 = 未恢复；1 = 已恢复
-	Keyword    string
-	Department string
+	Stime         int64
+	Etime         int64
+	GroupIDs      []int
+	DatasourceIDs []int
+	Severity      int // 0 = 全部
+	Recovered     int // -1 = 全部；0 = 未恢复；1 = 已恢复
+	Keyword       string
+	Department    string
 }
 
 // n9eParseQuery 解析并夹紧查询条件。
@@ -240,16 +241,25 @@ func n9eParseQuery(c *gin.Context) n9eQuery {
 	}
 	q.Keyword = strings.TrimSpace(c.Query("keyword"))
 	q.Department = strings.TrimSpace(c.Query("department"))
-	for _, s := range strings.Split(c.Query("groupIds"), ",") {
+	q.GroupIDs = n9eParseIntList(c.Query("groupIds"))
+	q.DatasourceIDs = n9eParseIntList(c.Query("datasourceIds"))
+	return q
+}
+
+// n9eParseIntList 解析「逗号分隔的整数列表」查询参数（业务组 / 数据源共用）。
+// 非法片段直接跳过而不是报错：筛选条件写歪了应当退化成「不过滤」，不该让整个查询失败。
+func n9eParseIntList(raw string) []int {
+	var out []int
+	for _, s := range strings.Split(raw, ",") {
 		s = strings.TrimSpace(s)
 		if s == "" {
 			continue
 		}
 		if n, err := strconv.Atoi(s); err == nil {
-			q.GroupIDs = append(q.GroupIDs, n)
+			out = append(out, n)
 		}
 	}
-	return q
+	return out
 }
 
 // apply 把条件套到 GORM 查询上
@@ -259,6 +269,11 @@ func (q n9eQuery) apply(tx *gorm.DB) *gorm.DB {
 		tx.Where("group_id = ?", q.GroupIDs[0])
 	} else if len(q.GroupIDs) > 1 {
 		tx.Where("group_id IN ?", q.GroupIDs)
+	}
+	if len(q.DatasourceIDs) == 1 {
+		tx.Where("datasource_id = ?", q.DatasourceIDs[0])
+	} else if len(q.DatasourceIDs) > 1 {
+		tx.Where("datasource_id IN ?", q.DatasourceIDs)
 	}
 	if q.Severity > 0 {
 		tx.Where("severity = ?", q.Severity)
@@ -323,6 +338,31 @@ func PromN9eGroups(c *gin.Context) {
 			Group("group_id, group_name").
 			Order("n DESC").
 			Limit(200).Scan(&rows)
+	}
+	OK(c, gin.H{"list": rows})
+}
+
+// PromN9eDatasources 数据源选项（从本地库取，供筛选下拉）。
+//
+// 刻意**不从夜莺实时拉清单**：本页数据全部来自本地库，把「本地没有数据的数据源」
+// 也列出来，只会让用户选到一个空结果，还以为功能坏了。这里直接 distinct 本地已有的数据源并带条数。
+// ⚠️ 本次新增「数据源」字段之前同步的历史数据里 datasource_id = 0，不会出现在选项里 ——
+//
+//	老环境升级后需要重新同步一次才会看到数据源选项。
+func PromN9eDatasources(c *gin.Context) {
+	type dsRow struct {
+		DatasourceID   int    `json:"datasourceId"`
+		DatasourceName string `json:"datasourceName"`
+		N              int64  `json:"n"`
+	}
+	var rows []dsRow
+	if DB != nil {
+		DB.Model(&N9eAlertEvent{}).
+			Select("datasource_id, datasource_name, count(*) as n").
+			Where("datasource_id > 0").
+			Group("datasource_id, datasource_name").
+			Order("n DESC").
+			Limit(500).Scan(&rows)
 	}
 	OK(c, gin.H{"list": rows})
 }
@@ -419,7 +459,7 @@ func PromN9eStats(c *gin.Context) {
 // n9eExportHeaders 导出列（顺序即表头顺序）
 var n9eExportHeaders = []string{
 	"序号", "事件ID", "触发时间", "恢复时间", "持续时长", "状态", "等级",
-	"规则名称", "业务组", "集群", "目标主机", "目标对象", "部门", "系统",
+	"数据源", "规则名称", "业务组", "集群", "目标主机", "目标对象", "部门", "系统",
 	"触发值", "首次触发时间", "通知次数", "通知渠道",
 }
 
@@ -458,7 +498,7 @@ func PromN9eExport(c *gin.Context) {
 		Fail(c, http.StatusInternalServerError, 500, "初始化写入器失败："+err.Error())
 		return
 	}
-	widths := []float64{6, 10, 20, 20, 12, 8, 6, 30, 20, 18, 18, 22, 16, 18, 12, 20, 10, 16}
+	widths := []float64{6, 10, 20, 20, 12, 8, 6, 22, 30, 20, 18, 18, 22, 16, 18, 12, 20, 10, 16}
 	for i, w := range widths {
 		_ = sw.SetColWidth(i+1, i+1, w)
 	}
@@ -507,6 +547,7 @@ func PromN9eExport(c *gin.Context) {
 				dur,
 				status,
 				n9eSeverityLabel(r.Severity),
+				r.DatasourceName,
 				r.RuleName,
 				r.GroupName,
 				r.Cluster,

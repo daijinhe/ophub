@@ -831,6 +831,8 @@ export interface N9eSyncState {
 export interface N9eAlertEvent {
   id: number
   cate: string
+  datasourceId: number
+  datasourceName: string
   cluster: string
   groupId: number
   groupName: string
@@ -881,6 +883,7 @@ export interface N9eQueryParams {
   stime?: number
   etime?: number
   groupIds?: string
+  datasourceIds?: string
   severity?: number
   recovered?: number
   department?: string
@@ -919,6 +922,17 @@ export function listN9eEvents(
 
 export function listN9eGroups(): Promise<{ list: { groupId: number; groupName: string; n: number }[] }> {
   return unwrap(api.get('/prom/n9e/groups'))
+}
+
+/**
+ * 数据源选项（本地库 distinct，带条数）。
+ * ⚠️ 老环境升级到本版本后，历史数据的 datasource_id 为 0，需要**先重新同步一次**
+ * 数据源选项才会出现（只读本地库是刻意的：避免列出没有数据的数据源让用户选到空结果）。
+ */
+export function listN9eDatasources(): Promise<{
+  list: { datasourceId: number; datasourceName: string; n: number }[]
+}> {
+  return unwrap(api.get('/prom/n9e/datasources'))
 }
 
 export function listN9eDepartments(): Promise<{

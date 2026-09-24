@@ -12,6 +12,12 @@ package main
 //        全部 401；而 X-User-Token 会直接进入业务校验（返回 400 参数错误而非 401），
 //        即「鉴权已通过」。
 //   - 返回：{"dat":{"list":[...],"total":N},"err":""}
+//   - 数据源清单：GET <base>/api/n9e/datasource/brief → {"dat":[{"id":10,"name":"TiDB-政务外主-生产",...}]}
+//     ⚠️ 历史告警记录里**只有 datasource_id、没有名称**，而页面的「数据源」下拉要的是名字，
+//        所以必须额外取一次清单做 id→name 映射（见 listDatasources / n9eDsName）。
+//     ⚠️ 历史告警按数据源筛选的参数名是 `datasource_ids`（**复数**，逗号分隔多选，OR 语义）。
+//        实测写成 datasource_id / ds_ids 不会报错，而是被服务端**静默忽略**（total 与不传完全相同），
+//        所以「筛选没生效」不会报错、只会悄悄返回全量 —— 改动此处务必对照 total 验证。
 //
 // ── 性能特征（本文件所有设计都围绕它）────────────────────────────────────
 //   同一个接口，耗时由**时间跨度**决定，与 limit / 数据量基本无关：
@@ -96,6 +102,8 @@ func ensureN9eDefaults() {
 type N9eAlertEvent struct {
 	ID               int64     `gorm:"primaryKey;autoIncrement:false" json:"id"`
 	Cate             string    `gorm:"size:32" json:"cate"`
+	DatasourceID     int       `gorm:"index" json:"datasourceId"`
+	DatasourceName   string    `gorm:"size:128;index" json:"datasourceName"`
 	Cluster          string    `gorm:"size:128" json:"cluster"`
 	GroupID          int       `gorm:"index" json:"groupId"`
 	GroupName        string    `gorm:"size:128;index" json:"groupName"`
@@ -152,6 +160,7 @@ func newN9eClient() (*n9eClient, error) {
 type n9eHisEvent struct {
 	ID               int64    `json:"id"`
 	Cate             string   `json:"cate"`
+	DatasourceID     int      `json:"datasource_id"`
 	Cluster          string   `json:"cluster"`
 	GroupID          int      `json:"group_id"`
 	GroupName        string   `json:"group_name"`
@@ -176,6 +185,55 @@ type n9eHisEventResp struct {
 		Total int           `json:"total"`
 	} `json:"dat"`
 	Err string `json:"err"`
+}
+
+// n9eDatasource 数据源条目（GET /api/n9e/datasource/brief 的元素，只声明用得到的字段）
+type n9eDatasource struct {
+	ID         int    `json:"id"`
+	Name       string `json:"name"`
+	PluginType string `json:"plugin_type"`
+	Status     string `json:"status"`
+}
+
+type n9eDatasourceResp struct {
+	Dat []n9eDatasource `json:"dat"`
+	Err string          `json:"err"`
+}
+
+// listDatasources 拉取数据源清单，返回 id → 名称 的映射。
+//
+// 实测：历史告警记录里**只有 datasource_id（如 10），没有名称**；
+// 而夜莺「历史告警」页的「数据源」下拉展示的是数据源名称（如 TiDB-政务外主-生产），
+// 所以必须额外取一次清单做映射，否则报表里这一列只能显示数字。
+// 该接口很轻（本环境 17 个数据源、响应约 10KB），每次同步拉一次即可。
+func (n *n9eClient) listDatasources(ctx context.Context) (map[int]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, n.base+"/api/n9e/datasource/brief", nil)
+	if err != nil {
+		return nil, fmt.Errorf("构造数据源请求失败：%v", err)
+	}
+	req.Header.Set("X-User-Token", n.token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := n.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("获取数据源清单失败：%v", err)
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("读取数据源响应失败：%v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("获取数据源清单返回 HTTP %d：%s", resp.StatusCode, truncateStr(string(b), 200))
+	}
+	var out n9eDatasourceResp
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, fmt.Errorf("解析数据源清单失败：%v（片段：%s）", err, truncateStr(string(b), 200))
+	}
+	m := make(map[int]string, len(out.Dat))
+	for _, d := range out.Dat {
+		m[d.ID] = d.Name
+	}
+	return m, nil
 }
 
 // listHisEvents 拉取一页历史告警。
@@ -323,6 +381,16 @@ func runN9eSync(days int) {
 		return
 	}
 
+	// 取数据源清单（id → 名称）用于把事件里的 datasource_id 翻成可读名称。
+	// ⚠️ 失败不阻断同步：只因「名称查不到」就让整批同步失败不值得，
+	// 之后会退化成 #id 显示，按数据源筛选的功能不受影响。
+	n9eSetSyncState(func(s *N9eSyncState) { s.Phase = "获取数据源清单" })
+	dsNames, err := cli.listDatasources(ctx)
+	if err != nil {
+		log.Printf("夜莺同步：获取数据源清单失败（退化为 #id 显示，不影响同步）：%v", err)
+		dsNames = map[int]string{}
+	}
+
 	chunkTotal := 0
 	for s := startAll; s < now; s += chunkSec {
 		chunkTotal++
@@ -353,7 +421,7 @@ func runN9eSync(days int) {
 				return
 			}
 			for i := range list {
-				all = append(all, n9eConvertEvent(&list[i]))
+				all = append(all, n9eConvertEvent(&list[i], dsNames))
 			}
 			n9eSetSyncState(func(st *N9eSyncState) { st.Fetched = len(all) })
 
@@ -410,7 +478,8 @@ func n9eUpsertEvents(rows []N9eAlertEvent) error {
 		err := DB.Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "id"}},
 			DoUpdates: clause.AssignmentColumns([]string{
-				"cate", "cluster", "group_id", "group_name", "rule_id", "rule_name",
+				"cate", "datasource_id", "datasource_name",
+				"cluster", "group_id", "group_name", "rule_id", "rule_name",
 				"rule_note", "severity", "target_ident", "target_host", "department",
 				"system_name", "trigger_time", "trigger_value", "recover_time",
 				"is_recovered", "first_trigger_time", "notify_cur_number",
@@ -429,10 +498,12 @@ func n9eUpsertEvents(rows []N9eAlertEvent) error {
 // 实测：target_ident 在本环境恒为空，真正的主机信息只在 tags 里
 // （instance=198.51.100.22:9100 / department=xx事业部 / system=xx系统），
 // 所以必须从 tags 解析，否则报表里「目标」一列会全空。
-func n9eConvertEvent(ev *n9eHisEvent) N9eAlertEvent {
+func n9eConvertEvent(ev *n9eHisEvent, dsNames map[int]string) N9eAlertEvent {
 	row := N9eAlertEvent{
 		ID:               ev.ID,
 		Cate:             ev.Cate,
+		DatasourceID:     ev.DatasourceID,
+		DatasourceName:   n9eDsName(ev.DatasourceID, dsNames),
 		Cluster:          ev.Cluster,
 		GroupID:          ev.GroupID,
 		GroupName:        ev.GroupName,
@@ -480,6 +551,18 @@ func n9eConvertEvent(ev *n9eHisEvent) N9eAlertEvent {
 		row.TagsJSON = string(b)
 	}
 	return row
+}
+
+// n9eDsName 把数据源 id 翻成名称。清单里查不到时退化成 #id ——
+// 这样即使「取数据源清单」这一步失败，筛选按 id 仍然可用，只是显示不好看。
+func n9eDsName(id int, names map[int]string) string {
+	if id <= 0 {
+		return ""
+	}
+	if n, ok := names[id]; ok && n != "" {
+		return n
+	}
+	return fmt.Sprintf("#%d", id)
 }
 
 // n9eSeverityLabel 告警等级中文名（夜莺口径：1=提醒 2=警告 3=严重）
