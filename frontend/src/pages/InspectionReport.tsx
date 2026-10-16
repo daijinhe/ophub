@@ -342,7 +342,7 @@ function buildReportHtml(data: any): string {
   @media print { body { background:#fff; color:#111; } .noprint { display:none; } .hdr,.panel,.kpi,.wrap>div { border-color:#ccc!important; background:#fff!important; } }
 </style></head>
 <body><div class="wrap">
-  <div class="noprint" style="text-align:right;color:#64748b;font-size:12px;margin-bottom:8px">本报告由 云枢 OpsHub · 智能运维平台自动生成 · ${generated}</div>
+  <div class="noprint" style="text-align:right;color:#64748b;font-size:12px;margin-bottom:8px">本报告由云枢 OpsHub · 智能运维平台自动生成 · ${generated}</div>
   <div class="hdr">
     <div class="title">智能巡检报告</div>
     <div class="sub">INTELLIGENT INSPECTION REPORT</div>
