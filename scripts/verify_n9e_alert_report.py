@@ -1,4 +1,8 @@
 #!/usr/bin/env python
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+
 # -*- coding: utf-8 -*-
 """
 verify_n9e_alert_report.py —— 「监控告警报表」（夜莺历史告警）端到端验证

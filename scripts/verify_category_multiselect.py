@@ -1,4 +1,8 @@
 #!/usr/bin/env python
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+
 # -*- coding: utf-8 -*-
 """
 验证「巡检任务 - 按分类」支持任意层级单选/多选（v1.7.28）。

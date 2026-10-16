@@ -1,3 +1,7 @@
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+
 FROM alpine:3.20
 
 # 先换源：默认 dl-cdn 在本机会「挂住」而不是失败，A || B 的兜底永远走不到

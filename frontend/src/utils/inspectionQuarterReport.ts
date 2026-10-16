@@ -1,3 +1,7 @@
+// 云枢 OpsHub · 智能运维平台
+// Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+// SPDX-License-Identifier: MIT
+
 /**
  * 巡检「季度报告」xlsx 生成器
  *

@@ -1,3 +1,7 @@
+// 云枢 OpsHub · 智能运维平台
+// Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+// SPDX-License-Identifier: MIT
+
 import api from './client'
 
 // 部署模式定义（如 Redis 单机 / 三主三从集群 / 哨兵）

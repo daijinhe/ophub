@@ -1,3 +1,7 @@
+// 云枢 OpsHub · 智能运维平台
+// Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+// SPDX-License-Identifier: MIT
+
 // 测试程序：模拟 webshell.go 的完整流程，自动化驱动 vim。
 // 用法: sshtest (无参数)
 //

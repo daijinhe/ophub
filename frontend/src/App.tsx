@@ -1,3 +1,7 @@
+// 云枢 OpsHub · 智能运维平台
+// Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+// SPDX-License-Identifier: MIT
+
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { Spin, Result } from 'antd'
 import MainLayout from './layout/MainLayout'

@@ -1,4 +1,8 @@
 @echo off
+REM 云枢 OpsHub · 智能运维平台
+REM Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+REM SPDX-License-Identifier: MIT
+
 REM ==========================================================================
 REM  release-harbor.bat  --  Windows entry point for scripts/harbor_release.sh
 REM

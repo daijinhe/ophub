@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+
 """mock_prom.py — 本地仿真 Prometheus（仅测试用）
 
 模拟 Prometheus HTTP API 的只读子集，用于在没有真实 Prometheus 的环境里

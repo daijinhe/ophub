@@ -1,4 +1,8 @@
 #!/usr/bin/env python
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+
 # -*- coding: utf-8 -*-
 """定时任务（crontab）管理 —— 真实资产端到端回归测试（`crontab -l` 口径）
 

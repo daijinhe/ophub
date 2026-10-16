@@ -1,3 +1,7 @@
+// 云枢 OpsHub · 智能运维平台
+// Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+// SPDX-License-Identifier: MIT
+
 /**
  * 监控大屏「内容控制」面板清单（v1.7.41；v1.7.42 拆细负载 TOP）
  *

@@ -1,4 +1,8 @@
 #!/usr/bin/env python
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+
 # -*- coding: utf-8 -*-
 """
 验证「被屏蔽目标明细」（v1.7.43）。

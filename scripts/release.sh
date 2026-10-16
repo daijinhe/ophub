@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+
 # release.sh —— 云枢 OpsHub发版一条龙（落实项目「版本铁律」）
 #
 # 项目约定：每完成一项开发任务，必须

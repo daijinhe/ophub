@@ -1,3 +1,7 @@
+// 云枢 OpsHub · 智能运维平台
+// Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+// SPDX-License-Identifier: MIT
+
 import { ReactNode } from 'react'
 import { Result, Button } from 'antd'
 import { useNavigate } from 'react-router-dom'

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+
 # -*- coding: utf-8 -*-
 """批量把资产「操作系统版本」同步为 /etc/os-release 的 ID + VERSION_ID 拼接值。
 

@@ -1,4 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="100%" height="100%" role="img" aria-label="云枢 OpsHub">
+<!--
+  云枢 OpsHub · 智能运维平台
+  Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+  SPDX-License-Identifier: MIT
+-->
   <!-- 巡检大屏顶栏品牌图标（仅图形部分）。
        文字（中文标题 / 英文副标）改由页面用 HTML 渲染，这样才能：
          ① 独立控制字号（需求：标题字大一点）

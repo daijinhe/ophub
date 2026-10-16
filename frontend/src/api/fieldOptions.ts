@@ -1,3 +1,7 @@
+// 云枢 OpsHub · 智能运维平台
+// Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+// SPDX-License-Identifier: MIT
+
 // 字段下拉选项的「自定义值」持久化层
 // 说明：内置选项来自后端 /api/fields（真源 backend/fields.go ← scripts/gen_fields.py）；
 //       这里只存用户在界面上追加的自定义值，合并后一起展示。

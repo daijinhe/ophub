@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+
 # upgrade-compose.sh —— 把部署目录里的 docker-compose.yml 让新版本生效
 #
 # 为什么需要这个脚本（v1.7.11+）：

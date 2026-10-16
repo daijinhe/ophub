@@ -1,3 +1,7 @@
+// 云枢 OpsHub · 智能运维平台
+// Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+// SPDX-License-Identifier: MIT
+
 /**
  * 生成 window.open 的 features 字符串，把新窗口定位到屏幕正中间。
  *

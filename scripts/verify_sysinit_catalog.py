@@ -1,3 +1,7 @@
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+
 # 系统初始化管理 —— 端到端实测脚本
 # 覆盖：目录 13 项(带 group) / playbook 列表与校验(命中控制节点真实文件) /
 #       自定义项出现在向导 / 内置删除墓碑+恢复 / 启用停用。

@@ -1,3 +1,7 @@
+// 云枢 OpsHub · 智能运维平台
+// Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+// SPDX-License-Identifier: MIT
+
 /**
  * 云枢品牌徽章（v1.7.45）：登录 / 注册页共用。
  *

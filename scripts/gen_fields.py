@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+
 # -*- coding: utf-8 -*-
 # 从「平台录入模板（终极模板·只读）」自动生成前后端字段定义（单一数据源）
 # 模板是权威数据源，本脚本只读取不修改；新增/删减字段以模板「录入信息」sheet 为准

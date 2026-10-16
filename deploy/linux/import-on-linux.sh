@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+
 # import-on-linux.sh —— 在目标 Linux 服务器上执行：拉镜像 + 起库 + 还原数据 + 全量启动
 #
 # 前提（见 迁移步骤.md 第 2 步）：

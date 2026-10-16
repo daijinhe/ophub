@@ -130,3 +130,16 @@ python3 scripts/gen_fields.py
 | POST | `/api/assets/import` | Excel 导入 | cmdb:import |
 | GET | `/api/assets/export` | Excel 导出 | cmdb:export |
 | GET | `/api/fields` | 字段 schema | 公开 |
+
+---
+
+## 开源协议
+
+本项目基于 **MIT License** 开源，详见 [LICENSE](./LICENSE)。
+
+```
+Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+```
+
+你可以自由使用、复制、修改、合并、发布、分发、再许可及销售本软件的副本，
+但需保留上述版权声明与许可声明。软件按「原样」提供，不含任何明示或暗示的担保。

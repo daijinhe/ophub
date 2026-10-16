@@ -1,3 +1,7 @@
+// 云枢 OpsHub · 智能运维平台
+// Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+// SPDX-License-Identifier: MIT
+
 /**
  * Prometheus 监控报表 · Excel 产出（v1.7.36 抽成公共模块）
  *

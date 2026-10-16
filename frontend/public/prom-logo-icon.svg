@@ -1,4 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="100%" height="100%" role="img" aria-label="Prometheus 监控平台">
+<!--
+  云枢 OpsHub · 智能运维平台
+  Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+  SPDX-License-Identifier: MIT
+-->
   <!-- 监控大屏顶栏品牌图标（仅图形部分）。
        与 inspection-logo-icon.svg 同一套视觉语言，保证两个大屏并排看是「兄弟」而不是两个产品：
          ① 同尺寸圆角方块（96×96 / rx14）+ 内缩一圈半透明白描边

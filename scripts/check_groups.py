@@ -1,3 +1,7 @@
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+
 import re
 src = open("backend/fields.go", encoding="utf-8").read()
 targets = ["项目经理","开发人员","运维负责人","项目技术负责人","用途","备注","申请日期","申请人","端口","云账号","分发区域","备注_2","密码_2","业务环境"]

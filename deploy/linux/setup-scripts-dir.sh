@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+
 # setup-scripts-dir.sh —— 在主机建脚本根目录 + 把 SCRIPT_HOST_ROOT 写进 .env
 #
 # 为什么需要这个脚本：

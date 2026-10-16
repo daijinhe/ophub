@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+
 # -*- coding: utf-8 -*-
 """
 「所有虚拟机信息采集点统一走 Ansible 控制节点」端到端验证。

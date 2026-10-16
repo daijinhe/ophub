@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+
 # -*- coding: utf-8 -*-
 """Web 终端（WebSocket SSH）端到端验证脚本 —— 零第三方依赖。
 

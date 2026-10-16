@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+
 # migrate_export.sh —— 首次迁移·本地侧：把「数据 + 密钥配置 + 内网脚本」打成迁移包
 #
 # 产出一个自包含的 tar.gz，拷进内网后由包内 scripts/migrate_import.sh 一键导入。

@@ -1,3 +1,7 @@
+// 云枢 OpsHub · 智能运维平台
+// Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+// SPDX-License-Identifier: MIT
+
 import axios from 'axios'
 
 // 统一 API 客户端：baseURL 相对路径，由 nginx / vite 代理转发到后端

@@ -1,3 +1,7 @@
+// 云枢 OpsHub · 智能运维平台
+// Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+// SPDX-License-Identifier: MIT
+
 import { App, Badge, Button, Input, Space, Tag, Typography } from 'antd'
 import { DeleteOutlined, SafetyCertificateOutlined } from '@ant-design/icons'
 import { MW_CAPTURE_TYPES, type MwCaptureItem, type MwCodePath, type MwJavaApp, type MwKv } from '../api/mwcapture'

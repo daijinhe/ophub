@@ -1,3 +1,7 @@
+// 云枢 OpsHub · 智能运维平台
+// Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+// SPDX-License-Identifier: MIT
+
 import { useEffect, useState, type ReactNode } from 'react'
 import { App, Alert, Button, Select, Space, Tag, Tooltip, Typography } from 'antd'
 import { DeleteOutlined, PlusOutlined, SaveOutlined, ThunderboltOutlined } from '@ant-design/icons'

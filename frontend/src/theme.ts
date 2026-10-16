@@ -1,3 +1,7 @@
+// 云枢 OpsHub · 智能运维平台
+// Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+// SPDX-License-Identifier: MIT
+
 import { theme, type ThemeConfig } from 'antd'
 
 // 统一字体栈：西文 Inter，中文 PingFang / 微软雅黑，数字等宽清晰

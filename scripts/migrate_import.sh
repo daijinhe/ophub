@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+
 # migrate_import.sh —— 首次迁移·内网侧：把迁移包导入并启动平台
 #
 # 在解包后的目录里执行。脚本按顺序完成：

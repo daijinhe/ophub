@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+
 # harbor_release.sh —— 本地构建镜像 → 推送到内网 Harbor（构建/发布分离的「构建侧」）
 #
 # 为什么要分离：平台要跑在与互联网隔离的内网，内网既拉不到

@@ -1,3 +1,7 @@
+// 云枢 OpsHub · 智能运维平台
+// Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+// SPDX-License-Identifier: MIT
+
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Alert, App, Button, Modal, Space, Spin, Table, Tag, Tooltip, Typography } from 'antd'
 import { ReloadOutlined, SyncOutlined, ThunderboltOutlined } from '@ant-design/icons'

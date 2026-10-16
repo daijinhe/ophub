@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+
 # move-pgdata-to-host.sh —— 把 ophub_pgdata 卷里的 PG 数据搬到主机目录
 # /data/your-project/ophub/data/postgresql，让数据「看得见摸得着」。
 #

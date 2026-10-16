@@ -1,3 +1,7 @@
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+
 # -*- coding: utf-8 -*-
 """
 定时任务（crontab）端到端回归 —— 自足靶机版，不碰任何真实资产

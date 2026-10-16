@@ -1,3 +1,7 @@
+// 云枢 OpsHub · 智能运维平台
+// Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+// SPDX-License-Identifier: MIT
+
 package main
 
 // 本文件由 scripts/gen_fields.py 从「平台录入模板（终极模板·只读）」自动生成，请勿手动修改。

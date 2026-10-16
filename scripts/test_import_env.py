@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+
 # -*- coding: utf-8 -*-
 """端到端验证：用新版「平台录入模板」导入 Excel，检查 环境 / 业务环境 字段映射是否正确。
 - 环境：新模板新增列，应正常写入字段 key=环境

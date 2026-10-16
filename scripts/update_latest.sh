@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+
 # update_latest.sh —— 内网侧「一键更新到最新版」
 #
 # 干什么：自动查 Harbor 上 ophub-backend / ophub-frontend **共有的最新正式版本**

@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+
 # export-from-windows.sh —— 在 Win11 的 Git Bash 里导出「数据迁移包」
 #
 # 为什么不用宿主机目录挂载来 tar 卷：Git Bash 下 /d/xxx 与 D:\xxx 的路径转换

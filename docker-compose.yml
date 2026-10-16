@@ -1,4 +1,8 @@
-# 云枢 OpsHub · 智能运维平台 —— docker-compose 一键部署
+# 云枢 OpsHub · 智能运维平台
+# Copyright (c) 2026 daijinhe <taichicho@foxmail.com>
+# SPDX-License-Identifier: MIT
+#
+# docker-compose 一键部署
 #
 # ── 本地开发（默认）──────────────────────────────────────────────────────────
 #   cp .env.example .env
