@@ -192,7 +192,7 @@ def build_hosts(rnd, projects, per_project, runs=12):
             roles = (["前端", "后端", "数据库"] * per_project)[:per_project]
         for hi, role in enumerate(roles):
             idx += 1
-            ip = "10.205.%d.%d" % (100 + pi, 11 + hi)
+            ip = "192.0.2.%d" % (10 + pi * 10 + hi % 10)
             os_name, os_id, os_family, os_ver, kernel, arch = OS_POOL[rnd.randrange(len(OS_POOL))]
             cores = [4, 8, 8, 16, 16, 32][rnd.randrange(6)]
             mem_total = float([8, 16, 16, 32, 64][rnd.randrange(5)])
